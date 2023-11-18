@@ -4,13 +4,8 @@ from utils import convert_dms_to_dd
 
 # defaults
 url_base = 'http://'
-url = 'localhost'
-port = '19285'
 
-def get_atmosphere(lat, lon, alts, asky_url=None, tude_units='dd'):
-    if asky_url is None:
-        asky_url = url_base + url + ':' + port
-    
+def get_atmosphere(lat, lon, alts, host_addr='localhost', port=19285, tude_units='dd'):
     if tude_units == 'dms':
         logging.info(f"Converting tudes to dd")
 
@@ -27,7 +22,7 @@ def get_atmosphere(lat, lon, alts, asky_url=None, tude_units='dd'):
     alts = [str(x) for x in alts] # confirm elements are string before concat
     altsr = f"&altitudes={"|".join(alts)}"
 
-    req = asky_url + end_point + latr + lonr + altsr
+    req = f"{url_base}{host_addr}:{port}{end_point}{latr}{lonr}{altsr}"
     logging.info(f"Getting atmosphere for request {req}")
 
     r = requests.get(req)
