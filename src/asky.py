@@ -3,7 +3,6 @@ import logging
 import pandas as pd
 from pint import UnitRegistry
 import pint_pandas
-from flightcondition import unit
 from .utils import convert_dms_to_dd
 
 # defaults
@@ -53,10 +52,7 @@ def get_atmosphere(lat, lon, alts,
 
 
 def get_atmosphere_as_pd(lat, lon, alts,
-                         host_addr='localhost', port=19285, tude_units='dd',
-                        #  ureg=None,
-                        #  Q_=None
-                         ):
+                         host_addr='localhost', port=19285, tude_units='dd'):
     """ Get atmospherical conditions from ActiveSky for given position as a 
     pandas dataframe
     
@@ -80,7 +76,7 @@ def get_atmosphere_as_pd(lat, lon, alts,
     # pint_pandas.PintType.ureg = ureg
 
     atmos.Altitude = pint_pandas.PintArray(atmos.Altitude, dtype="feet")
-    atmos.WindDirection = pint_pandas.PintArray(atmos.WindDirection, dtype="degrees")
+    atmos.WindDirection = pint_pandas.PintArray(atmos.WindDirection,dtype="degrees")
     atmos.WindSpeed = pint_pandas.PintArray(atmos.WindSpeed, dtype="knots")
     atmos.Pressure = pint_pandas.PintArray(atmos.Pressure, dtype="hPa")
     atmos.Temperature = pint_pandas.PintArray(atmos.Temperature, ureg.Unit('degC'))
