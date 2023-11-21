@@ -1,11 +1,31 @@
 import requests
 import logging
-from utils import convert_dms_to_dd
+import pandas as pd
+from pint import UnitRegistry
+import pint_pandas
+from flightcondition import unit
+from .utils import convert_dms_to_dd
 
 # defaults
 url_base = 'http://'
 
-def get_atmosphere(lat, lon, alts, host_addr='localhost', port=19285, tude_units='dd'):
+def get_atmosphere(lat, lon, alts,
+                   host_addr='localhost', port=19285, tude_units='dd'):
+    """ Get atmospherical conditions from ActiveSky for given position
+    
+    Arguments:
+        lat -- latitude for given position
+        lon -- longitude for given position
+        alts -- list of altitudes to get conditions for
+        host_addr -- ActiveSky host address, 'localhost' by default
+        port -- ActiveSky port, 19285 by default
+        tude_units -- units for lat and lon; decimal or 'dd' by default; can
+            also be 'dms' for degrees, minutes, seconds in format 'dd-mm-ss.sssN'
+    
+    Returns
+        atmosphere in json format; see ActiveSky API documentation for further
+        detail
+    """
     if tude_units == 'dms':
         logging.info(f"Converting tudes to dd")
 
@@ -30,3 +50,39 @@ def get_atmosphere(lat, lon, alts, host_addr='localhost', port=19285, tude_units
         f"Received response with status code {r.status_code}\n{r.text}")
     
     return r.json()
+
+
+def get_atmosphere_as_pd(lat, lon, alts,
+                         host_addr='localhost', port=19285, tude_units='dd',
+                        #  ureg=None,
+                        #  Q_=None
+                         ):
+    """ Get atmospherical conditions from ActiveSky for given position as a 
+    pandas dataframe
+    
+    Arguments:
+        lat -- latitude for given position
+        lon -- longitude for given position
+        alts -- list of altitudes to get conditions for
+        host_addr -- ActiveSky host address, 'localhost' by default
+        port -- ActiveSky port, 19285 by default
+        tude_units -- units for lat and lon; decimal or 'dd' by default; can
+            also be 'dms' for degrees, minutes, seconds in format 'dd-mm-ss.sssN'
+    
+    Returns
+        atmosphere in json format; see ActiveSky API documentation for further
+        detail
+    """
+    atmos = get_atmosphere(lat, lon, alts, tude_units=tude_units)
+    atmos = pd.DataFrame.from_dict(atmos['WeatherData'], dtype='Float32')
+
+    ureg = UnitRegistry()
+    # pint_pandas.PintType.ureg = ureg
+
+    atmos.Altitude = pint_pandas.PintArray(atmos.Altitude, dtype="feet")
+    atmos.WindDirection = pint_pandas.PintArray(atmos.WindDirection, dtype="degrees")
+    atmos.WindSpeed = pint_pandas.PintArray(atmos.WindSpeed, dtype="knots")
+    atmos.Pressure = pint_pandas.PintArray(atmos.Pressure, dtype="hPa")
+    atmos.Temperature = pint_pandas.PintArray(atmos.Temperature, ureg.Unit('degC'))
+
+    return atmos
