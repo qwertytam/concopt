@@ -159,7 +159,7 @@ def pressure_ratio_from_cas(cas):
     Returns
         pressure ratio
     """
-    return calc_pressure_ratio(cas / a_0)
+    return calc_pressure_ratio((cas / a_0).magnitude)
 
 
 def pressure_ratio_from_mach(mach):
@@ -215,9 +215,11 @@ def get_ambient_pressure(altitude, static_temp=None, isa_temp_diff=None):
     fc = FlightCondition(h=altitude, units='SI')
     
     if isa_temp_diff is None:
-        isa_temp_diff = 0*unit('delta_degK')
+        isa_temp_diff = 0*unit('delta_degC')
     
     if static_temp is not None:
+        if type(static_temp) is np.float32:
+            static_temp = static_temp*unit('degC')
         fc.T = static_temp + isa_temp_diff
     else:
         fc.T = fc.T + isa_temp_diff
@@ -307,17 +309,17 @@ def mach_from_temps(total_temp, static_temp):
     Returns
         mach number
     """
-    tr = total_temp.to('degK') / static_temp.to('degK')
-    return np.sqrt(2/(gamma - 1) * (tr - 1))
+    tr = total_temp.pint.to('degK') / static_temp.pint.to('degK')
+    return np.sqrt(2/(gamma - 1) * (tr.values.quantity.m - 1))
 
     
-def calc_gs_for_atmosphere(atmosphere, mach, heading):
+def calc_gs_for_atmosphere(atmosphere, tas, heading):
     """ Calculate ground speed given atmospheric conditions, mach and heading
     
     Arguments:
         atmosphere -- pandas dataframe containg the columns `WindSpeed`, 
             `WindDirection` and `SpeedSound`
-        mach -- mach number to calcualted True Air Speed aka `TAS`
+        tas -- true air speed aka `TAS`
         heading -- aircraft heading to calculate ground speed for in degrees
     
     Returns
@@ -326,10 +328,9 @@ def calc_gs_for_atmosphere(atmosphere, mach, heading):
     atmosphere['Heading'] = heading
     atmosphere.Heading = pint_pandas.PintArray(atmosphere.Heading,
                                                dtype='degrees')
-    atmosphere['TAS'] = atmosphere.SpeedSound * mach
-    atmosphere['GroundSpeed'] = calc_ground_speed(atmosphere.WindSpeed,
+    gs = calc_ground_speed(atmosphere.WindSpeed,
                                                   atmosphere.WindDirection,
-                                                  atmosphere.TAS,
+                                                  tas,
                                                   atmosphere.Heading)
 
-    return atmosphere
+    return gs
