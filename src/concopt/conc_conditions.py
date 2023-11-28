@@ -3,8 +3,8 @@ import numpy as np
 import warnings
 from scipy.optimize import minimize_scalar
 import pint_pandas
-from flightcondition import FlightCondition, unit, dimless
-from .constants import p_0, gamma, a_0
+from concopt.units import unit, dimless
+from concopt.constants import p_0, gamma, a_0
 
 
 def calc_ias_temp_diff(altitude, static_temp):
