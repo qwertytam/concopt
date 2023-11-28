@@ -35,7 +35,7 @@ class PhysicalConstants():
         R_earth (length): Radius of Earth
     """
     g = 9.80665 * unit('meter/second^2')
-    R_star = 287.05287 * unit('joule(kelvin kilogram)')
+    R_star = 287.05287 * unit('joule/(kelvin kilogram)')
     gamma = 1.4 * dimless
     R_earth = 6.356766e3 * unit('kilometer')
 
