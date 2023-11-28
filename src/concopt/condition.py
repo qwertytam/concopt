@@ -127,9 +127,13 @@ class FlightCondition(Atmosphere):
 # =========================================================================== #
 #                       GENERAL FUNCTIONS & PROPERTIES                        #
 # =========================================================================== #
+    # def __init__(
+    #     self, h=None, p=None, M=None, TAS=None, CAS=None, EAS=None, L=None,
+    #     Re=None, units=None, full_output=None, **kwargs,
+    # ):
     def __init__(
-        self, h=None, p=None, M=None, TAS=None, CAS=None, EAS=None, L=None,
-        Re=None, units=None, full_output=None, **kwargs,
+        self, H=None, p=None, M=None, TAS=None, CAS=None,
+        units=None, **kwargs,
     ):
         """Constructor based on altitude and input velocity in terms of Mach
         number, TAS, CAS, or EAS.  Input altitude, one format of velocity, and
@@ -138,7 +142,7 @@ class FlightCondition(Atmosphere):
         unit quantities.
 
         Args:
-            h (length): Geometric altitude - aliases are 'alt', 'altitude'
+            H (length): Geopotential altitude - aliases are 'alt', 'altitude'
             p (pressure): Pressure altitude - aliases are 'p_alt',
                 'pressure_altitude'
             M (dimless): Velocity as Mach number - aliases are 'mach', 'Mach',
@@ -158,11 +162,11 @@ class FlightCondition(Atmosphere):
         """
         # Initialize Atmosphere super class
         # TODO 2023-11-24: if pressure altitude is given and no h, use that 
-        super().__init__(h=h, units=units, full_output=full_output, **kwargs)
+        super().__init__(H=H, units=units, **kwargs)
         self._byalt_tostring = super().tostring
 
         # Computer sea level properties
-        self._atm0 = Atmosphere(h=0*unit('kft'))
+        self._atm0 = Atmosphere(H=0*unit('kft'))
 
         # Need to cycle self.units to properly set default units
         self.units = self.units
@@ -179,8 +183,8 @@ class FlightCondition(Atmosphere):
         if CAS is None:
             CAS = __class__._arg_from_alias(CAS_aliases, kwargs)
         EAS_aliases = ['eas', 'equivalent_airspeed', 'VEAS', 'veas']
-        if EAS is None:
-            EAS = __class__._arg_from_alias(EAS_aliases, kwargs)
+        # if EAS is None:
+        #     EAS = __class__._arg_from_alias(EAS_aliases, kwargs)
         # L_aliases = ['ell', 'len', 'length', 'length_scale', 'l']
         # if L is None:
         #     L = __class__._arg_from_alias(L_aliases, kwargs)
@@ -203,7 +207,8 @@ class FlightCondition(Atmosphere):
         #     EAS = None if KEAS is None else KEAS * unit('knots')
 
         # By default hold EAS constant when altitude is changed
-        self._holdconst_vel_var = 'EAS'
+        # self._holdconst_vel_var = 'EAS'
+        self._holdconst_vel_var = 'CAS'
 
         # Assign input velocity quantity
         if M is not None:
@@ -282,8 +287,8 @@ class FlightCondition(Atmosphere):
             names_dict=self._byalt_names)
         self._byvel_asdict = self._asdict_template(
             names_dict=self._byvel_names)
-        self._bylen_asdict = self._asdict_template(
-            names_dict=self._bylen_names)
+        # self._bylen_asdict = self._asdict_template(
+        #     names_dict=self._bylen_names)
 
         # Set alias references by name _byalt_byname.<name>
         self._byalt_byname = AliasAttributes(
@@ -298,10 +303,10 @@ class FlightCondition(Atmosphere):
         )
 
         # Set alias references by name _bylen_byname.<name>
-        self._bylen_byname = AliasAttributes(
-            varsobj_arr=[self, ],
-            names_dict_arr=[self._bylen_names, ]
-        )
+        # self._bylen_byname = AliasAttributes(
+        #     varsobj_arr=[self, ],
+        #     names_dict_arr=[self._bylen_names, ]
+        # )
 
         # Set alias references by name generally .byname.<name>
         self.byname = AliasAttributes(
@@ -309,7 +314,7 @@ class FlightCondition(Atmosphere):
             names_dict_arr=[
                 self._byalt_names,
                 self._byvel_names,
-                self._bylen_names,
+                # self._bylen_names,
             ]
         )
 
@@ -386,12 +391,12 @@ class FlightCondition(Atmosphere):
         max_sym_chars = max([  # length of variables
             max([len(v) for v in self._byalt_names.keys()]),
             max([len(v) for v in self._byvel_names.keys()]),
-            max([len(v) for v in self._bylen_names.keys()]),
+            # max([len(v) for v in self._bylen_names.keys()]),
         ])
         max_name_chars = max([  # length of variable names
             max([len(v) for v in self._byalt_names.values()]),
             max([len(v) for v in self._byvel_names.values()]),
-            max([len(v) for v in self._bylen_names.values()]),
+            # max([len(v) for v in self._bylen_names.values()]),
         ])
 
         # Build output strings from sub-categories
@@ -473,8 +478,8 @@ class FlightCondition(Atmosphere):
         iscompatible = True
         msg = "{} arrays of size {} and {} arrays of size {} are incompatible."
 
-        if not __class__._check_compatible_array_size(self.h, self.M):
-            warnings.warn(msg.format("Altitude", np.size(self.h), "Velocity",
+        if not __class__._check_compatible_array_size(self.H, self.M):
+            warnings.warn(msg.format("Altitude", np.size(self.H), "Velocity",
                           np.size(self.M)))
             iscompatible = False
         # if not __class__._check_compatible_array_size(self.h, self.L):
@@ -593,30 +598,30 @@ class FlightCondition(Atmosphere):
 #                        LENGTH FUNCTIONS & PROPERTIES                        #
 # =========================================================================== #
     @_property_decorators
-    def h(self):
+    def H(self):
         """Override Atmosphere getter for altitude.
 
         Returns:
-            length: Geometric altitude
+            length: Geopotential altitude
         """
         # return super().h  # doesn't work
-        return super(FlightCondition, self.__class__).h.fget(self)
+        return super(FlightCondition, self.__class__).H.fget(self)
 
-    @h.setter
-    def h(self, h):
+    @H.setter
+    def H(self, H):
         """Override Atmosphere setter to properly dimension other quantities.
 
         Args:
-            h (length): Input scalar or array of altitudes
+            H (length): Input scalar or array of altitudes
         """
         # super().h = h  # doesn't work
-        super(FlightCondition, self.__class__).h.fset(self, h)
+        super(FlightCondition, self.__class__).H.fset(self, H)
 
         # Set airspeed and length array sizes if they are singular and altitude
         # is non-singular
         if hasattr(self, '_M'):
             if __class__._check_compatible_array_size(
-                    arr1=h, arr2=self._M,
+                    arr1=H, arr2=self._M,
                     arr_name1=self.names_dict['h'],
                     arr_name2=self.names_dict['M'],
                     raise_warning=True):
@@ -626,14 +631,15 @@ class FlightCondition(Atmosphere):
                     self.TAS = __class__._reshape_arr1_like_arr2(self._TAS, h)
                 elif self._holdconst_vel_var == 'CAS':
                     self.CAS = __class__._reshape_arr1_like_arr2(self._CAS, h)
-                elif self._holdconst_vel_var == 'EAS':
-                    self.EAS = __class__._reshape_arr1_like_arr2(self._EAS, h)
+                # elif self._holdconst_vel_var == 'EAS':
+                    # self.EAS = __class__._reshape_arr1_like_arr2(self._EAS, h)
                 else:  # default to holding EAS constant
-                    self.EAS = __class__._reshape_arr1_like_arr2(self._EAS, h)
+                    # self.EAS = __class__._reshape_arr1_like_arr2(self._EAS, h)
+                    self.M = __class__._reshape_arr1_like_arr2(self._M, h)
 
         if hasattr(self, '_L'):
             if __class__._check_compatible_array_size(
-                    arr1=h, arr2=self._L,
+                    arr1=H, arr2=self._L,
                     arr_name1=self.names_dict['h'],
                     arr_name2=self.names_dict['L'],
                     raise_warning=True):
@@ -652,18 +658,18 @@ class FlightCondition(Atmosphere):
         Returns:
             bool: True if compatible else False
         """
-        if hasattr(self, '_h'):
+        if hasattr(self, '_H'):
             if __class__._check_compatible_array_size(
-                    arr1=vel_arr, arr2=self._h,
-                    arr_name1=vel_name, arr_name2=self.names_dict["h"],
+                    arr1=vel_arr, arr2=self._H,
+                    arr_name1=vel_name, arr_name2=self.names_dict["H"],
                     raise_warning=True, raise_error=True):
-                self._h = __class__._reshape_arr1_like_arr2(self._h, vel_arr)
-        if hasattr(self, '_L'):
-            if __class__._check_compatible_array_size(
-                    arr1=vel_arr, arr2=self._L,
-                    arr_name1=vel_name, arr_name2=self.names_dict["L"],
-                    raise_warning=True):
-                self._L = __class__._reshape_arr1_like_arr2(self._L, vel_arr)
+                self._H = __class__._reshape_arr1_like_arr2(self._H, vel_arr)
+        # if hasattr(self, '_L'):
+        #     if __class__._check_compatible_array_size(
+        #             arr1=vel_arr, arr2=self._L,
+        #             arr_name1=vel_name, arr_name2=self.names_dict["L"],
+        #             raise_warning=True):
+        #         self._L = __class__._reshape_arr1_like_arr2(self._L, vel_arr)
 
     def _byvel_tostring(self, full_output=None, units=None, max_sym_chars=None,
                         max_name_chars=None, pretty_print=True):
@@ -999,11 +1005,11 @@ class FlightCondition(Atmosphere):
     def M(self, M):
         """Mach number :math:`M` """
         M *= dimless  # add dimless for raw float input
-        self._M = __class__._preprocess_arr(M, input_alt=self.h)
+        self._M = __class__._preprocess_arr(M, input_alt=self.H)
         self._process_input_velocity(self._M, vel_name=self.names_dict['M'])
 
         self._TAS = self._TAS_from_M(self.M)
-        self._EAS = self._EAS_from_TAS(self.TAS, self.M)
+        # self._EAS = self._EAS_from_TAS(self.TAS, self.M)
         self._q_c = self._q_c_from_M(self.M)
         self._CAS = self._CAS_from_q_c(self.q_c)
 
@@ -1018,7 +1024,7 @@ class FlightCondition(Atmosphere):
     @TAS.setter
     def TAS(self, TAS):
         """Set true airspeed. """
-        self._TAS = __class__._preprocess_arr(TAS, input_alt=self.h)
+        self._TAS = __class__._preprocess_arr(TAS, input_alt=self.H)
         self._process_input_velocity(
             self._TAS, vel_name=self.names_dict['TAS'])
 
@@ -1038,7 +1044,7 @@ class FlightCondition(Atmosphere):
     @CAS.setter
     def CAS(self, CAS):
         """Calibrated airspeed. """
-        self._CAS = __class__._preprocess_arr(CAS, input_alt=self.h)
+        self._CAS = __class__._preprocess_arr(CAS, input_alt=self.H)
         self._process_input_velocity(
             self._CAS, vel_name=self.names_dict['CAS'])
 
