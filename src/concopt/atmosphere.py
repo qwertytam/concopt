@@ -551,9 +551,9 @@ class Atmosphere(DimensionalData):
     def a(self):
         """Ambient speed of sound :math:`a` """
         T = self.T
-        gamma = Phys.gamma
+        gamma_air = Phys.gamma_air
         R_star = Phys.R_star
-        a = np.sqrt(gamma*R_star*T)
+        a = np.sqrt(gamma_air*R_star*T)
         return a
 
     @_property_decorators

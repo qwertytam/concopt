@@ -31,12 +31,12 @@ class PhysicalConstants():
     Attributes:
         g (acceleration): Acceleration due to gravity
         R_star (energy/temperature/mass): Gas constant for air
-        gamma (dimless): Ratio of specific heats for air
+        gamma_air (dimless): Ratio of specific heats for air
         R_earth (length): Radius of Earth
     """
     g = 9.80665 * unit('meter/second^2')
     R_star = 287.05287 * unit('joule/(kelvin kilogram)')
-    gamma = 1.4 * dimless
+    gamma_air = 1.4 * dimless
     R_earth = 6.356766e3 * unit('kilometer')
 
 
