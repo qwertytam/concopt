@@ -27,7 +27,6 @@ class Layer(DimensionalData):
     """Class to compute and store layer data. """
 
     names_dict = {
-        'name': 'layer_name',
         'H_base': 'base_geopotential_height',
         'T_base': 'base_geopotential_temperature',
         'T_grad': 'temperature_gradient',
@@ -44,7 +43,6 @@ class Layer(DimensionalData):
         H_arr = np.atleast_1d(H_arr)
         self.units = units
 
-        self._layer_name = [""]*np.size(H_arr)
         self._H_base = np.zeros_like(H_arr) * unit('m')
         self._T_base = np.zeros_like(H_arr) * unit('K')
         self._T_grad = np.zeros_like(H_arr) * unit('K/m')
@@ -133,30 +131,11 @@ class Layer(DimensionalData):
                                     max_name_chars=max_name_chars,
                                     fmt_val="10.5g", pretty_print=pretty_print)
 
-        # Create layer string
-        if type(self.name) is np.str_:  # singular array
-            trunc_layer_name = self.name
-        else:  # truncate layer name to no more than 10 character
-            trunc_layer_name = [f"{s[:10]}" for s in self.name]
-        layer_str = self._vartostr(var=trunc_layer_name, var_str='name',
-                                   to_units=None, max_sym_chars=max_sym_chars,
-                                   max_name_chars=max_name_chars,
-                                   fmt_val="", pretty_print=False)
-
         # Assemble output string
-        repr_str = (f"{layer_str}\n{H_base_str}\n{T_base_str}\n"
+        repr_str = (f"{H_base_str}\n{T_base_str}\n"
                     f"{T_grad_str}\n{p_base_str}")
         return repr_str
     
-    @property
-    def name(self):
-        """Layer name """
-        if np.size(self._layer_name) == 1:
-            layername = self._layer_name[0]
-        else:
-            layername = self._layer_name
-        return layername
-
     @_property_decorators
     def H_base(self):
         """Layer base geopotential altitude :math:`H_{base}` """
@@ -347,13 +326,9 @@ class Atmosphere(DimensionalData):
                                max_name_chars=max_name_chars,
                                fmt_val="10.5g", pretty_print=pretty_print)
 
-        # Create layer string
-        layer_str = self.layer.tostring(max_sym_chars=max_sym_chars,
-                                        max_name_chars=max_name_chars)
-
         # Assemble output string
         repr_str = (f"{h_str}\n{H_str}\n{p_str}\n{T_str}\n{rho_str}\n"
-                    f"{a_str}\n{g_str}\n{layer_str}")
+                    f"{a_str}\n{g_str}")
 
         return repr_str
 
