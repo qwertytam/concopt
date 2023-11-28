@@ -1,4 +1,4 @@
-from .constants import mins_per_deg
+from concopt.units import unit
 
 def convert_dms_to_dd(tude):
     """ Convert a latitude or longitude degrees-minutes-seconds to decimal
@@ -13,7 +13,8 @@ def convert_dms_to_dd(tude):
         convention
     """
     multiplier = 1 if tude[-1] in ['N', 'E'] else -1
+    sexagesimal_base = 60
     dd = sum(
-        float(x) / mins_per_deg ** n for n, x in enumerate(
-            tude[:-1].split('-')))
-    return multiplier * dd
+        float(x) / sexagesimal_base ** n for n, x in enumerate(tude[:-1].split('-'))
+        )
+    return multiplier * dd*unit('degree')
