@@ -14,7 +14,7 @@ from functools import wraps
 
 import numpy as np
 
-from flightcondition.units import to_base_units_wrapper
+from concopt.units import to_base_units_wrapper
 
 
 class AliasAttributes():
@@ -76,15 +76,9 @@ class AliasAttributes():
         Returns:
             str: Full string output
         """
-        # Determine full output flag
-        if self.full_output is None:
-            full_output = False
-        else:
-            full_output = self.full_output
-
         # Catch exception and return "" if tostring() is not specified
         try:
-            return self.tostring(full_output=full_output)
+            return self.tostring()
         except TypeError:
             return ""
 
@@ -119,13 +113,7 @@ class DimensionalData:
         Returns:
             str: Full string output
         """
-        # Determine full output flag
-        if self.full_output is None:
-            full_output = True
-        else:
-            full_output = self.full_output
-
-        return self.tostring(full_output=full_output)
+        return self.tostring()
 
     def __repr__(self):
         """Output string representation of class object.
@@ -133,13 +121,7 @@ class DimensionalData:
         Returns:
             str: Full string output
         """
-        # Determine full output flag
-        if self.full_output is None:
-            full_output = False
-        else:
-            full_output = self.full_output
-
-        return self.tostring(full_output=full_output)
+        return self.tostring()
 
     def _asdict_template(self, names_dict=None):
         """Return class data as dictionary.
@@ -171,12 +153,9 @@ class DimensionalData:
         """Print tostring() function to stdout. """
         print(self.tostring(*args, **kwargs))
 
-    def tostring(self, full_output=True):
+    def tostring(self):
         """Override this function to output string representation of class
         object
-
-        Args:
-            full_output (bool): Set to True for full output
 
         Returns:
             str: String representation
