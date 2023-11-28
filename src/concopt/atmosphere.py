@@ -196,6 +196,8 @@ class Atmosphere(DimensionalData):
         'rho': 'density',
         'a': 'sound_speed',
         'g': 'gravity',
+        'wdir': 'wind_direction',
+        'wspd': 'wind_speed',
     }
 
     def __init__(self, H=None, units=None, **kwargs):
@@ -279,6 +281,8 @@ class Atmosphere(DimensionalData):
             rho_units = 'slug/ft^3'
             a_units   = 'ft/s'
             g_units   = 'ft/s^2'
+            wdir_units   = 'degrees'
+            wspd_units   = 'ft/s'
         else:  # SI units
             h_units   = 'km'
             H_units   = 'km'
@@ -287,6 +291,8 @@ class Atmosphere(DimensionalData):
             rho_units = 'kg/m^3'
             a_units   = 'm/s'
             g_units   = 'm/s^2'
+            wdir_units   = 'degrees'
+            wspd_units   = 'm/s'
 
         # Insert longer variable name into output
         if max_sym_chars is None:
@@ -325,10 +331,18 @@ class Atmosphere(DimensionalData):
                                max_sym_chars=max_sym_chars,
                                max_name_chars=max_name_chars,
                                fmt_val="10.5g", pretty_print=pretty_print)
+        wdir_str = self._vartostr(var=self.wdir, var_str='wdir', to_units=wdir_units,
+                               max_sym_chars=max_sym_chars,
+                               max_name_chars=max_name_chars,
+                               fmt_val="10.5g", pretty_print=pretty_print)
+        wspd_str = self._vartostr(var=self.wspd, var_str='wspd', to_units=wspd_units,
+                               max_sym_chars=max_sym_chars,
+                               max_name_chars=max_name_chars,
+                               fmt_val="10.5g", pretty_print=pretty_print)
 
         # Assemble output string
         repr_str = (f"{h_str}\n{H_str}\n{p_str}\n{T_str}\n{rho_str}\n"
-                    f"{a_str}\n{g_str}")
+                    f"{a_str}\n{g_str}")#\n{wdir_str}\n{wspd_str}")
 
         return repr_str
 
@@ -456,6 +470,8 @@ class Atmosphere(DimensionalData):
         self.layer = Layer(self.H, units=self.units)
         self._T = None
         self._p = None
+        self._wdir = None
+        self._wspd = None
 
     @_property_decorators
     def p(self):
@@ -543,3 +559,43 @@ class Atmosphere(DimensionalData):
         R_earth = Phys.R_earth
         g = g_0*(R_earth/(R_earth + h))**2
         return g
+
+
+    @_property_decorators
+    def wdir(self):
+        """Wind direction :math:`wdir` """
+        # Only compute wdir if not user set
+        if self._wdir is not None:
+            wdir = self._wdir
+        else:
+            wdir = Atmo.wdir_0
+
+        return wdir
+
+    @wdir.setter
+    def wdir(self, wdir):
+        """Set wind direction """
+        # Check that wdir is same size as H
+        if np.size(wdir) != np.size(self._H):
+            raise AttributeError("Input array must be same size as altitude")
+        self._wdir = wdir
+
+        
+    @_property_decorators
+    def wspd(self):
+        """Wind speed :math:`wspd` """
+        # Only compute wspd if not user set
+        if self._wspd is not None:
+            wspd = self._wspd
+        else:
+            wspd = Atmo.wpsd_0
+
+        return wspd
+
+    @wspd.setter
+    def wspd(self, wspd):
+        """Set wind speed """
+        # Check that wspd is same size as H
+        if np.size(wspd) != np.size(self._H):
+            raise AttributeError("Input array must be same size as altitude")
+        self._wspd = wspd

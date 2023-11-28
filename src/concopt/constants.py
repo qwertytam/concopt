@@ -55,6 +55,8 @@ class AtmosphereConstants():
     T_ice = 273.15 * unit('kelvin')
     T_0 = 288.15 * unit('kelvin')
     rho_0 = 1.225 * unit('kilogram/meter^3')
+    wdir_0 = 0 * unit('degrees')
+    wpsd_0 = 0 * unit('meters/second')
 
     # Layer base geopotential heights
     H_base = std_atmosphere[0] * unit('kilometer')
