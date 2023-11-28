@@ -19,10 +19,10 @@ class PhysicalConstants():
         gamma (dimless): Ratio of specific heats for air
         R_earth (length): Radius of Earth
     """
-    g = 9.80665 * unit('m/s^2')
-    R_star = 287.05287 * unit('J(k kg)')
+    g = 9.80665 * unit('meter/second^2')
+    R_star = 287.05287 * unit('joule(kelvin kilogram)')
     gamma = 1.4 * dimless
-    R_earth = 6.356766e3 * unit('km')
+    R_earth = 6.356766e3 * unit('kilometer')
 
 
 class AtmosphereConstants():
@@ -36,20 +36,20 @@ class AtmosphereConstants():
     """
 
     # Sea level
-    p_0 = 101.325e3 * unit('Pa')
-    T_ice = 273.15 * unit('K')
-    T_0 = 288.15 * unit('K')
-    rho_0 = 1.225 * unit('kg/m^3')
+    p_0 = 101.325e3 * unit('pascal')
+    T_ice = 273.15 * unit('kelvin')
+    T_0 = 288.15 * unit('kelvin')
+    rho_0 = 1.225 * unit('kilogram/meter^3')
 
     # Layer base geopotential heights
-    H_base = std_atmosphere[0] * unit('km')
+    H_base = std_atmosphere[0] * unit('kilometer')
 
     # Layer base temperatures
-    T_base = std_atmosphere[1] * unit('K')
+    T_base = std_atmosphere[1] * unit('kelvin')
 
     # Layer temperature lapse rates
-    T_lapse_rate = std_atmosphere[2] * 1e-3 * unit('K/m')
+    T_lapse_rate = std_atmosphere[2] * 1e-3 * unit('kelvin/meter')
 
     # Layer base pressures
-    p_base = std_atmosphere[3] * unit('Pa')
+    p_base = std_atmosphere[3] * unit('pascal')
     
