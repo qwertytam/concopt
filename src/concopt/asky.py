@@ -1,3 +1,12 @@
+#!/usr/bin/env python
+"""Get and set ActiveSky weather conditions
+
+Author: Tom Marshall
+
+:copyright: 2023 Tom Marshall
+:license: MIT License, see LICENSE for more details.
+"""
+
 import requests
 import logging
 import pandas as pd
