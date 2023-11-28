@@ -1,3 +1,18 @@
+#!/usr/bin/env python
+"""Dimensioned constants.
+
+Modification of https://github.com/MattCJones/flightcondition/
+
+Initial Author: Matthew C. Jones
+Email: matt.c.jones.aoe@gmail.com
+
+Subsequent Author: Tom Marshall
+
+:copyright: 2021 Matthew C. Jones
+:copyright: 2023 Tom Marshall
+:license: MIT License, see LICENSE for more details.
+"""
+
 from importlib.resources import files
 from numpy import genfromtxt
 
@@ -48,7 +63,7 @@ class AtmosphereConstants():
     T_base = std_atmosphere[1] * unit('kelvin')
 
     # Layer temperature lapse rates
-    T_lapse_rate = std_atmosphere[2] * 1e-3 * unit('kelvin/meter')
+    T_grad = std_atmosphere[2] * 1e-3 * unit('kelvin/meter')
 
     # Layer base pressures
     p_base = std_atmosphere[3] * unit('pascal')
