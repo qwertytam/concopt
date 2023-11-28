@@ -34,16 +34,14 @@ class Layer(DimensionalData):
         'p_base': 'base_static_pressure',
     }
 
-    def __init__(self, H_arr, full_output=True, units=None):
+    def __init__(self, H_arr, units=None):
         """Initialize Layer nested class.
 
         Args:
             H_arr (length): Geopotential altitude
-            full_output (bool): Set to True for full output
             units (str): Set to 'US' for US units or 'SI' for SI
         """
         H_arr = np.atleast_1d(H_arr)
-        self.full_output = full_output
         self.units = units
 
         self._layer_name = [""]*np.size(H_arr)
@@ -54,7 +52,6 @@ class Layer(DimensionalData):
 
         for idx, H in enumerate(H_arr):
             jdx = __class__._layer_idx(H)
-            self._layer_name[idx] = Atmo.layer_names[jdx]
             self._H_base[idx] = Atmo.H_base[jdx]
             self._T_base[idx] = Atmo.T_base[jdx]
             self._T_grad[idx] = Atmo.T_grad[jdx]
@@ -82,12 +79,11 @@ class Layer(DimensionalData):
         else:  # no break
             raise ValueError("H out of bounds.")
 
-    def tostring(self, full_output=None, units=None, max_sym_chars=None,
+    def tostring(self, units=None, max_sym_chars=None,
                  max_name_chars=None, pretty_print=True):
         """Output string representation of class object.
 
         Args:
-            full_output (bool): Set to True for full output
             units (str): Set to 'US' for US units or 'SI' for SI
             max_sym_chars (int): Maximum characters in symbol name
             max_name_chars (int): Maximum characters iin full name
@@ -96,13 +92,6 @@ class Layer(DimensionalData):
         Returns:
             str: String representation
         """
-        # Determine full output flag
-        if full_output is None:
-            if self.full_output is None:
-                full_output = True
-            else:
-                full_output = self.full_output
-
         if units is not None:
             self.units = units
 
@@ -155,13 +144,10 @@ class Layer(DimensionalData):
                                    fmt_val="", pretty_print=False)
 
         # Assemble output string
-        if full_output:
-            repr_str = (f"{layer_str}\n{H_base_str}\n{T_base_str}\n"
-                        f"{T_grad_str}\n{p_base_str}")
-        else:
-            repr_str = (f"{layer_str}")
+        repr_str = (f"{layer_str}\n{H_base_str}\n{T_base_str}\n"
+                    f"{T_grad_str}\n{p_base_str}")
         return repr_str
-
+    
     @property
     def name(self):
         """Layer name """
@@ -207,7 +193,7 @@ class Atmosphere(DimensionalData):
         #print(f"\n{atm}")
 
         # Uncomment to print while specifying abbreviated output in US units:
-        #print(f"\n{atm.tostring(full_output=False, units='US')}")
+        #print(f"\n{atm.tostring(units='US')}")
 
         # See also the linspace() function from numpy, e.g.
         # h = linspace(0, 81.0, 82) * unit('km')
@@ -233,8 +219,8 @@ class Atmosphere(DimensionalData):
         'g': 'gravity',
     }
 
-    def __init__(self, h=None, units=None, full_output=None, **kwargs):
-        """Input geometric altitude - object contains the corresponding
+    def __init__(self, H=None, units=None, **kwargs):
+        """Input geopotential altitude - object contains the corresponding
         atmospheric quantities.
 
         See class definition for special hidden arguments such as `h_kft` to
@@ -242,11 +228,9 @@ class Atmosphere(DimensionalData):
         or `h_km` for kilometers.
 
         Args:
-            h (length): Geometric altitude - aliases are 'alt', 'altitude'
+            H (length): Geopotential altitude - aliases are 'alt', 'altitude'
             units (str): Set to 'US' for US units or 'SI' for SI
-            full_output (bool): Set to True for full output
         """
-        self.full_output = full_output
         # Check units and set initially
         if units in dir(unit.sys):
             self.units = units
@@ -261,28 +245,28 @@ class Atmosphere(DimensionalData):
 
         # Process altitude input
         # Check for hidden aliases
-        h_aliases = ['alt', 'altitude', 'z']
-        if h is None:
-            h = __class__._arg_from_alias(h_aliases, kwargs)
+        H_aliases = ['alt', 'altitude']
+        if H is None:
+            H = __class__._arg_from_alias(H_aliases, kwargs)
 
-        # Check if special h_kft syntactic sugar is used
-        h_kft_aliases = ['h_kft', 'z_kft', 'kft']
-        if h is None:
-            h_kft = __class__._arg_from_alias(h_kft_aliases, kwargs)
-            if h_kft is not None:
-                h = h_kft * unit('kft')
+        # Check if special H_kft syntactic sugar is used
+        H_kft_aliases = ['H_kft', 'z_kft', 'kft']
+        if H is None:
+            H_kft = __class__._arg_from_alias(H_kft_aliases, kwargs)
+            if H_kft is not None:
+                H = H_kft * unit('kft')
 
-        # Check if special h_km syntactic sugar is used
-        h_km_aliases = ['h_km', 'z_km', 'km']
-        if h is None:
-            h_km = __class__._arg_from_alias(h_km_aliases, kwargs)
-            if h_km is not None:
-                h = h_km * unit('km')
+        # Check if special H_km syntactic sugar is used
+        H_km_aliases = ['H_km', 'z_km', 'km']
+        if H is None:
+            H_km = __class__._arg_from_alias(H_km_aliases, kwargs)
+            if H_km is not None:
+                H = H_km * unit('km')
 
         # Default to 0 kft
-        if h is None:
-            h = 0 * unit('ft')
-        self.h = h
+        if H is None:
+            H = 0 * unit('ft')
+        self.H = H
 
         # Further process unit system
         if units not in dir(unit.sys):  # check if usable system
@@ -292,12 +276,11 @@ class Atmosphere(DimensionalData):
         self.byname = AliasAttributes(
             varsobj_arr=[self, ], names_dict_arr=[__class__.names_dict, ])
 
-    def tostring(self, full_output=None, units=None, max_sym_chars=None,
+    def tostring(self, units=None, max_sym_chars=None,
                  max_name_chars=None, pretty_print=True):
         """String representation of data structure.
 
         Args:
-            full_output (bool): Set to True for full output
             units (str): Set to 'US' for US units or 'SI' for SI
             max_sym_chars (int): Maximum characters in symbol name
             max_name_chars (int): Maximum characters iin full name
@@ -365,16 +348,8 @@ class Atmosphere(DimensionalData):
                                fmt_val="10.5g", pretty_print=pretty_print)
 
         # Create layer string
-        layer_str = self.layer.tostring(full_output=False,
-                                        max_sym_chars=max_sym_chars,
+        layer_str = self.layer.tostring(max_sym_chars=max_sym_chars,
                                         max_name_chars=max_name_chars)
-
-        # Determine full output flag
-        if full_output is None:
-            if self.full_output is None:
-                full_output = True
-            else:
-                full_output = self.full_output
 
         # Assemble output string
         repr_str = (f"{h_str}\n{H_str}\n{p_str}\n{T_str}\n{rho_str}\n"
@@ -461,25 +436,6 @@ class Atmosphere(DimensionalData):
             if hasattr(self, 'layer'):
                 self.layer.units = units
 
-    @property
-    def full_output(self):
-        """Enable or disable full output of data by default.
-
-        Returns:
-            bool: Full output flag
-        """
-        return self._full_output
-
-    @full_output.setter
-    def full_output(self, full_output):
-        """Unit system to use: 'SI', 'US', etc.  Available unit systems given
-        by dir(unit.sys).
-
-        Args:
-            full_output (bool): Full output flag
-        """
-        self._full_output = full_output
-
     @_property_decorators
     def h(self):
         """Get geometric altitude :math:`h`
@@ -489,43 +445,42 @@ class Atmosphere(DimensionalData):
         """
         return self._h
 
-    @h.setter
-    def h(self, h):
-        """Set geometric altitude :math:`h`
+    @_property_decorators
+    def H(self):
+        """Geopotential altitude :math:`H` """
+        return self._H
+
+    @H.setter
+    def H(self, H):
+        """Set geopotential altitude :math:`H`
 
         Check that input is of type Quantity from pint package. Check that
         input is length dimension.  Check bounds.  Format as array even if
         scalar input.
 
         Args:
-            h (length): Input scalar or array of altitudes
+            H (length): Input scalar or array of altitudes
         """
         tofloat = 1.0
-        h = np.atleast_1d(h) * tofloat
+        H = np.atleast_1d(H) * tofloat
 
-        h = h.magnitude * unit(str(h.units))  # force local unit registry
+        H = H.magnitude * unit(str(H.units))  # force local unit registry
 
-        if len(np.shape(h)) > 1:
+        if len(np.shape(H)) > 1:
             raise TypeError("Input must be scalar or 1-D array.")
 
-        if (h < self._h_min).any() or (self._h_max < h).any():
+        if (H < self._H_min).any() or (self._H_max < H).any():
             raise ValueError(
                 f"Input altitude is out of bounds "
-                f"({self._h_min:.5g} < h < {self._h_max:.5g})"
+                f"({self._H_min:.5g} < h < {self._H_max:.5g})"
             )
 
         # Update quantities
-        self._h = h
-        self._H = self._H_from_h(self.h)
-        self.layer = Layer(self.H, full_output=self.full_output,
-                           units=self.units)
+        self._H = H
+        self._h = self._h_from_H(self.H)
+        self.layer = Layer(self.H, units=self.units)
         self._T = None
         self._p = None
-
-    @_property_decorators
-    def H(self):
-        """Geopotential altitude :math:`H` """
-        return self._H
 
     @_property_decorators
     def p(self):
@@ -542,26 +497,26 @@ class Atmosphere(DimensionalData):
             H = np.atleast_1d(self.H)
             T = np.atleast_1d(self.T)
             g_0 = Phys.g
-            R_air = Phys.R_air
+            R_star = Phys.R_star
 
             p = np.zeros_like(H) * unit('Pa')
 
             # Pressure equation changes between T_grad == 0 and T_grad != 0
             s = T_grad == 0
-            p[s] = p_base[s]*np.exp((-g_0/(R_air*T[s]))*(H[s] - H_base[s]))
+            p[s] = p_base[s]*np.exp((-g_0/(R_star*T[s]))*(H[s] - H_base[s]))
 
             s = T_grad != 0
             p[s] = p_base[s]*(
                 1 + (T_grad[s]/T_base[s])*(H[s] - H_base[s])
-            )**((1/T_grad[s])*(-g_0/R_air))
+            )**((1/T_grad[s])*(-g_0/R_star))
 
         return p
 
     @p.setter
     def p(self, p):
         """Override ambient air pressure """
-        # Check that p is same size as h
-        if np.size(p) != np.size(self._h):
+        # Check that p is same size as H
+        if np.size(p) != np.size(self._H):
             raise AttributeError("Input array must be same size as altitude")
         self._p = p
 
@@ -582,8 +537,8 @@ class Atmosphere(DimensionalData):
     @T.setter
     def T(self, T):
         """Override ambient air temperature """
-        # Check that T is same size as h
-        if np.size(T) != np.size(self._h):
+        # Check that T is same size as H
+        if np.size(T) != np.size(self._H):
             raise AttributeError("Input array must be same size as altitude")
         self._T = T
 
@@ -592,17 +547,17 @@ class Atmosphere(DimensionalData):
         """Ambient air density :math:`\\rho` """
         p = self.p
         T = self.T
-        R_air = Phys.R_air
-        rho = p/(R_air*T)  # TODO 2022-08-07: separate out
+        R_star = Phys.R_star
+        rho = p/(R_star*T)
         return rho
 
     @_property_decorators
     def a(self):
         """Ambient speed of sound :math:`a` """
         T = self.T
-        gamma_air = Phys.gamma_air
-        R_air = Phys.R_air
-        a = np.sqrt(gamma_air*R_air*T)  # TODO 2022-08-07: separate out
+        gamma = Phys.gamma
+        R_star = Phys.R_star
+        a = np.sqrt(gamma*R_star*T)
         return a
 
     @_property_decorators
