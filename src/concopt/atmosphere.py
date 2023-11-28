@@ -193,6 +193,7 @@ class Atmosphere(DimensionalData):
         'H': 'geopotential_altitude',
         'p': 'pressure',
         'T': 'temperature',
+        'T_isa': 'standard_temperature',
         'rho': 'density',
         'a': 'sound_speed',
         'g': 'gravity',
@@ -278,6 +279,7 @@ class Atmosphere(DimensionalData):
             H_units   = 'kft'
             p_units   = 'lbf/ft^2'
             T_units   = 'degR'
+            T_isa_units   = 'degR'
             rho_units = 'slug/ft^3'
             a_units   = 'ft/s'
             g_units   = 'ft/s^2'
@@ -288,6 +290,7 @@ class Atmosphere(DimensionalData):
             H_units   = 'km'
             p_units   = 'Pa'
             T_units   = 'degK'
+            T_isa_units   = 'degK'
             rho_units = 'kg/m^3'
             a_units   = 'm/s'
             g_units   = 'm/s^2'
@@ -316,6 +319,10 @@ class Atmosphere(DimensionalData):
                                max_sym_chars=max_sym_chars,
                                max_name_chars=max_name_chars,
                                fmt_val="10.5g", pretty_print=pretty_print)
+        T_isa_str = self._vartostr(var=self.T_isa, var_str='T_isa', to_units=T_isa_units,
+                               max_sym_chars=max_sym_chars,
+                               max_name_chars=max_name_chars,
+                               fmt_val="10.5g", pretty_print=pretty_print)
         fmt_val_rho = "10.4e" if units == 'US' else "10.5g"
         rho_str = self._vartostr(var=self.rho, var_str='rho',
                                  to_units=rho_units,
@@ -341,8 +348,8 @@ class Atmosphere(DimensionalData):
                                fmt_val="10.5g", pretty_print=pretty_print)
 
         # Assemble output string
-        repr_str = (f"{h_str}\n{H_str}\n{p_str}\n{T_str}\n{rho_str}\n"
-                    f"{a_str}\n{g_str}")#\n{wdir_str}\n{wspd_str}")
+        repr_str = (f"{h_str}\n{H_str}\n{p_str}\n{T_str}\n{T_isa_str}\n{rho_str}\n"
+                    f"{a_str}\n{g_str}\n{wdir_str}\n{wspd_str}")
 
         return repr_str
 
@@ -379,23 +386,6 @@ class Atmosphere(DimensionalData):
         """
         h = R_earth*H/(R_earth - H)
         return h
-
-    @staticmethod
-    @unit.wraps(unit('W/m/K').units, unit.K)
-    def _thermal_conductivity(T_K):
-        """Compute thermal conductivity.
-
-        Args:
-            T_K (temperature): Dimensional Temperature at altitude, which is
-                automatically converted to Kelvin
-
-        Returns:
-            power/length/temperature: Geometric altitude in W/m/K
-        """
-        # Empirical formula requires T in Kelvin
-        c1 = 0.002648151
-        k = c1*T_K**1.5 / (T_K + (245.4*10**(-12/T_K)))
-        return k
 
     @property
     def units(self):
@@ -469,6 +459,7 @@ class Atmosphere(DimensionalData):
         self._h = self._h_from_H(self.H)
         self.layer = Layer(self.H, units=self.units)
         self._T = None
+        self._T_isa = None
         self._p = None
         self._wdir = None
         self._wspd = None
@@ -486,7 +477,7 @@ class Atmosphere(DimensionalData):
             p_base = np.atleast_1d(self.layer.p_base)
 
             H = np.atleast_1d(self.H)
-            T = np.atleast_1d(self.T)
+            T_isa = np.atleast_1d(self.T_isa)
             g_0 = Phys.g
             R_star = Phys.R_star
 
@@ -494,7 +485,7 @@ class Atmosphere(DimensionalData):
 
             # Pressure equation changes between T_grad == 0 and T_grad != 0
             s = T_grad == 0
-            p[s] = p_base[s]*np.exp((-g_0/(R_star*T[s]))*(H[s] - H_base[s]))
+            p[s] = p_base[s]*np.exp((-g_0/(R_star*T_isa[s]))*(H[s] - H_base[s]))
 
             s = T_grad != 0
             p[s] = p_base[s]*(
@@ -532,6 +523,20 @@ class Atmosphere(DimensionalData):
         if np.size(T) != np.size(self._H):
             raise AttributeError("Input array must be same size as altitude")
         self._T = T
+
+    @_property_decorators
+    def T_isa(self):
+        """Ambient air temperature for standard atmosphere:math:`T_isa` """
+        # Only compute T_isa if not user set
+        if self._T_isa is not None:
+            T_isa = self._Tv
+        else:
+            T_grad = np.atleast_1d(self.layer.T_grad)
+            H_base = np.atleast_1d(self.layer.H_base)
+            T_base = np.atleast_1d(self.layer.T_base)
+            T_isa = T_base + T_grad*(self.H - H_base)
+
+        return T_isa
 
     @_property_decorators
     def rho(self):
