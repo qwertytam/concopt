@@ -125,12 +125,6 @@ class FlightCondition(Atmosphere):
                 'true_airspeed', 'U_inf', 'V_inf'
             CAS (speed): Velocity as calibrated airspeed - aliases are 'cas',
                 'calibrated_airspeed'
-            EAS (speed): Velocity as equivalent airspeed - aliases are 'eas',
-                'equivalent_airspeed'
-            L (length): Length scale - aliases are 'ell', 'bylen', 'length',
-                'length_scale', 'l'
-            Re (dimless): Reynolds number - alternative to velocity or length
-                scale but not both - aliases are 'Re_L', 'reynolds_number'
             units (str): Set to 'US' for US units or 'SI' for SI
             full_output (bool): Set to True for full output
         """
@@ -431,21 +425,13 @@ class FlightCondition(Atmosphere):
                     arr_name2=self.names_dict['M'],
                     raise_warning=True):
                 if self._holdconst_vel_var == 'M':
-                    self.M = __class__._reshape_arr1_like_arr2(self._M, h)
+                    self.M = __class__._reshape_arr1_like_arr2(self._M, H)
                 elif self._holdconst_vel_var == 'TAS':
-                    self.TAS = __class__._reshape_arr1_like_arr2(self._TAS, h)
+                    self.TAS = __class__._reshape_arr1_like_arr2(self._TAS, H)
                 elif self._holdconst_vel_var == 'CAS':
-                    self.CAS = __class__._reshape_arr1_like_arr2(self._CAS, h)
+                    self.CAS = __class__._reshape_arr1_like_arr2(self._CAS, H)
                 else:  # default to holding M constant
-                    self.M = __class__._reshape_arr1_like_arr2(self._M, h)
-
-        if hasattr(self, '_L'):
-            if __class__._check_compatible_array_size(
-                    arr1=H, arr2=self._L,
-                    arr_name1=self.names_dict['h'],
-                    arr_name2=self.names_dict['L'],
-                    raise_warning=True):
-                self._L = __class__._reshape_arr1_like_arr2(self._L, h)
+                    self.M = __class__._reshape_arr1_like_arr2(self._M, H)
 
 # =========================================================================== #
 #                       VELOCITY FUNCTIONS & PROPERTIES                       #
@@ -481,12 +467,6 @@ class FlightCondition(Atmosphere):
         Returns:
             str: String representation
         """
-        # Determine full output flag
-        if full_output is None:
-            if self.full_output is None:
-                full_output = True
-            else:
-                full_output = self.full_output
 
         # Set default unit system
         if units is None:
