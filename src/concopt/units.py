@@ -34,3 +34,16 @@ def to_base_units_wrapper(func):
             output.ito_base_units()
         return output
     return wrapper
+
+def check_dimensioned(inp):
+    """Check that input is dimensional (type 'Quantity' from pint package).
+
+    Args:
+        inp (object): Object to assert as dimensional type
+
+    """
+    try:
+        inp.units.compatible_units()  # check that uses pint methods
+    except AttributeError:
+        raise TypeError("Input value is not correctly dimensioned! Use"
+                        " dimensional type 'Quantity' from pint package.")
