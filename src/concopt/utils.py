@@ -1,3 +1,17 @@
+#!/usr/bin/env python
+"""Utilities class
+
+Modification of https://github.com/MattCJones/flightcondition/
+
+Initial Author: Matthew C. Jones
+Email: matt.c.jones.aoe@gmail.com
+
+Subsequent Author: Tom Marshall
+
+:copyright: 2021 Matthew C. Jones
+:copyright: 2023 Tom Marshall
+:license: MIT License, see LICENSE for more details.
+"""
 from concopt.units import unit
 
 def convert_dms_to_dd(tude):
