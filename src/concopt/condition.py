@@ -28,9 +28,9 @@ from concopt.units import unit, dimless, check_dimensioned, \
     to_base_units_wrapper
 
 class FlightCondition(Atmosphere):
-    """Easily convert between Mach number, true airspeed (TAS), calibrated
-    airspeed (CAS), and equivalent airspeed (EAS) for given altitude(s).
-    Additional flight condition data and atmospheric data is computed.
+    """Easily convert between Mach number, true airspeed (TAS), and calibrated
+    airspeed (CAS) for given altitude(s). Additional flight condition data and
+    atmospheric data is computed.
 
     All inputs must be dimensional unit quantities.
 
