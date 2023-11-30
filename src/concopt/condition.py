@@ -1,14 +1,17 @@
 #!/usr/bin/env python
-"""Easily convert between Mach number, true airspeed (TAS), calibrated airspeed
-(CAS), and equivalent airspeed (EAS) for given altitude(s).  Additional flight
-condition data and atmospheric data is computed.
+"""Easily convert between Mach number, true airspeed (TAS), and calibrated
+airspeed for given altitude(s).  Additional flight condition data and
+atmospheric data is computed.
 
-Dependencies: numpy, pint
+Modification of https://github.com/MattCJones/flightcondition/
 
-Author: Matthew C. Jones
+Initial Author: Matthew C. Jones
 Email: matt.c.jones.aoe@gmail.com
 
+Subsequent Author: Tom Marshall
+
 :copyright: 2021 Matthew C. Jones
+:copyright: 2023 Tom Marshall
 :license: MIT License, see LICENSE for more details.
 """
 
@@ -43,30 +46,10 @@ class FlightCondition(Atmosphere):
         # Uncomment to print abbreviated output in US units:
         #print(f"\n{fc.tostring(full_output=False, units="US")}")
 
-        # Convert true, calibrated, equivalent airspeeds
-        KTAS = fc.TAS.to('knots')
-        KCAS = fc.CAS.to('knots')
-        KEAS = fc.EAS.to('knots')
-        print(f"Flying at {KTAS.magnitude:.4g} KTAS,"
-            f" which is {KCAS.magnitude:.4g} KCAS,"
-            f" or {KEAS.magnitude:.4g} KEAS")
-        # >>> Flying at 319.4 KTAS, which is 277.7 KCAS, or 275.1 KEAS
-
         # Access atmospheric data (see Atmosphere class for more)
         h, p, T, rho, nu, a = fc.h, fc.p, fc.T, fc.rho, fc.nu, fc.a
         print(f"The ambient temperature at {h.to('km'):.4g} is {T:.4g}")
         # >>> The ambient temperature at 3 km is 268.7 K
-
-        # Change airspeed to 300 KEAS and altitude to 12 kft
-        fc.EAS = 300 * unit('knots')
-        fc.h = 12 * unit('kft')
-        #print(f"{fc}")  # uncomment to print output
-
-        # Recompute for a range of altitudes at 275.14 knots-equivalent
-        # airspeed with a characteristic length scale of 10 meters
-        fc = FlightCondition(h=[0, 9.8425, 20]*unit('kft'),
-                            EAS=275.14*unit('kt'),
-                            L=10*unit('m'))
 
         # Compute additional derived quantities - explore the class for more!
         print(f"\nThe dynamic pressure in psi is {fc.q_inf.to('psi'):.3g}")
@@ -110,7 +93,7 @@ class FlightCondition(Atmosphere):
         units=None, **kwargs,
     ):
         """Constructor based on altitude and input velocity in terms of Mach
-        number, TAS, CAS, or EAS.  Input altitude, one format of velocity, and
+        number, TAS, or CAS.  Input altitude, one format of velocity, and
         length scale.  Reynolds number can be input as an alternative to either
         velocity or length scale but not both.  All inputs must be dimensional
         unit quantities.
@@ -689,7 +672,6 @@ class FlightCondition(Atmosphere):
             self._TAS, vel_name=self.names_dict['TAS'])
 
         self._M = self._M_from_TAS(TAS)
-        self._EAS = self._EAS_from_TAS(self.TAS, self.M)
         self._q_c = self._q_c_from_M(self.M)
         self._CAS = self._CAS_from_q_c(self.q_c)
 
@@ -711,7 +693,6 @@ class FlightCondition(Atmosphere):
         self._q_c = self._q_c_from_CAS(self.CAS)
         self._M = self._M_from_q_c(self.q_c)
         self._TAS = self._TAS_from_M(self.M)
-        self._EAS = self._EAS_from_TAS(self.TAS, self.M)
 
         # Out of all velocity quantities, hold this one constant over altitude
         self._holdconst_vel_var = 'CAS'
@@ -751,5 +732,5 @@ class FlightCondition(Atmosphere):
         # Check that T is same size as H
         if np.size(T) != np.size(self._H):
             raise AttributeError("Input array must be same size as altitude")
-        self._T = T + 200*unit('delta_degC')
+        self._T = T
         self.M = self.M
