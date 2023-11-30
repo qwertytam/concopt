@@ -744,3 +744,12 @@ class FlightCondition(Atmosphere):
         y = Phys.gamma_air
         T0 = IsentropicFlow.T0_by_T(M, y)*T
         return T0
+
+    @Atmosphere.T.setter
+    def T(self, T):
+        """Override ambient air temperature """
+        # Check that T is same size as H
+        if np.size(T) != np.size(self._H):
+            raise AttributeError("Input array must be same size as altitude")
+        self._T = T + 200*unit('delta_degC')
+        self.M = self.M
