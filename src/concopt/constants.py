@@ -15,6 +15,7 @@ Subsequent Author: Tom Marshall
 
 from importlib.resources import files
 from numpy import genfromtxt
+from numpy import sqrt as npsqrt
 
 from concopt.units import unit, dimless
 
@@ -55,6 +56,8 @@ class AtmosphereConstants():
     T_ice = 273.15 * unit('kelvin')
     T_0 = 288.15 * unit('kelvin')
     rho_0 = 1.225 * unit('kilogram/meter^3')
+    a_0 = npsqrt(PhysicalConstants.gamma_air * PhysicalConstants.R_star * T_0)
+    
     wdir_0 = 0 * unit('degrees')
     wpsd_0 = 0 * unit('meters/second')
 
