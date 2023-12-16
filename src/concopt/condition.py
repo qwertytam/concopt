@@ -21,8 +21,9 @@ import numpy as np
 
 from concopt.atmosphere import Atmosphere
 from concopt.constants import PhysicalConstants as Phys
+from concopt.constants import AtmosphereConstants as Atmos
 from concopt.common import AliasAttributes, _property_decorators
-from concopt.isentropicflow import IsentropicFlow
+from concopt.airframeflows import AirframeFlows
 from concopt.nondimensional import NonDimensional
 from concopt.units import unit, dimless, check_dimensioned, \
     to_base_units_wrapper
@@ -150,7 +151,7 @@ class FlightCondition(Atmosphere):
         # Check that computations are within valid Mach number limits
         M_ = np.atleast_1d(self.M)
         self._mach_min = 0 * dimless
-        self._mach_max = 3 * dimless
+        self._mach_max = 5 * dimless
         if (M_ < self._mach_min).any() or (self._mach_max < M_).any():
             raise ValueError(
                 f"Mach number is out of bounds "
@@ -458,15 +459,15 @@ class FlightCondition(Atmosphere):
         if units == 'US':
             TAS_units   = 'knots'
             CAS_units   = 'knots'
-            q_inf_units     = 'lbf/ft^2'
-            q_c_units     = 'lbf/ft^2'
+            q_inf_units = 'lbf/ft^2'
+            q_c_units   = 'lbf/ft^2'
             p0_units    = 'lbf/ft^2'
             T0_units    = 'degR'
         else:  # default to SI units
             TAS_units   = 'm/s'
             CAS_units   = 'm/s'
-            q_inf_units     = 'Pa'
-            q_c_units     = 'Pa'
+            q_inf_units = 'Pa'
+            q_c_units   = 'Pa'
             p0_units    = 'Pa'
             T0_units    = 'degK'
 
@@ -510,21 +511,41 @@ class FlightCondition(Atmosphere):
                         f"{q_inf_str}{q_c_str}{p0_str}{T0_str}")
         return repr_str
 
+    # @staticmethod
+    # def _impact_pressure(M, p):
+    #     """Compute impact pressure
+
+    #     Args:
+    #         M (dimless): Mach number
+    #         p (pressure): Static pressure
+
+    #     Returns:
+    #         pressure: Impact pressure
+    #     """
+    #     # p0 = p + q_c
+    #     y = Phys.gamma_air
+    #     p0 = IsentropicFlow.p0_by_p(M, y)*p
+    #     q_c = p0 - p
+    #     return q_c
+
+
     @staticmethod
-    def _impact_pressure(M, p):
-        """Compute impact pressure
+    def _impact_pressure_from_cas(CAS):
+        """Compute impact pressure from calibrated air speed
 
         Args:
-            M (dimless): Mach number
-            p (pressure): Static pressure
+            CAS (speed): Calibrated air speed
 
         Returns:
             pressure: Impact pressure
         """
         # p0 = p + q_c
         y = Phys.gamma_air
-        p0 = IsentropicFlow.p0_by_p(M, y)*p
-        q_c = p0 - p
+        p = Atmos.p_0
+        speed_ratio = CAS / Atmos.a_0
+        q_c = AirframeFlows.reverse_saint_venant_formula(
+            M = speed_ratio.magnitude,
+            y = y.magnitude) * p
         return q_c
 
     @to_base_units_wrapper
@@ -573,42 +594,42 @@ class FlightCondition(Atmosphere):
         q_c = __class__._impact_pressure(M=M_, p=p_h0)
         return q_c
 
-    @to_base_units_wrapper
-    def _CAS_from_q_c(self, q_c):
-        """Compute calibrated airspeed from impact pressure (accounting for
-           compressibility).
+    # @to_base_units_wrapper
+    # def _CAS_from_q_c(self, q_c):
+    #     """Compute calibrated airspeed from impact pressure (accounting for
+    #        compressibility).
 
-        Args:
-            CAS (speed): Calibrated airspeed
+    #     Args:
+    #         CAS (speed): Calibrated airspeed
 
-        Returns:
-            pressure: Impact pressure
+    #     Returns:
+    #         pressure: Impact pressure
 
-        """
-        a_h0 = self._atm0.a
-        p_h0 = self._atm0.p
-        # Account for compressibility with the isentropic flow equation
-        # M_should = __class__._isentropic_mach(p0=q_c, p=p_h0)  # DEPRECATED
-        M = IsentropicFlow.M_from_p0_by_p((q_c+p_h0)/p_h0)
-        CAS = NonDimensional.mach_velocity(M, a_h0)  # subsonic
-        return CAS
+    #     """
+    #     a_h0 = self._atm0.a
+    #     p_h0 = self._atm0.p
+    #     # Account for compressibility with the isentropic flow equation
+    #     # M_should = __class__._isentropic_mach(p0=q_c, p=p_h0)  # DEPRECATED
+    #     M = IsentropicFlow.M_from_p0_by_p((q_c+p_h0)/p_h0)
+    #     CAS = NonDimensional.mach_velocity(M, a_h0)  # subsonic
+    #     return CAS
 
-    @to_base_units_wrapper
-    def _M_from_q_c(self, q_c):
-        """Compute Mach number from impact pressure.
+    # @to_base_units_wrapper
+    # def _M_from_q_c(self, q_c):
+    #     """Compute Mach number from impact pressure.
 
-        Args:
-            q_c (pressure): Impact pressure
+    #     Args:
+    #         q_c (pressure): Impact pressure
 
-        Returns:
-            dimless: Mach number
-        """
-        p_inf = self.p
-        # Isentropic flow equation
-        # M_should = __class__._isentropic_mach(p0=q_c, p=p_inf)  # DEPRECATED
-        M = IsentropicFlow.M_from_p0_by_p((q_c+p_inf)/p_inf)
+    #     Returns:
+    #         dimless: Mach number
+    #     """
+    #     p_inf = self.p
+    #     # Isentropic flow equation
+    #     # M_should = __class__._isentropic_mach(p0=q_c, p=p_inf)  # DEPRECATED
+    #     M = IsentropicFlow.M_from_p0_by_p((q_c+p_inf)/p_inf)
 
-        return M
+    #     return M
 
     @to_base_units_wrapper
     def _q_c_from_M(self, M):
@@ -708,23 +729,23 @@ class FlightCondition(Atmosphere):
         q_inf = __class__._q_inf_from_TAS(TAS=self.TAS, rho=self.rho)
         return q_inf
 
-    @_property_decorators
-    def p0(self):
-        """Get stagnation pressure :math:`p_0`"""
-        M = self.M
-        p = self.p
-        y = Phys.gamma_air
-        p0 = IsentropicFlow.p0_by_p(M, y)*p
-        return p0
+    # @_property_decorators
+    # def p0(self):
+    #     """Get stagnation pressure :math:`p_0`"""
+    #     M = self.M
+    #     p = self.p
+    #     y = Phys.gamma_air
+    #     p0 = IsentropicFlow.p0_by_p(M, y)*p
+    #     return p0
 
-    @_property_decorators
-    def T0(self):
-        """Get stagnation temperature :math:`T_0`"""
-        M = self.M
-        T = self.T
-        y = Phys.gamma_air
-        T0 = IsentropicFlow.T0_by_T(M, y)*T
-        return T0
+    # @_property_decorators
+    # def T0(self):
+    #     """Get stagnation temperature :math:`T_0`"""
+    #     M = self.M
+    #     T = self.T
+    #     y = Phys.gamma_air
+    #     T0 = IsentropicFlow.T0_by_T(M, y)*T
+    #     return T0
 
     @Atmosphere.T.setter
     def T(self, T):
