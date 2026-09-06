@@ -29,5 +29,8 @@ version = "0.0.1"
 [project.optional-dependencies]
 test = ["pytest"]
 
+[project.scripts]
+concopt = "concopt.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
