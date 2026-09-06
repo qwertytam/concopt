@@ -49,7 +49,8 @@ def get_atmosphere(lat, lon, alts,
     latr = f"lat={lat}"
     lonr = f"&lon={lon}"
     alts = [str(int(x)) for x in alts] # confirm elements are string  and integers before concat
-    altsr = f"&altitudes={"|".join(alts)}"
+    alts_joined = "|".join(alts)
+    altsr = f"&altitudes={alts_joined}"
 
     req = f"{url_base}{host_addr}:{port}{end_point}{latr}{lonr}{altsr}"
     logging.info(f"Getting atmosphere for request {req}")

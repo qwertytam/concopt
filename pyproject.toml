@@ -9,16 +9,16 @@ authors = [
 ]
 description = "Optimize Concorde flight operations"
 readme = "README.rst"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 keywords = ["concorde", "flight"]
 license = {text = "MIT License"}
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "importlib",
-    "logging",
+    "numpy",
     "pandas",
+    "pint",
     "pint-pandas",
     "requests",
     "scipy"
@@ -28,3 +28,9 @@ version = "0.0.1"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+concopt = ["data/*.csv"]
