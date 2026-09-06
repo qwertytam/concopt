@@ -26,6 +26,9 @@ dependencies = [
 
 version = "0.0.1"
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [tool.setuptools]
 include-package-data = true
 
@@ -34,3 +37,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 concopt = ["data/*.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
