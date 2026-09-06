@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "concopt"
@@ -28,15 +28,6 @@ version = "0.0.1"
 
 [project.optional-dependencies]
 test = ["pytest"]
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-concopt = ["data/*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
