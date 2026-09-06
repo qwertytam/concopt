@@ -22,6 +22,22 @@ for its own sake, no defensive error handling.
   plain `pytest` inside the venv). This replaced the old ad hoc `check.py`
   script — there is no `check.py` any more.
 - `asky.py` — ActiveSky HTTP client (localhost:19285)
+- `era5.py` — ERA5 reanalysis download (`cdsapi`) + reduction to per-leg
+  wind/temperature arrays (`xarray`, needs `dask` for the multi-file
+  open). `download_upper_air(out_dir, year, month)` is one CDS request
+  per **calendar month**, not per year — a full year at the route
+  bbox/1° grid trips the CDS *cost* limit (a resolution-weighted check,
+  separate from and much stricter than the docs' assumed 120,000-item
+  cap); confirmed by live trial against the API, 2026-09. Use
+  `upper_air_months()` to enumerate the (year, month) pairs spanning the
+  Active Sky archive. `reduce_to_legs` bilinearly interpolates u/v/t onto
+  each leg's midpoint with one `xarray.interp()` call and writes a single
+  `.npz`; nothing downstream reopens the netCDF. Requires accepting the
+  CDS licences for both `reanalysis-era5-pressure-levels` and
+  `reanalysis-era5-single-levels` at cds.climate.copernicus.eu first (one
+  manual, per-account step). Downloads land in `data/era5/`
+  (gitignored — large and re-downloadable; `download_*` skip a request
+  whose output file already exists).
 - `data/` — CSV limit tables + `conc_data.py` loader
 - `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
   `nondimensional.py` — vendored fork of the `flightcondition` package.
