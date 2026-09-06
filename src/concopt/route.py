@@ -86,7 +86,10 @@ def initial_bearing_deg(lat1, lon1, lat2, lon2):
 
 def intermediate_point(lat1, lon1, lat2, lon2, f):
     """Great-circle interpolation (slerp) between point 1 and point 2,
-    f in [0, 1]. f may be an array, broadcasting against scalar endpoints."""
+    f in [0, 1]. f may be an array, broadcasting against scalar endpoints.
+
+    Coincident endpoints (delta == 0) return point 1 for every f, rather than
+    NaN from dividing by sin(0)."""
     lat1r = np.radians(np.asarray(lat1, dtype=float))
     lon1r = np.radians(np.asarray(lon1, dtype=float))
     lat2r = np.radians(np.asarray(lat2, dtype=float))
@@ -94,6 +97,11 @@ def intermediate_point(lat1, lon1, lat2, lon2, f):
     f = np.asarray(f, dtype=float)
 
     delta = _central_angle_rad(lat1, lon1, lat2, lon2)
+    if delta == 0.0:
+        lat_i = np.broadcast_to(lat1r, f.shape) if f.shape else lat1r
+        lon_i = np.broadcast_to(lon1r, f.shape) if f.shape else lon1r
+        return np.degrees(lat_i), np.degrees(lon_i)
+
     a = np.sin((1.0 - f) * delta) / np.sin(delta)
     b = np.sin(f * delta) / np.sin(delta)
 
@@ -154,8 +162,26 @@ def supersonic_segment(legs, accel_id="LINND", decel_id="BARIX"):
     from_ids = np.array([leg.from_id for leg in legs])
     to_ids = np.array([leg.to_id for leg in legs])
 
-    start_idx = np.flatnonzero(from_ids == accel_id)[0]
-    end_idx = np.flatnonzero(to_ids == decel_id)[-1]
+    accel_matches = np.flatnonzero(from_ids == accel_id)
+    if accel_matches.size == 0:
+        raise ValueError(
+            f"accel_id {accel_id!r} not found; available waypoint ids: "
+            f"{sorted(set(from_ids))}"
+        )
+    decel_matches = np.flatnonzero(to_ids == decel_id)
+    if decel_matches.size == 0:
+        raise ValueError(
+            f"decel_id {decel_id!r} not found; available waypoint ids: "
+            f"{sorted(set(to_ids))}"
+        )
+
+    start_idx = accel_matches[0]
+    end_idx = decel_matches[-1]
+    if start_idx > end_idx:
+        raise ValueError(
+            f"accel_id {accel_id!r} (leg {start_idx}) comes after decel_id "
+            f"{decel_id!r} (leg {end_idx}); accel and decel look swapped"
+        )
 
     mask = np.zeros(len(legs), dtype=bool)
     mask[start_idx:end_idx + 1] = True
