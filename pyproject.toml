@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "concopt"
@@ -9,16 +9,16 @@ authors = [
 ]
 description = "Optimize Concorde flight operations"
 readme = "README.rst"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 keywords = ["concorde", "flight"]
-license = {text = "MIT License"}
+license = "MIT"
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "importlib",
-    "logging",
+    "numpy",
     "pandas",
+    "pint",
     "pint-pandas",
     "requests",
     "scipy"
@@ -26,5 +26,8 @@ dependencies = [
 
 version = "0.0.1"
 
-[tool.setuptools]
-include-package-data = true
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -19,7 +19,7 @@ import warnings
 
 import numpy as np
 
-from flightcondition.constants import PhysicalConstants as Phys
+from concopt.constants import PhysicalConstants as Phys
 
 
 class AirframeFlows:
