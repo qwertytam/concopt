@@ -1,9 +1,8 @@
 """Speed/altitude limits and level-selection for the Concorde envelope.
 Vectorised numpy, SI units, no pint, no classes.
 """
-from functools import lru_cache
-
 import numpy as np
+from scipy.interpolate import RegularGridInterpolator
 
 from concopt.atmos import KT_TO_MS, isa, mach_from_cas, mach_from_total_temp, speed_of_sound
 from concopt.data.conc_data import MMO, TOTAL_TEMP_MAX_C, cas_limit_kt
@@ -11,35 +10,47 @@ from concopt.data.conc_data import MMO, TOTAL_TEMP_MAX_C, cas_limit_kt
 TOTAL_TEMP_MAX_K = TOTAL_TEMP_MAX_C + 273.15
 
 # CAS-limit Mach depends only on altitude and weight, so it is precomputed
-# once on this grid and interpolated in the hot loop instead of root-finding
-# per candidate.
+# once on this grid (455 brentq calls, still instant at import) and
+# interpolated in the hot loop instead of root-finding per candidate. This
+# has to be a fixed weight grid, not keyed on the caller's weight_t, because
+# weight_t is itself an array once burn-off along the route (and later,
+# live SimConnect weight) is in play.
 _FL_GRID = np.arange(280.0, 601.0, 5.0)  # FL280..FL600, 500 ft steps
 _ALT_GRID_FT = _FL_GRID * 100.0
 _ALT_GRID_M = _ALT_GRID_FT * 0.3048
+_WEIGHT_GRID = np.arange(105.0, 165.1, 10.0)  # 105..165 t, 10 t steps
 
 
-@lru_cache(maxsize=None)
-def mach_cas_limit_table(weight_t):
-    """Cached (fl_grid, mach_grid) of CAS-limit Mach vs flight level for
-    weight_t (t). Built once per weight_t via brentq; interpolate with
-    np.interp for everything after."""
-    cas_kt = cas_limit_kt(_ALT_GRID_FT, weight_t)
-    cas_ms = cas_kt * KT_TO_MS
+def _build_mach_cas_limit_grid():
+    """(len(_FL_GRID), len(_WEIGHT_GRID)) grid of CAS-limit Mach, built once
+    via brentq per node."""
+    alt_grid, wgt_grid = np.meshgrid(_ALT_GRID_FT, _WEIGHT_GRID, indexing="ij")
+    cas_ms = cas_limit_kt(alt_grid, wgt_grid) * KT_TO_MS
     _, p_Pa = isa(_ALT_GRID_M)
-    mach_grid = np.array([
-        mach_from_cas(cas, p) for cas, p in zip(cas_ms, p_Pa)
-    ])
-    return _FL_GRID, mach_grid
+    p_Pa_grid = np.broadcast_to(p_Pa[:, None], cas_ms.shape)
+    mach_flat = [
+        mach_from_cas(cas, p) for cas, p in zip(cas_ms.ravel(), p_Pa_grid.ravel())
+    ]
+    return np.array(mach_flat).reshape(cas_ms.shape)
+
+
+_MACH_CAS_LIMIT_GRID = _build_mach_cas_limit_grid()
+_mach_cas_interp = RegularGridInterpolator(
+    (_FL_GRID, _WEIGHT_GRID), _MACH_CAS_LIMIT_GRID, bounds_error=False, fill_value=None
+)
 
 
 def max_mach(fl, T_K, weight_t=135):
     """Elementwise min of Mmo, the interpolated CAS-limit Mach, and the
-    total-temperature-limit Mach."""
+    total-temperature-limit Mach. weight_t may be a scalar or an array
+    broadcastable with fl."""
     fl = np.asarray(fl, dtype=float)
     T_K = np.asarray(T_K, dtype=float)
+    weight_t = np.asarray(weight_t, dtype=float)
 
-    fl_grid, mach_grid = mach_cas_limit_table(weight_t)
-    cas_mach = np.interp(fl, fl_grid, mach_grid)
+    fl_b, weight_t_b = np.broadcast_arrays(fl, weight_t)
+    pts = np.stack([fl_b.ravel(), weight_t_b.ravel()], axis=-1)
+    cas_mach = _mach_cas_interp(pts).reshape(fl_b.shape)
     tt_mach = mach_from_total_temp(T_K, TOTAL_TEMP_MAX_K)
 
     return np.minimum(np.minimum(MMO, cas_mach), tt_mach)
@@ -69,7 +80,8 @@ def ground_speed(tas_ms, track_deg, u_ms, v_ms):
     c = np.cos(np.radians(track_deg))
     along = u_ms * s + v_ms * c
     cross = u_ms * c - v_ms * s
-    return along + np.sqrt(tas_ms ** 2 - cross ** 2)
+    radicand = tas_ms ** 2 - cross ** 2
+    return np.where(radicand <= 0, -np.inf, along + np.sqrt(np.maximum(radicand, 0)))
 
 
 def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
@@ -87,9 +99,15 @@ def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
     gs_per_level = ground_speed(tas_ms, track_deg, u_ms, v_ms)
 
     ceiling = ceiling_ft(weight_t)
-    gs_masked = np.where(fls * 100.0 > ceiling, -np.inf, gs_per_level)
+    above_ceiling = fls * 100.0 > ceiling
+    gs_masked = np.where(above_ceiling, -np.inf, gs_per_level)
 
     best_idx = np.argmax(gs_masked, axis=-1, keepdims=True)
     best_fl = np.take_along_axis(fls, best_idx, axis=-1).squeeze(-1)
     best_gs_ms = np.take_along_axis(gs_masked, best_idx, axis=-1).squeeze(-1)
+
+    # Every level masked (all above ceiling): -inf is not a real answer.
+    all_above_ceiling = np.all(above_ceiling, axis=-1)
+    best_fl = np.where(all_above_ceiling, np.nan, best_fl)
+    best_gs_ms = np.where(all_above_ceiling, np.nan, best_gs_ms)
     return best_fl, best_gs_ms, gs_per_level

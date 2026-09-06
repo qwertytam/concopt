@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from concopt.atmos import KT_TO_MS, isa
-from concopt.limits import max_tas
+from concopt.limits import best_level, ground_speed, max_mach, max_tas
 
 
 @pytest.mark.parametrize(
@@ -59,3 +59,37 @@ def test_max_tas_vectorisation_performance():
 
     assert elapsed < 2.0
     assert not np.isnan(tas_big).any()
+
+
+def test_ground_speed_crosswind_exceeds_tas():
+    """Crosswind component greater than TAS is infeasible: -inf, not NaN, so
+    argmax in best_level can never select it."""
+    assert ground_speed(50.0, 90.0, 0.0, 100.0) == -np.inf
+
+
+def test_max_mach_accepts_array_weight():
+    """weight_t as an array the same shape as fl (Phase 3 burn-off, Phase 6
+    live SimConnect weight)."""
+    fl = np.array([400.0, 450.0, 500.0])
+    T_K, _ = isa(fl * 30.48)
+    weight_t = np.array([165.0, 145.0, 105.0])
+
+    mach = max_mach(fl, T_K, weight_t=weight_t)
+
+    assert mach.shape == fl.shape
+    assert not np.isnan(mach).any()
+
+
+def test_best_level_all_levels_above_ceiling():
+    """At weight_t=165 the ceiling is FL500, so FL520-600 are all above it:
+    there is no valid answer, not a spurious -inf 'winner'."""
+    fls = np.array([520.0, 550.0, 600.0])
+    T_K, _ = isa(fls * 30.48)
+    u_ms = np.zeros_like(fls)
+    v_ms = np.zeros_like(fls)
+    track_deg = np.zeros_like(fls)
+
+    best_fl, best_gs_ms, _ = best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t=165)
+
+    assert np.isnan(best_fl)
+    assert np.isnan(best_gs_ms)
