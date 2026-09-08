@@ -96,37 +96,51 @@ def download_upper_air(out_dir, year, month):
     return out_path
 
 
+def _month_chunks(year, chunk_size=6):
+    """_year_months(year) split into runs of at most chunk_size, in order.
+    Even the tiny surface area trips the CDS cost check on a full
+    12-month request (confirmed by live trial: 9 months clears it, 12
+    doesn't) -- so this one also has to go in under a year at a time."""
+    months = _year_months(year)
+    return [months[i:i + chunk_size] for i in range(0, len(months), chunk_size)]
+
+
 def download_surface(out_dir, year):
-    """One reanalysis-era5-single-levels request per airport for `year`:
-    10 m u/v and instantaneous gust, all 24 hours, native 0.25 deg.
-    Two small areas (KJFK, EGLL) rather than the route bbox -- tens of MB
-    total. Feeds phase 4, not reduce_to_legs below. Returns {name: path}."""
+    """reanalysis-era5-single-levels requests for `year`, chunked to at
+    most 6 months each per airport (see _month_chunks) -- even this tiny
+    area/resolution trips the CDS cost check over a full year. 10 m u/v
+    and instantaneous gust, all 24 hours, native 0.25 deg. Two small
+    areas (KJFK, EGLL) rather than the route bbox -- tens of MB total.
+    Feeds phase 4, not reduce_to_legs below. Returns {name: [paths]}."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     paths = {}
     for name, area in SURFACE_AREAS.items():
-        out_path = out_dir / f"era5_sfc_{name.lower()}_{year}.nc"
-        if not out_path.exists():
-            cdsapi.Client().retrieve(
-                "reanalysis-era5-single-levels",
-                {
-                    "product_type": "reanalysis",
-                    "variable": [
-                        "10m_u_component_of_wind",
-                        "10m_v_component_of_wind",
-                        "instantaneous_10m_wind_gust",
-                    ],
-                    "year": [str(year)],
-                    "month": _year_months(year),
-                    "day": _ALL_DAYS,
-                    "time": SURFACE_TIMES,
-                    "area": area,
-                    "data_format": "netcdf",
-                },
-                str(out_path),
-            )
-        paths[name] = out_path
+        chunk_paths = []
+        for chunk in _month_chunks(year):
+            out_path = out_dir / f"era5_sfc_{name.lower()}_{year}_{chunk[0]}-{chunk[-1]}.nc"
+            if not out_path.exists():
+                cdsapi.Client().retrieve(
+                    "reanalysis-era5-single-levels",
+                    {
+                        "product_type": "reanalysis",
+                        "variable": [
+                            "10m_u_component_of_wind",
+                            "10m_v_component_of_wind",
+                            "instantaneous_10m_wind_gust",
+                        ],
+                        "year": [str(year)],
+                        "month": chunk,
+                        "day": _ALL_DAYS,
+                        "time": SURFACE_TIMES,
+                        "area": area,
+                        "data_format": "netcdf",
+                    },
+                    str(out_path),
+                )
+            chunk_paths.append(out_path)
+        paths[name] = chunk_paths
     return paths
 
 
