@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from concopt.atmos import KT_TO_MS, isa
-from concopt.limits import best_level, ground_speed, max_mach, max_tas
+from concopt.limits import CRUISE_MACH, best_level, ground_speed, max_mach, max_tas
 
 
 @pytest.mark.parametrize(
@@ -17,24 +17,24 @@ from concopt.limits import best_level, ground_speed, max_mach, max_tas
         (430, 983.0),
         (470, 1070.5),
         (500, 1142.3),
-        (510, 1167.5),
-        (530, 1170.1),
-        (600, 1170.1),
+        (510, 1147.1),
+        (530, 1147.1),
+        (600, 1147.1),
     ],
 )
 def test_max_tas_table(fl, exp_tas_kt):
-    """ISA + limits table at weight 135 t, still air. Note the flat region at
-    FL530/FL600: Mmo binds and the stratosphere is isothermal, so TAS stops
-    rising."""
+    """ISA + limits table at weight 135 t, still air. Note the flat region
+    from FL510 up: cruise_mach (CRUISE_MACH, M2.00) binds and the
+    stratosphere is isothermal, so TAS stops rising."""
     T_K, _ = isa(fl * 30.48)
     tas_kt = max_tas(fl, T_K, weight_t=135) / KT_TO_MS
     assert tas_kt == pytest.approx(exp_tas_kt, abs=0.5)
 
 
 def test_optimum_temperature_identity():
-    """Max TAS over static temperature occurs where the Mmo and
+    """Max TAS over static temperature occurs where the cruise_mach and
     total-temperature limits cross. Warmer AND colder are both slower."""
-    T_star = 400.15 / (1 + 0.2 * 2.04 ** 2)
+    T_star = 400.15 / (1 + 0.2 * CRUISE_MACH ** 2)
 
     T_sweep = np.linspace(190.0, 250.0, 600_001)
     tas_sweep = max_tas(600, T_sweep, weight_t=135)
@@ -89,7 +89,7 @@ def test_best_level_all_levels_above_ceiling():
     v_ms = np.zeros_like(fls)
     track_deg = np.zeros_like(fls)
 
-    best_fl, best_gs_ms, _ = best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t=165)
+    best_fl, best_gs_ms, _, _ = best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t=165)
 
     assert np.isnan(best_fl)
     assert np.isnan(best_gs_ms)

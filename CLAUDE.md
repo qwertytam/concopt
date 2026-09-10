@@ -45,14 +45,17 @@ for its own sake, no defensive error handling.
   the real archive. `run_search` marches the supersonic legs (from
   `route.supersonic_segment`) one at a time in a plain Python loop, but
   every op inside that loop (time-interpolation into the `era5.py` `.npz`,
+  vertical interpolation of u/v/t onto the FL450-FL600 1,000 ft grid,
   `limits.best_level`) is vectorised across all candidates at once — never
-  loop over candidates. Weight burns linearly 165→135 t over the
-  supersonic segment's `cum_nm`, feeding `limits.ceiling_ft`; with that
-  schedule the top ERA5 pressure level (70 hPa) sits above the ceiling at
-  every weight, so it is never chosen — expected, not a bug (see the
-  printed sanity checks, which report rather than assert). Assumes the
-  `.npz` was built from the same `--pln`/`build_legs` call, so the leg
-  axes line up by position — it does not re-check this.
+  loop over candidates. Weight is a state variable, not a schedule: it
+  starts at 165 t at the accel point and is burned off leg by leg from
+  `conc_data.fuel_total_kgh_table` (the Air France performance table), at
+  the weight/ISA-deviation the leg was actually flown at, feeding
+  `limits.ceiling_ft(weight_t, isa_dev_c)` for the next leg — a still-air,
+  ISA+0 run over the real supersonic segment burns 165 t down to ~111 t by
+  BARIX (see the printed sanity checks, which report rather than assert).
+  Assumes the `.npz` was built from the same `--pln`/`build_legs` call, so
+  the leg axes line up by position — it does not re-check this.
 - `data/` — CSV limit tables + `conc_data.py` loader
 - `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
   `nondimensional.py` — vendored fork of the `flightcondition` package.
@@ -68,10 +71,22 @@ for its own sake, no defensive error handling.
 - pint is allowed **only** in display code, never in `atmos.py`/`limits.py`.
 
 ## Aircraft constants
-- Mmo 2.04; max total (stagnation) temperature 127 °C; service ceiling 60,000 ft
+- Mmo 2.04 (structural limit, `conc_data.MMO`); cruise is flown at
+  `limits.CRUISE_MACH` (2.00 by default, `--cruise-mach` to try Mmo instead)
+  — the Air France performance table's ceilings are altitudes attainable
+  *at* CRUISE_MACH, so pairing them with Mmo isn't physical. Max total
+  (stagnation) temperature 127 °C; service ceiling 60,000 ft.
 - CAS limit table: `data/conc_cas_limit.csv`, altitude ft × weight t (105/135/165)
 - Above FL430 the CAS limit is 530 kt at **all** weights — weight does not
-  enter the supersonic-cruise calculation at all.
+  enter the CAS-speed calculation at all, but it does (with ISA deviation)
+  drive the ceiling table below.
+- Cruise/ceiling table: `data/conc_supersonic_cruise.csv`
+  (`conc_data.ceiling_ft_table`/`fuel_total_kgh_table`), weight t (100-165,
+  5 t steps) × ISA deviation °C (-30..+15) — 126 rows. Ceiling ranges from
+  43,494 ft (165 t, ISA+15) to 60,000 ft (light + cold, clamped at the
+  service ceiling); one cell (165 t, ISA-30) is thrust-limited and flagged
+  in its `note`, excluded from the max_mach/ceiling cross-check in
+  `tests/test_perf_table.py`.
 
 ## Known non-problems — do not "fix" these
 - The CSVs have a UTF-8 BOM. Current pandas and numpy strip it. Leave it.
