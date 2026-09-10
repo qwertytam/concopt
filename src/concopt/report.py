@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from concopt import limits
 from concopt.data.conc_data import desc_time_min
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, parse_pln, supersonic_segment
@@ -113,7 +114,8 @@ def _step_climb_schedule(ss_legs, chosen_fl):
 def run_report(pln_path, npz_path, local_date, local_hour, accel_id="LINND",
                 decel_id="BARIX", out_path="report.csv",
                 departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
-                decel_descent_s=DEFAULT_DECEL_DESCENT_S):
+                decel_descent_s=DEFAULT_DECEL_DESCENT_S,
+                cruise_mach=limits.CRUISE_MACH):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
     run_search uses -- for this single candidate, then prints the waypoint
@@ -130,10 +132,14 @@ def run_report(pln_path, npz_path, local_date, local_hour, accel_id="LINND",
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
-    legs_out, weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s)
+    legs_out, weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8,
+                                            departure_to_accel_s, cruise_mach)
     # Squeeze the n_cand=1 axis -- everything below is per sub-leg (1-D).
-    leg = {k: v[0] for k, v in legs_out.items() if k != "accumulated_s"}
+    scalar_keys = ("accumulated_s", "weight_at_barix")
+    leg = {k: v[0] for k, v in legs_out.items() if k not in scalar_keys}
     total_elapsed_s = float(legs_out["accumulated_s"][0])
+    weight_at_barix_t = float(legs_out["weight_at_barix"][0])
+    weight_per_leg = weight_per_leg[0]  # (n_legs,), weight at the start of each sub-leg
 
     waypoint_table = _waypoint_table(ss_legs, departure_utc_ts, departure_to_accel_s, leg)
 
@@ -167,6 +173,9 @@ def run_report(pln_path, npz_path, local_date, local_hour, accel_id="LINND",
         print(f"    {cum_nm:8.1f} nm  FL{fl:.0f}")
     print(f"  chosen FL: min {leg['chosen_fl'].min():.0f}, "
           f"max {leg['chosen_fl'].max():.0f}, mean {leg['chosen_fl'].mean():.0f}")
+    print(f"  weight: {weight_per_leg[0]:.1f} t at {ss_legs[0].from_id}, "
+          f"{weight_at_barix_t:.1f} t at {ss_legs[-1].to_id} "
+          f"({weight_per_leg[0] - weight_at_barix_t:.1f} t burned)")
 
     accel_time_s = departure_to_accel_s
     cruise_time_s = total_elapsed_s - departure_to_accel_s

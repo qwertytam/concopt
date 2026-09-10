@@ -4,6 +4,7 @@ a later phase."""
 import argparse
 import datetime as dt
 
+from concopt.limits import CRUISE_MACH
 from concopt.report import DEFAULT_DECEL_DESCENT_S, best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import DEPARTURE_TO_ACCEL_S, run_search
@@ -40,7 +41,8 @@ def _cmd_route(args):
 def _cmd_search(args):
     run_search(args.pln, args.npz, accel_id=args.accel, decel_id=args.decel,
                top=args.top, out_path=args.out,
-               departure_to_accel_s=args.departure_to_accel_min * 60.0)
+               departure_to_accel_s=args.departure_to_accel_min * 60.0,
+               cruise_mach=args.cruise_mach)
 
 
 def _cmd_report(args):
@@ -54,7 +56,8 @@ def _cmd_report(args):
     run_report(args.pln, args.npz, local_date, local_hour,
                accel_id=args.accel, decel_id=args.decel, out_path=args.out,
                departure_to_accel_s=args.departure_to_accel_min * 60.0,
-               decel_descent_s=args.decel_descent_min * 60.0)
+               decel_descent_s=args.decel_descent_min * 60.0,
+               cruise_mach=args.cruise_mach)
 
 
 def main(argv=None):
@@ -80,6 +83,9 @@ def main(argv=None):
                                 default=DEPARTURE_TO_ACCEL_S / 60.0,
                                 help='minutes from brakes release to the accel '
                                      'point/first supersonic leg (default: 20)')
+    search_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
+                                help='target cruise Mach used in place of Mmo '
+                                     f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
     search_parser.set_defaults(func=_cmd_search)
 
     report_parser = subparsers.add_parser(
@@ -100,6 +106,9 @@ def main(argv=None):
                                 default=DEFAULT_DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, decel + descent '
                                      '(default: seeded from conc_desc_time.csv at FL600)')
+    report_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
+                                help='target cruise Mach used in place of Mmo '
+                                     f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
     report_parser.set_defaults(func=_cmd_report)
 
     args = parser.parse_args(argv)

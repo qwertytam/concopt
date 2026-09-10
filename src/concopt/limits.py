@@ -5,9 +5,17 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
 from concopt.atmos import KT_TO_MS, isa, mach_from_cas, mach_from_total_temp, speed_of_sound
-from concopt.data.conc_data import MMO, TOTAL_TEMP_MAX_C, cas_limit_kt
+from concopt.data.conc_data import TOTAL_TEMP_MAX_C, cas_limit_kt, ceiling_ft_table
 
 TOTAL_TEMP_MAX_K = TOTAL_TEMP_MAX_C + 273.15
+
+# The manual's cruise is flown at M2.00, not Mmo 2.04 -- its ceiling table
+# (conc_data.ceiling_ft_table) is "the altitude attainable at M2.00", so
+# pairing those ceilings with Mmo would let max_mach claim speeds the
+# ceiling was never validated at. MMO (2.04) stays in conc_data.py as the
+# aircraft's structural limit; CRUISE_MACH is what max_mach actually uses,
+# overridable from the CLI (--cruise-mach) to try both.
+CRUISE_MACH = 2.00
 
 # CAS-limit Mach depends only on altitude and weight, so it is precomputed
 # once on this grid (455 brentq calls, still instant at import) and
@@ -40,13 +48,14 @@ _mach_cas_interp = RegularGridInterpolator(
 )
 
 
-def mach_components(fl, T_K, weight_t=135):
-    """The three Mach limits max_mach takes the elementwise min of: Mmo
-    (constant), the interpolated CAS-limit Mach (altitude + weight), and the
-    total-temperature-limit Mach (temperature). Returns (mmo, cas_mach,
-    tt_mach), each broadcast to the common shape of fl/T_K/weight_t --
-    max_mach reduces these to one number, binding_mach_limit reports which
-    one is smallest."""
+def mach_components(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+    """The three Mach limits max_mach takes the elementwise min of:
+    cruise_mach (constant -- CRUISE_MACH by default, the manual's M2.00,
+    not Mmo), the interpolated CAS-limit Mach (altitude + weight), and the
+    total-temperature-limit Mach (temperature). Returns (cruise_mach,
+    cas_mach, tt_mach), each broadcast to the common shape of
+    fl/T_K/weight_t -- max_mach reduces these to one number,
+    binding_mach_limit reports which one is smallest."""
     fl = np.asarray(fl, dtype=float)
     T_K = np.asarray(T_K, dtype=float)
     weight_t = np.asarray(weight_t, dtype=float)
@@ -55,44 +64,48 @@ def mach_components(fl, T_K, weight_t=135):
     pts = np.stack([fl_b.ravel(), weight_t_b.ravel()], axis=-1)
     cas_mach = _mach_cas_interp(pts).reshape(fl_b.shape)
     tt_mach = mach_from_total_temp(T_K, TOTAL_TEMP_MAX_K)
-    mmo = np.full_like(cas_mach, MMO)
+    cruise = np.full_like(cas_mach, cruise_mach)
 
-    return np.broadcast_arrays(mmo, cas_mach, tt_mach)
-
-
-def max_mach(fl, T_K, weight_t=135):
-    """Elementwise min of Mmo, the interpolated CAS-limit Mach, and the
-    total-temperature-limit Mach. weight_t may be a scalar or an array
-    broadcastable with fl."""
-    mmo, cas_mach, tt_mach = mach_components(fl, T_K, weight_t)
-    return np.minimum(np.minimum(mmo, cas_mach), tt_mach)
+    return np.broadcast_arrays(cruise, cas_mach, tt_mach)
 
 
-_MACH_LIMIT_NAMES = np.array(["Mmo", "CAS", "total_temp"])
+def max_mach(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+    """Elementwise min of cruise_mach (CRUISE_MACH by default), the
+    interpolated CAS-limit Mach, and the total-temperature-limit Mach.
+    weight_t may be a scalar or an array broadcastable with fl."""
+    cruise, cas_mach, tt_mach = mach_components(fl, T_K, weight_t, cruise_mach)
+    return np.minimum(np.minimum(cruise, cas_mach), tt_mach)
 
 
-def binding_mach_limit(fl, T_K, weight_t=135):
-    """Which of Mmo/CAS/total_temp is smallest -- i.e. actually constrains
-    max_mach -- at each point. String array, same shape as max_mach's
-    output. Doesn't know about ceiling_ft: that's a separate, altitude-side
-    constraint on which levels are even in play, not a speed limit at a
-    given level; callers combine the two (see search.march_legs)."""
-    stacked = np.stack(mach_components(fl, T_K, weight_t), axis=-1)
+_MACH_LIMIT_NAMES = np.array(["cruise_mach", "CAS", "total_temp"])
+
+
+def binding_mach_limit(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+    """Which of cruise_mach/CAS/total_temp is smallest -- i.e. actually
+    constrains max_mach -- at each point. String array, same shape as
+    max_mach's output. Doesn't know about ceiling_ft: that's a separate,
+    altitude-side constraint on which levels are even in play, not a speed
+    limit at a given level; callers combine the two (see
+    search.march_legs)."""
+    stacked = np.stack(mach_components(fl, T_K, weight_t, cruise_mach), axis=-1)
     idx = np.argmin(stacked, axis=-1)
     return _MACH_LIMIT_NAMES[idx]
 
 
-def max_tas(fl, T_K, weight_t=135):
+def max_tas(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
     """Max true airspeed (m/s) at flight level fl, static temperature T_K."""
     T_K = np.asarray(T_K, dtype=float)
-    return max_mach(fl, T_K, weight_t) * speed_of_sound(T_K)
+    return max_mach(fl, T_K, weight_t, cruise_mach) * speed_of_sound(T_K)
 
 
-def ceiling_ft(weight_t):
-    """Piecewise-linear ceiling (ft) vs weight (t), placeholder values to be
-    replaced from the FS Labs manual. Clamped both ends."""
-    weight_t = np.asarray(weight_t, dtype=float)
-    return np.interp(weight_t, [120.0, 135.0, 165.0], [60000.0, 57000.0, 50000.0])
+def ceiling_ft(weight_t, isa_dev_c):
+    """Ceiling (ft) from the Air France performance table
+    (conc_data.ceiling_ft_table), bilinear over (weight_t, isa_dev_c).
+    Clamped to the table's bounds, no extrapolation. Replaces the old
+    weight-only placeholder, which was wrong by up to 4,200 ft and ignored
+    temperature entirely -- the real spread at 165 t is 43,494 ft at
+    ISA+15 to 52,269 ft at ISA-20."""
+    return ceiling_ft_table(weight_t, isa_dev_c)
 
 
 def ground_speed(tas_ms, track_deg, u_ms, v_ms):
@@ -110,9 +123,11 @@ def ground_speed(tas_ms, track_deg, u_ms, v_ms):
     return np.where(radicand <= 0, -np.inf, along + np.sqrt(np.maximum(radicand, 0)))
 
 
-def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
+def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t, cruise_mach=CRUISE_MACH):
     """Ground speed at every level (last axis), masking levels above
-    ceiling_ft(weight_t). Returns (best_fl, best_gs_ms, best_idx,
+    ceiling_ft(weight_t, isa_dev_c) -- isa_dev_c is derived here from fls/
+    T_K (the ceiling table is temperature-dependent; every level can have a
+    different ISA deviation). Returns (best_fl, best_gs_ms, best_idx,
     gs_per_level). best_idx is the last-axis index of the winning level --
     callers that need to pull other per-level quantities (wind, ISA
     deviation, ...) at the chosen level should use it with
@@ -127,10 +142,12 @@ def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
         np.asarray(track_deg, dtype=float),
     )
 
-    tas_ms = max_tas(fls, T_K, weight_t)
+    tas_ms = max_tas(fls, T_K, weight_t, cruise_mach)
     gs_per_level = ground_speed(tas_ms, track_deg, u_ms, v_ms)
 
-    ceiling = ceiling_ft(weight_t)
+    isa_t_k, _ = isa(fls * 100.0 * 0.3048)
+    isa_dev_c = T_K - isa_t_k
+    ceiling = ceiling_ft(weight_t, isa_dev_c)
     above_ceiling = fls * 100.0 > ceiling
     gs_masked = np.where(above_ceiling, -np.inf, gs_per_level)
 

@@ -17,6 +17,7 @@ import pandas as pd
 
 from concopt import limits
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, speed_of_sound
+from concopt.data.conc_data import fuel_total_kgh_table
 from concopt.era5 import ARCHIVE_START, load_legs_npz
 from concopt.route import build_legs, parse_pln, supersonic_segment
 
@@ -25,11 +26,14 @@ DEPARTURE_LOCAL_HOURS = range(8, 15)  # 08:00..14:00 local, inclusive
 
 NM_TO_M = 1852.0
 
-# Linear burn along the supersonic segment, keyed on cum_nm (not time) --
-# drives ceiling_ft, which is what actually keeps the optimiser off levels
-# the aircraft can't hold. Does not change max_tas above FL430.
+# Weight at the accel point (start of the first supersonic leg). From here,
+# weight is a state variable integrated leg by leg from
+# conc_data.fuel_total_kgh_table (Air France performance table), not a
+# linear schedule against cum_nm -- see march_legs. It drives ceiling_ft,
+# which is what actually keeps the optimiser off levels the aircraft can't
+# hold; it does not change max_tas above FL430 (530 kt CAS at every weight
+# there).
 WEIGHT_ACCEL_T = 165.0
-WEIGHT_DECEL_T = 135.0
 
 # best_level picks from this 16-level grid (1000 ft / FL10 steps) rather than
 # the 4 raw ERA5 pressure levels -- interpolated per leg below, not stored in
@@ -80,7 +84,8 @@ def _format_hmm(seconds):
     return f"{h}:{m:02d}"
 
 
-def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_ACCEL_S):
+def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
+                cruise_mach=limits.CRUISE_MACH):
     """The whole per-leg march, vectorised across candidates -- dep_i8 (int64
     ns UTC timestamps) may be length 1 (report.py, one candidate) or ~31,000
     (run_search), every operation inside the per-leg loop treats it the
@@ -97,14 +102,24 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
     sits inside the ERA5 mandatory-level span (150-70 hPa = FL446-FL605),
     so every target is bracketed -- asserted, not extrapolated.
 
+    Weight is a state variable, not a schedule: it starts at WEIGHT_ACCEL_T
+    and is integrated leg by leg from conc_data.fuel_total_kgh_table (the
+    Air France performance table), using the weight and ISA deviation at
+    the *start* of each leg -- weight feeds both ceiling_ft (so which
+    levels are even reachable changes as fuel burns off) and max_mach's CAS
+    component.
+
     Returns (legs, weight_per_leg): legs is a dict of (n_cand, n_legs)
     arrays -- chosen_fl, best_idx, mach, tas_kt, gs_kt, wind_kt, temp_c,
     isa_dev_k, leg_time_s, elapsed_s (cumulative seconds since departure, at
     the end of each leg), and binding (str array: which of
-    Mmo/CAS/total_temp/ceiling constrains the chosen level -- "ceiling"
-    when the chosen level is the highest one ceiling_ft allows, i.e.
-    altitude-capped rather than speed-capped) -- plus accumulated_s
-    (n_cand,), the final total elapsed time. weight_per_leg is (n_legs,)."""
+    cruise_mach/CAS/total_temp/ceiling constrains the chosen level --
+    "ceiling" when the chosen level is the highest one ceiling_ft allows,
+    i.e. altitude-capped rather than speed-capped) -- plus accumulated_s
+    (n_cand,), the final total elapsed time, and weight_at_barix (n_cand,),
+    the weight after the last leg's burn. weight_per_leg is (n_cand,
+    n_legs): the weight at the *start* of each leg (pre-burn), i.e. what
+    that leg's level/mach selection actually used."""
     n_legs = len(ss_legs)
     n_cand = len(dep_i8)
 
@@ -137,14 +152,7 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
     v_ss = data["v"][:, :, ss_idx]
     temp_ss = data["t"][:, :, ss_idx]
 
-    # Weight at each leg's midpoint, linear in cum_nm from the accel point
-    # (start of the first supersonic leg) to the decel point (end of the
-    # last).
-    accel_cum_nm = ss_legs[0].cum_nm - ss_legs[0].dist_nm
-    decel_cum_nm = ss_legs[-1].cum_nm
-    mid_cum_nm = np.array([leg.cum_nm - leg.dist_nm / 2.0 for leg in ss_legs])
-    weight_per_leg = np.interp(mid_cum_nm, [accel_cum_nm, decel_cum_nm],
-                                [WEIGHT_ACCEL_T, WEIGHT_DECEL_T])
+    weight = np.full(n_cand, WEIGHT_ACCEL_T)  # state, burned off leg by leg below
 
     accumulated_s = np.full(n_cand, float(departure_to_accel_s))
     chosen_fl = np.empty((n_cand, n_legs))
@@ -158,8 +166,11 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
     leg_time_s = np.empty((n_cand, n_legs))
     elapsed_s = np.empty((n_cand, n_legs))
     binding = np.empty((n_cand, n_legs), dtype=object)
+    weight_per_leg = np.empty((n_cand, n_legs))
 
     for i, leg in enumerate(ss_legs):
+        weight_per_leg[:, i] = weight  # weight at the start of this leg
+
         leg_time_i8 = dep_i8 + (accumulated_s * 1e9).astype("int64")
 
         idx1 = np.searchsorted(times_i8, leg_time_i8, side="right") - 1
@@ -177,8 +188,11 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
         v_leg = _interp_vertical(v_leg_raw)
         temp_leg = _interp_vertical(temp_leg_raw)
 
+        # weight[:, None]: best_level broadcasts weight_t against the
+        # (n_cand, 16) TARGET_FL grid, not just the (n_cand,) reduced
+        # quantities used further down.
         best_fl, best_gs_ms, best_idx, _ = limits.best_level(
-            TARGET_FL[None, :], temp_leg, u_leg, v_leg, leg.track_deg, weight_per_leg[i]
+            TARGET_FL[None, :], temp_leg, u_leg, v_leg, leg.track_deg, weight[:, None], cruise_mach
         )
 
         along_per_level = (u_leg * np.sin(np.radians(leg.track_deg))
@@ -189,23 +203,37 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
         isa_dev_at_best = np.take_along_axis(isa_dev_per_level, best_idx[:, None], axis=-1).squeeze(-1)
         temp_k_at_best = np.take_along_axis(temp_leg, best_idx[:, None], axis=-1).squeeze(-1)
 
-        # Achieved Mach/TAS at the chosen level, and which of Mmo/CAS/
-        # total-temp constrains it there. "ceiling" overrides that when the
-        # chosen level is the highest one ceiling_ft(weight) allows for this
-        # leg -- altitude-capped, not speed-capped (ceiling never appears in
-        # mach_components/max_mach, which only cap speed at a given level).
-        mach_at_best = limits.max_mach(best_fl, temp_k_at_best, weight_per_leg[i])
+        # Achieved Mach/TAS at the chosen level, and which of cruise_mach/
+        # CAS/total-temp constrains it there. "ceiling" overrides that when
+        # the chosen level is the highest one ceiling_ft(weight, isa_dev)
+        # allows for this leg -- altitude-capped, not speed-capped (ceiling
+        # never appears in mach_components/max_mach, which only cap speed
+        # at a given level).
+        mach_at_best = limits.max_mach(best_fl, temp_k_at_best, weight, cruise_mach)
         tas_ms_at_best = mach_at_best * speed_of_sound(temp_k_at_best)
-        mach_limit_label = limits.binding_mach_limit(best_fl, temp_k_at_best, weight_per_leg[i])
+        mach_limit_label = limits.binding_mach_limit(best_fl, temp_k_at_best, weight, cruise_mach)
 
-        ceiling = limits.ceiling_ft(weight_per_leg[i])
-        above_ceiling_grid = TARGET_FL * 100.0 > ceiling
-        top_available_idx = np.max(np.flatnonzero(~above_ceiling_grid))
+        # ceiling is now (n_cand, 16) -- it depends on isa_dev, which varies
+        # per level, not just on weight -- so "the top available level" is
+        # found per candidate rather than read off a single shared array.
+        ceiling = limits.ceiling_ft(weight[:, None], isa_dev_per_level)
+        not_above_ceiling = TARGET_FL[None, :] * 100.0 <= ceiling
+        has_any_level = not_above_ceiling.any(axis=-1)
+        from_right = np.argmax(not_above_ceiling[:, ::-1], axis=-1)
+        top_available_idx = np.where(
+            has_any_level, not_above_ceiling.shape[-1] - 1 - from_right, -1
+        )
         ceiling_bound = best_idx == top_available_idx
         binding_at_best = np.where(ceiling_bound, "ceiling", mach_limit_label)
 
         leg_s = (leg.dist_nm * NM_TO_M) / best_gs_ms
         accumulated_s = accumulated_s + leg_s
+
+        # Fuel burn over this leg, at the weight/ISA-deviation used to fly
+        # it -- weight is now a state variable, not a schedule keyed on
+        # cum_nm (see WEIGHT_ACCEL_T).
+        fuel_total_kgh = fuel_total_kgh_table(weight, isa_dev_at_best)
+        weight = weight - fuel_total_kgh * (leg_s / 3600.0) / 1000.0
 
         chosen_fl[:, i] = best_fl
         best_idx_out[:, i] = best_idx
@@ -223,14 +251,15 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
         chosen_fl=chosen_fl, best_idx=best_idx_out, mach=mach, tas_kt=tas_kt,
         gs_kt=gs_kt, wind_kt=wind_kt, temp_c=temp_c, isa_dev_k=isa_dev_k,
         leg_time_s=leg_time_s, elapsed_s=elapsed_s, binding=binding,
-        accumulated_s=accumulated_s,
+        accumulated_s=accumulated_s, weight_at_barix=weight,
     )
     return legs_out, weight_per_leg
 
 
 def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
                 top=50, out_path="results.csv",
-                departure_to_accel_s=DEPARTURE_TO_ACCEL_S):
+                departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
+                cruise_mach=limits.CRUISE_MACH):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
     the supersonic ones, then calls march_legs across every candidate
@@ -249,7 +278,8 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
-    legs_out, _weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s)
+    legs_out, _weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8,
+                                             departure_to_accel_s, cruise_mach)
     chosen_fl = legs_out["chosen_fl"]
     wind_kt = legs_out["wind_kt"]
     isa_dev_k = legs_out["isa_dev_k"]
@@ -259,6 +289,7 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     candidates["mean_fl"] = chosen_fl.mean(axis=1)
     candidates["mean_wind_kt"] = wind_kt.mean(axis=1)
     candidates["mean_isa_dev_k"] = isa_dev_k.mean(axis=1)
+    candidates["weight_at_barix_t"] = legs_out["weight_at_barix"]
 
     # Same filter the output table gets, captured here so the sanity checks
     # below are computed on exactly those rows, not the unfiltered arrays.
@@ -276,6 +307,7 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
         "mean_fl": candidates["mean_fl"].round(0).astype(int),
         "mean_wind_kt": candidates["mean_wind_kt"].round(1),
         "mean_isa_dev_k": candidates["mean_isa_dev_k"].round(1),
+        "weight_at_barix_t": candidates["weight_at_barix_t"].round(1),
     })
 
     print(display.head(10).to_string(index=False))
