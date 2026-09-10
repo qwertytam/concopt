@@ -16,18 +16,25 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "cdsapi",
+    "dask",
+    "netCDF4",
     "numpy",
     "pandas",
     "pint",
     "pint-pandas",
     "requests",
-    "scipy"
+    "scipy",
+    "xarray"
 ]
 
 version = "0.0.1"
 
 [project.optional-dependencies]
 test = ["pytest"]
+
+[project.scripts]
+concopt = "concopt.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

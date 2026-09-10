@@ -22,6 +22,37 @@ for its own sake, no defensive error handling.
   plain `pytest` inside the venv). This replaced the old ad hoc `check.py`
   script — there is no `check.py` any more.
 - `asky.py` — ActiveSky HTTP client (localhost:19285)
+- `era5.py` — ERA5 reanalysis download (`cdsapi`) + reduction to per-leg
+  wind/temperature arrays (`xarray`, needs `dask` for the multi-file
+  open). `download_upper_air(out_dir, year, month)` is one CDS request
+  per **calendar month**, not per year — a full year at the route
+  bbox/1° grid trips the CDS *cost* limit (a resolution-weighted check,
+  separate from and much stricter than the docs' assumed 120,000-item
+  cap); confirmed by live trial against the API, 2026-09. Use
+  `upper_air_months()` to enumerate the (year, month) pairs spanning the
+  Active Sky archive. `reduce_to_legs` bilinearly interpolates u/v/t onto
+  each leg's midpoint with one `xarray.interp()` call and writes a single
+  `.npz`; nothing downstream reopens the netCDF. Requires accepting the
+  CDS licences for both `reanalysis-era5-pressure-levels` and
+  `reanalysis-era5-single-levels` at cds.climate.copernicus.eu first (one
+  manual, per-account step). Downloads land in `data/era5/`
+  (gitignored — large and re-downloadable; `download_*` skip a request
+  whose output file already exists).
+- `search.py` — the day/time scan (`concopt search`). Candidates are every
+  date from `era5.ARCHIVE_START` to today at 08:00-14:00 America/New_York
+  (7/day), built tz-aware with `zoneinfo` and converted to UTC so DST
+  doesn't silently shift winter candidates by an hour — about 30,933 for
+  the real archive. `run_search` marches the supersonic legs (from
+  `route.supersonic_segment`) one at a time in a plain Python loop, but
+  every op inside that loop (time-interpolation into the `era5.py` `.npz`,
+  `limits.best_level`) is vectorised across all candidates at once — never
+  loop over candidates. Weight burns linearly 165→135 t over the
+  supersonic segment's `cum_nm`, feeding `limits.ceiling_ft`; with that
+  schedule the top ERA5 pressure level (70 hPa) sits above the ceiling at
+  every weight, so it is never chosen — expected, not a bug (see the
+  printed sanity checks, which report rather than assert). Assumes the
+  `.npz` was built from the same `--pln`/`build_legs` call, so the leg
+  axes line up by position — it does not re-check this.
 - `data/` — CSV limit tables + `conc_data.py` loader
 - `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
   `nondimensional.py` — vendored fork of the `flightcondition` package.
@@ -32,8 +63,8 @@ for its own sake, no defensive error handling.
 ## Conventions
 - SI internally (K, Pa, m/s, m). Convert at the edges only.
 - Everything array-in / array-out. No `iterrows()`, no per-row Python loops
-  in anything that touches the search — it runs over ~25,000 candidate
-  departures × ~20 route legs × ~8 levels.
+  in anything that touches the search — it runs over ~31,000 candidate
+  departures × ~32 supersonic legs × 4 ERA5 pressure levels.
 - pint is allowed **only** in display code, never in `atmos.py`/`limits.py`.
 
 ## Aircraft constants

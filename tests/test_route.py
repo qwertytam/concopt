@@ -4,7 +4,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from concopt.route import build_legs, great_circle_nm, parse_pln, supersonic_segment
+from concopt.route import (
+    build_legs,
+    great_circle_nm,
+    intermediate_point,
+    parse_pln,
+    supersonic_segment,
+)
 
 SAMPLE_PLN = Path(__file__).parent / "data" / "KJFKEGLL_CONC_01.pln"
 
@@ -95,3 +101,31 @@ def test_supersonic_segment(legs):
     assert end_cum == pytest.approx(2851.0, abs=1.0)
     assert span_nm == pytest.approx(2731.0, abs=2.0)
     assert span_nm / legs[-1].cum_nm == pytest.approx(0.86, abs=0.02)
+
+
+def test_supersonic_segment_unknown_accel_id_raises(legs):
+    with pytest.raises(ValueError, match="NOPE.*LINND"):
+        supersonic_segment(legs, accel_id="NOPE", decel_id="BARIX")
+
+
+def test_supersonic_segment_unknown_decel_id_raises(legs):
+    with pytest.raises(ValueError, match="NOPE.*BARIX"):
+        supersonic_segment(legs, accel_id="LINND", decel_id="NOPE")
+
+
+def test_supersonic_segment_swapped_raises(legs):
+    with pytest.raises(ValueError, match="swapped"):
+        supersonic_segment(legs, accel_id="BARIX", decel_id="LINND")
+
+
+def test_intermediate_point_coincident_waypoints():
+    lat, lon = intermediate_point(40.0, -73.0, 40.0, -73.0, np.array([0.0, 0.5, 1.0]))
+    assert lat == pytest.approx([40.0, 40.0, 40.0])
+    assert lon == pytest.approx([-73.0, -73.0, -73.0])
+
+
+def test_build_legs_coincident_waypoints_no_nan():
+    waypoints = [("A", 40.0, -73.0), ("A", 40.0, -73.0), ("B", 51.0, 0.0)]
+    legs = build_legs(waypoints, max_leg_nm=1e9)
+    assert not any(np.isnan(leg.lat_mid) or np.isnan(leg.lon_mid) for leg in legs)
+    assert legs[0].dist_nm == pytest.approx(0.0)
