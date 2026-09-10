@@ -40,10 +40,13 @@ _mach_cas_interp = RegularGridInterpolator(
 )
 
 
-def max_mach(fl, T_K, weight_t=135):
-    """Elementwise min of Mmo, the interpolated CAS-limit Mach, and the
-    total-temperature-limit Mach. weight_t may be a scalar or an array
-    broadcastable with fl."""
+def mach_components(fl, T_K, weight_t=135):
+    """The three Mach limits max_mach takes the elementwise min of: Mmo
+    (constant), the interpolated CAS-limit Mach (altitude + weight), and the
+    total-temperature-limit Mach (temperature). Returns (mmo, cas_mach,
+    tt_mach), each broadcast to the common shape of fl/T_K/weight_t --
+    max_mach reduces these to one number, binding_mach_limit reports which
+    one is smallest."""
     fl = np.asarray(fl, dtype=float)
     T_K = np.asarray(T_K, dtype=float)
     weight_t = np.asarray(weight_t, dtype=float)
@@ -52,8 +55,31 @@ def max_mach(fl, T_K, weight_t=135):
     pts = np.stack([fl_b.ravel(), weight_t_b.ravel()], axis=-1)
     cas_mach = _mach_cas_interp(pts).reshape(fl_b.shape)
     tt_mach = mach_from_total_temp(T_K, TOTAL_TEMP_MAX_K)
+    mmo = np.full_like(cas_mach, MMO)
 
-    return np.minimum(np.minimum(MMO, cas_mach), tt_mach)
+    return np.broadcast_arrays(mmo, cas_mach, tt_mach)
+
+
+def max_mach(fl, T_K, weight_t=135):
+    """Elementwise min of Mmo, the interpolated CAS-limit Mach, and the
+    total-temperature-limit Mach. weight_t may be a scalar or an array
+    broadcastable with fl."""
+    mmo, cas_mach, tt_mach = mach_components(fl, T_K, weight_t)
+    return np.minimum(np.minimum(mmo, cas_mach), tt_mach)
+
+
+_MACH_LIMIT_NAMES = np.array(["Mmo", "CAS", "total_temp"])
+
+
+def binding_mach_limit(fl, T_K, weight_t=135):
+    """Which of Mmo/CAS/total_temp is smallest -- i.e. actually constrains
+    max_mach -- at each point. String array, same shape as max_mach's
+    output. Doesn't know about ceiling_ft: that's a separate, altitude-side
+    constraint on which levels are even in play, not a speed limit at a
+    given level; callers combine the two (see search.march_legs)."""
+    stacked = np.stack(mach_components(fl, T_K, weight_t), axis=-1)
+    idx = np.argmin(stacked, axis=-1)
+    return _MACH_LIMIT_NAMES[idx]
 
 
 def max_tas(fl, T_K, weight_t=135):
@@ -86,7 +112,13 @@ def ground_speed(tas_ms, track_deg, u_ms, v_ms):
 
 def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
     """Ground speed at every level (last axis), masking levels above
-    ceiling_ft(weight_t). Returns (best_fl, best_gs_ms, gs_per_level)."""
+    ceiling_ft(weight_t). Returns (best_fl, best_gs_ms, best_idx,
+    gs_per_level). best_idx is the last-axis index of the winning level --
+    callers that need to pull other per-level quantities (wind, ISA
+    deviation, ...) at the chosen level should use it with
+    np.take_along_axis rather than recovering it via gs_per_level ==
+    best_gs_ms, which breaks (silently picks index 0) when best_gs_ms is
+    NaN."""
     fls, T_K, u_ms, v_ms, track_deg = np.broadcast_arrays(
         np.asarray(fls, dtype=float),
         np.asarray(T_K, dtype=float),
@@ -105,9 +137,10 @@ def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t):
     best_idx = np.argmax(gs_masked, axis=-1, keepdims=True)
     best_fl = np.take_along_axis(fls, best_idx, axis=-1).squeeze(-1)
     best_gs_ms = np.take_along_axis(gs_masked, best_idx, axis=-1).squeeze(-1)
+    best_idx = best_idx.squeeze(-1)
 
     # Every level masked (all above ceiling): -inf is not a real answer.
     all_above_ceiling = np.all(above_ceiling, axis=-1)
     best_fl = np.where(all_above_ceiling, np.nan, best_fl)
     best_gs_ms = np.where(all_above_ceiling, np.nan, best_gs_ms)
-    return best_fl, best_gs_ms, gs_per_level
+    return best_fl, best_gs_ms, best_idx, gs_per_level

@@ -89,7 +89,7 @@ def test_best_level_all_levels_above_ceiling():
     v_ms = np.zeros_like(fls)
     track_deg = np.zeros_like(fls)
 
-    best_fl, best_gs_ms, _ = best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t=165)
+    best_fl, best_gs_ms, _, _ = best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t=165)
 
     assert np.isnan(best_fl)
     assert np.isnan(best_gs_ms)
