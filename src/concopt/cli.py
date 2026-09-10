@@ -7,7 +7,7 @@ import datetime as dt
 from concopt.limits import CRUISE_MACH
 from concopt.report import DEFAULT_DECEL_DESCENT_S, best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import DEPARTURE_TO_ACCEL_S, run_search
+from concopt.search import DECEL_DESCENT_S, DEPARTURE_TO_ACCEL_S, run_search
 
 
 def _add_common_route_args(parser):
@@ -39,9 +39,10 @@ def _cmd_route(args):
 
 
 def _cmd_search(args):
-    run_search(args.pln, args.npz, accel_id=args.accel, decel_id=args.decel,
+    run_search(args.pln, args.npz, args.surface_npz, accel_id=args.accel, decel_id=args.decel,
                top=args.top, out_path=args.out,
                departure_to_accel_s=args.departure_to_accel_min * 60.0,
+               decel_descent_s=args.decel_descent_min * 60.0,
                cruise_mach=args.cruise_mach)
 
 
@@ -76,6 +77,9 @@ def main(argv=None):
     search_parser = subparsers.add_parser(
         'search', parents=[common], help='rank candidate departures by supersonic-segment time')
     search_parser.add_argument('--npz', required=True, help='path to the .npz from era5.reduce_to_legs')
+    search_parser.add_argument('--surface-npz', required=True,
+                                help='path to the .npz from era5.reduce_surface_to_npz '
+                                     '(KJFK/EGLL surface wind, for the runway screen)')
     search_parser.add_argument('--top', type=int, default=50,
                                 help='number of ranked rows to write out (default: 50)')
     search_parser.add_argument('--out', default='results.csv', help='output CSV path (default: results.csv)')
@@ -83,6 +87,10 @@ def main(argv=None):
                                 default=DEPARTURE_TO_ACCEL_S / 60.0,
                                 help='minutes from brakes release to the accel '
                                      'point/first supersonic leg (default: 20)')
+    search_parser.add_argument('--decel-descent-min', type=float,
+                                default=DECEL_DESCENT_S / 60.0,
+                                help='minutes from the decel point to touchdown, for estimating '
+                                     f'EGLL arrival wind time (default: {DECEL_DESCENT_S / 60.0:.0f})')
     search_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

@@ -15,10 +15,10 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from concopt import limits
+from concopt import limits, runways
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, speed_of_sound
 from concopt.data.conc_data import fuel_total_kgh_table
-from concopt.era5 import ARCHIVE_START, load_legs_npz
+from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
 from concopt.route import build_legs, parse_pln, supersonic_segment
 
 NY_TZ = ZoneInfo("America/New_York")
@@ -47,6 +47,14 @@ TARGET_FL = np.arange(450.0, 601.0, 10.0)
 # here rather than at 0 so leg weather is sampled at the correct clock time
 # and the total elapsed time is usable by Phase 4. Configurable from the CLI.
 DEPARTURE_TO_ACCEL_S = 20.0 * 60.0
+
+# Deceleration+descent time from the decel point (BARIX) to touchdown --
+# used here only to estimate touchdown clock time, for sampling EGLL's
+# arrival surface wind (runways.py). Not a performance figure: contrast
+# report.DEFAULT_DECEL_DESCENT_S, which is seeded from the descent-time
+# table instead, for the profile totals printed by `concopt report`.
+# CLI flag: --decel-descent-min.
+DECEL_DESCENT_S = 35.0 * 60.0
 
 
 def candidate_departures():
@@ -256,17 +264,22 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
     return legs_out, weight_per_leg
 
 
-def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
+def run_search(pln_path, npz_path, surface_npz_path, accel_id="LINND", decel_id="BARIX",
                 top=50, out_path="results.csv",
                 departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
+                decel_descent_s=DECEL_DESCENT_S,
                 cruise_mach=limits.CRUISE_MACH):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
     the supersonic ones, then calls march_legs across every candidate
-    departure and collapses the per-leg arrays to means. Prints the top 10
-    rows and four sanity checks (computed on the same filtered/sorted rows
-    as the output table), writes the top `top` rows to out_path, and
-    returns the full ranked DataFrame (no NaN rows)."""
+    departure and collapses the per-leg arrays to means. Screens each
+    candidate's KJFK departure and EGLL arrival wind (surface_npz_path,
+    from era5.reduce_surface_to_npz) against runways.py's runway geometry,
+    and ranks on total block time (brakes-release to landing, including
+    runway penalties) rather than supersonic-segment time alone. Prints
+    the top 10 rows and eight sanity checks (computed on the same
+    filtered/sorted rows as the output table), writes the top `top` rows
+    to out_path, and returns the full ranked DataFrame (no NaN rows)."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
@@ -274,6 +287,7 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     ss_legs = [legs[i] for i in ss_idx]
 
     data = load_legs_npz(npz_path)
+    surface_data = load_surface_npz(surface_npz_path)
     candidates = candidate_departures()
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
@@ -291,6 +305,34 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     candidates["mean_isa_dev_k"] = isa_dev_k.mean(axis=1)
     candidates["weight_at_barix_t"] = legs_out["weight_at_barix"]
 
+    # Touchdown clock time = departure + accumulated_s (already
+    # departure_to_accel_s + supersonic segment, see march_legs) +
+    # decel_descent_s. NaN accumulated_s (a candidate the march couldn't
+    # complete) produces a garbage touchdown_i8 here -- harmless, since
+    # that row is dropped by the dropna below same as everywhere else.
+    touchdown_i8 = dep_i8 + (
+        (legs_out["accumulated_s"] + decel_descent_s) * 1e9
+    ).astype("int64")
+
+    jfk = runways.runway_screen(surface_data, "KJFK", dep_i8)
+    lhr = runways.runway_screen(surface_data, "EGLL", touchdown_i8)
+
+    candidates["jfk_runway"] = jfk["runway"]
+    candidates["lhr_runway"] = lhr["runway"]
+    candidates["jfk_xwind_gust_kt"] = jfk["xwind_gust_kt"]
+    candidates["lhr_xwind_gust_kt"] = lhr["xwind_gust_kt"]
+    candidates["jfk_flag"] = jfk["flag"]
+    candidates["lhr_flag"] = lhr["flag"]
+    candidates["jfk_penalty_s"] = jfk["penalty_s"]
+    candidates["lhr_penalty_s"] = lhr["penalty_s"]
+    candidates["flags"] = [
+        ",".join(f"{prefix}_{flag}" for prefix, flag in
+                  (("jfk", jfk_flag), ("lhr", lhr_flag)) if flag)
+        for jfk_flag, lhr_flag in zip(jfk["flag"], lhr["flag"])
+    ]
+    candidates["total_time_s"] = (legs_out["accumulated_s"] + decel_descent_s
+                                    + jfk["penalty_s"] + lhr["penalty_s"])
+
     # Same filter the output table gets, captured here so the sanity checks
     # below are computed on exactly those rows, not the unfiltered arrays.
     valid_mask = candidates[["supersonic_time_s", "mean_fl"]].notna().all(axis=1).to_numpy()
@@ -298,7 +340,7 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     gs_kt_valid = gs_kt[valid_mask]
 
     candidates = candidates.dropna(subset=["supersonic_time_s", "mean_fl"])
-    candidates = candidates.sort_values("supersonic_time_s", ascending=True).reset_index(drop=True)
+    candidates = candidates.sort_values("total_time_s", ascending=True).reset_index(drop=True)
 
     display = pd.DataFrame({
         "date": candidates["local_date"],
@@ -308,6 +350,12 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
         "mean_wind_kt": candidates["mean_wind_kt"].round(1),
         "mean_isa_dev_k": candidates["mean_isa_dev_k"].round(1),
         "weight_at_barix_t": candidates["weight_at_barix_t"].round(1),
+        "jfk_runway": candidates["jfk_runway"],
+        "lhr_runway": candidates["lhr_runway"],
+        "jfk_xwind_gust_kt": candidates["jfk_xwind_gust_kt"].round(1),
+        "lhr_xwind_gust_kt": candidates["lhr_xwind_gust_kt"].round(1),
+        "flags": candidates["flags"],
+        "total_time": candidates["total_time_s"].map(_format_hmm),
     })
 
     print(display.head(10).to_string(index=False))
@@ -315,21 +363,57 @@ def run_search(pln_path, npz_path, accel_id="LINND", decel_id="BARIX",
     ss_total_nm = sum(leg.dist_nm for leg in ss_legs)
     best_row = candidates.iloc[0]
     worst_row = candidates.iloc[-1]
-    spread_min = (worst_row["supersonic_time_s"] - best_row["supersonic_time_s"]) / 60.0
+    spread_min = (worst_row["total_time_s"] - best_row["total_time_s"]) / 60.0
     top_fl = TARGET_FL.max()
     frac_at_top = float(np.mean(chosen_fl_valid == top_fl))
 
     is_winter = best_row["local_date"].month in (11, 12, 1, 2)
     print("\nSanity checks:")
-    print(f"1. Best day: {best_row['local_date']} "
+    print(f"1. Best day (total time): {best_row['local_date']} "
           f"({'winter' if is_winter else 'NOT WINTER -- check wind sign'})")
-    print(f"2. Spread best-worst: {spread_min:.1f} min over {ss_total_nm:.0f} nm "
+    print(f"2. Spread best-worst (total time): {spread_min:.1f} min over {ss_total_nm:.0f} nm "
           f"(expect ~25-40 min)")
     print(f"3. Mean chosen FL overall: {chosen_fl_valid.mean():.0f} "
           f"(top available FL {top_fl:.0f}); "
           f"at top level {frac_at_top * 100:.0f}% of leg-instances")
     print(f"4. Chosen ground speed range: {gs_kt_valid.min():.0f}-{gs_kt_valid.max():.0f} kt "
           f"(expect 800-1400 kt); NaN rows dropped: {n_cand - len(candidates)}")
+
+    n_valid = len(candidates)
+    jfk_unflyable_n = int((candidates["jfk_flag"] == "unflyable").sum())
+    lhr_unflyable_n = int((candidates["lhr_flag"] == "unflyable").sum())
+    jfk_flagged_n = int((candidates["jfk_flag"] == "xwind_25_30").sum())
+    lhr_flagged_n = int((candidates["lhr_flag"] == "xwind_25_30").sum())
+    lhr_westerly_n = int((candidates["lhr_runway"] == "27R/27L").sum())
+    lhr_easterly_n = int((candidates["lhr_runway"] == "09L/09R").sum())
+
+    print(f"5. Unflyable: JFK {jfk_unflyable_n} ({jfk_unflyable_n / n_valid * 100:.1f}%), "
+          f"LHR {lhr_unflyable_n} ({lhr_unflyable_n / n_valid * 100:.1f}%) of {n_valid} "
+          f"(expect a small percentage; LHR can only reject above {runways.XWIND_FLAG_KT:.0f} kt "
+          f"crosswind gust since its runways are parallel, while JFK's two candidates are 90 deg "
+          f"apart and leave a gap at easterly winds)")
+    print(f"6. LHR ops: westerly (27R/27L) {lhr_westerly_n} "
+          f"({lhr_westerly_n / n_valid * 100:.0f}%), easterly (09L/09R) {lhr_easterly_n} "
+          f"({lhr_easterly_n / n_valid * 100:.0f}%) (expect westerlies to dominate; the minority "
+          f"easterly days skip LHR's 5 min penalty and float up the total_time ranking)")
+    print(f"7. Flagged {runways.XWIND_OK_KT:.0f}-{runways.XWIND_FLAG_KT:.0f} kt crosswind-gust "
+          f"band: JFK {jfk_flagged_n} ({jfk_flagged_n / n_valid * 100:.1f}%), "
+          f"LHR {lhr_flagged_n} ({lhr_flagged_n / n_valid * 100:.1f}%) of {n_valid}")
+
+    best_total_idx = candidates["total_time_s"].idxmin()
+    best_ss_idx = candidates["supersonic_time_s"].idxmin()
+    best_total_row = candidates.loc[best_total_idx]
+    best_ss_row = candidates.loc[best_ss_idx]
+    same_day = bool(best_total_idx == best_ss_idx)
+    penalty_min = (best_total_row["jfk_penalty_s"] + best_total_row["lhr_penalty_s"]) / 60.0
+    expect_min = departure_to_accel_s / 60.0 + decel_descent_s / 60.0 + penalty_min
+    diff_min = (best_total_row["total_time_s"] - best_ss_row["supersonic_time_s"]) / 60.0
+    print(f"8. Best total time {_format_hmm(best_total_row['total_time_s'])} vs best "
+          f"supersonic time {_format_hmm(best_ss_row['supersonic_time_s'])} "
+          f"({'same day' if same_day else 'DIFFERENT day -- penalty reshuffled the ranking'}): "
+          f"diff {diff_min:.1f} min (expect accel {departure_to_accel_s / 60.0:.0f} + decel "
+          f"{decel_descent_s / 60.0:.0f} + penalties {penalty_min:.0f} = {expect_min:.1f} min "
+          f"when same day)")
 
     out_path = Path(out_path)
     display.head(top).to_csv(out_path, index=False)
