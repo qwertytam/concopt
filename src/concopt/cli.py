@@ -3,6 +3,7 @@
 import argparse
 
 from concopt.route import build_legs, parse_pln, supersonic_segment
+from concopt.search import run_search
 
 
 def _add_common_route_args(parser):
@@ -33,6 +34,11 @@ def _cmd_route(args):
           f"{ss_nm:.1f} nm supersonic ({pct:.0f}%)")
 
 
+def _cmd_search(args):
+    run_search(args.pln, args.npz, accel_id=args.accel, decel_id=args.decel,
+               top=args.top, out_path=args.out)
+
+
 def main(argv=None):
     common = argparse.ArgumentParser(add_help=False)
     _add_common_route_args(common)
@@ -45,6 +51,14 @@ def main(argv=None):
     route_parser.add_argument('--max-leg-nm', type=float, default=100.0,
                                help='subdivide legs longer than this (nm, default: 100)')
     route_parser.set_defaults(func=_cmd_route)
+
+    search_parser = subparsers.add_parser(
+        'search', parents=[common], help='rank candidate departures by supersonic-segment time')
+    search_parser.add_argument('--npz', required=True, help='path to the .npz from era5.reduce_to_legs')
+    search_parser.add_argument('--top', type=int, default=50,
+                                help='number of ranked rows to write out (default: 50)')
+    search_parser.add_argument('--out', default='results.csv', help='output CSV path (default: results.csv)')
+    search_parser.set_defaults(func=_cmd_search)
 
     args = parser.parse_args(argv)
     args.func(args)
