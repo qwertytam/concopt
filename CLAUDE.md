@@ -37,7 +37,13 @@ for its own sake, no defensive error handling.
   `reanalysis-era5-single-levels` at cds.climate.copernicus.eu first (one
   manual, per-account step). Downloads land in `data/era5/`
   (gitignored — large and re-downloadable; `download_*` skip a request
-  whose output file already exists).
+  whose output file already exists). `reduce_surface_to_npz` does the same
+  job for the KJFK/EGLL surface downloads (`download_surface`,
+  `surface_nc_paths`) that `reduce_to_legs` does for the upper air: one
+  combined `.npz`, box-mean (not point-interpolated — 0.25° native res, no
+  single grid cell inside either ~1°×1° box) `u10`/`v10`/`i10fg` time
+  series per airport, keyed `<airport>_time`/`_u10`/`_v10`/`_i10fg`. Feeds
+  `runways.py`.
 - `search.py` — the day/time scan (`concopt search`). Candidates are every
   date from `era5.ARCHIVE_START` to today at 08:00-14:00 America/New_York
   (7/day), built tz-aware with `zoneinfo` and converted to UTC so DST
@@ -55,7 +61,29 @@ for its own sake, no defensive error handling.
   ISA+0 run over the real supersonic segment burns 165 t down to ~111 t by
   BARIX (see the printed sanity checks, which report rather than assert).
   Assumes the `.npz` was built from the same `--pln`/`build_legs` call, so
-  the leg axes line up by position — it does not re-check this.
+  the leg axes line up by position — it does not re-check this. Also
+  screens each candidate's KJFK departure / EGLL arrival wind through
+  `runways.py` (see below) and ranks on `total_time`, not supersonic time.
+- `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
+  `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
+  geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
+  27R/27L, all bearings **true** — ERA5 wind is in the true frame, and
+  JFK's ~13° W variation would put every runway number 13° off if bearings
+  were magnetic. Headwind/crosswind come from the same along-track/
+  cross-track decomposition `limits.ground_speed` already uses against a
+  leg's track, evaluated against the runway heading instead — algebraically
+  identical to the textbook "wind FROM direction" formula, without an
+  atan2/degrees round trip. ERA5's gust (`i10fg`, max gust in the
+  preceding hour) has no direction, so the crosswind-gust test reuses the
+  mean wind's direction and rescales only the magnitude onto the gust
+  speed. Screen: crosswind gust ≤25 kt OK, 25–30 kt allowed but flagged,
+  >30 kt unflyable on that runway; tailwind (mean) >10 kt unflyable, no
+  buffer. Picks the greatest-headwind runway among those that pass; if
+  none pass, the day is flagged `unflyable` at that airport but still
+  reports the greatest-headwind runway and a computed time — never
+  dropped. `search.DECEL_DESCENT_S` (35 min default, distinct from
+  `report.DEFAULT_DECEL_DESCENT_S`) is only used here, to estimate
+  touchdown clock time for sampling EGLL's arrival wind.
 - `data/` — CSV limit tables + `conc_data.py` loader
 - `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
   `nondimensional.py` — vendored fork of the `flightcondition` package.

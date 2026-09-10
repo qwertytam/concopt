@@ -1,6 +1,7 @@
 """Download ERA5 reanalysis and reduce it to per-leg wind/temperature
-arrays. cdsapi + xarray at the edges; everything downstream of
-reduce_to_legs reads only the .npz it produces, never the netCDF.
+arrays, plus per-airport surface wind arrays for the runway screen. cdsapi
++ xarray at the edges; everything downstream of reduce_to_legs/
+reduce_surface_to_npz reads only the .npz each produces, never the netCDF.
 """
 import argparse
 import datetime as dt
@@ -23,8 +24,9 @@ UPPER_AIR_GRID = [1.0, 1.0]
 # Do not widen this.
 UPPER_AIR_TIMES = [f"{h:02d}:00" for h in range(12, 24)]
 
-# Phase 4 (in-flight advisor) consumes these; downloaded now so both sit
-# in the same CDS queue as the upper-air requests.
+# Phase 4 (runways.py's crosswind/tailwind screen, and later the in-flight
+# advisor) consumes these; downloaded now so both sit in the same CDS
+# queue as the upper-air requests.
 SURFACE_AREAS = {"KJFK": [41, -74, 40, -73], "EGLL": [52, -1, 51, 0]}
 SURFACE_TIMES = [f"{h:02d}:00" for h in range(24)]
 
@@ -142,6 +144,56 @@ def download_surface(out_dir, year):
             chunk_paths.append(out_path)
         paths[name] = chunk_paths
     return paths
+
+
+def surface_nc_paths(out_dir):
+    """{"KJFK": [...], "EGLL": [...]} of already-downloaded surface
+    netCDFs in out_dir, found by filename pattern
+    (era5_sfc_<airport>_*.nc) rather than replaying download_surface's
+    year/chunk boundaries. Feeds reduce_surface_to_npz; works whether the
+    files came from download_all_surface or were fetched by hand."""
+    out_dir = Path(out_dir)
+    return {
+        name: sorted(out_dir.glob(f"era5_sfc_{name.lower()}_*.nc"))
+        for name in SURFACE_AREAS
+    }
+
+
+def reduce_surface_to_npz(nc_paths_by_airport, out_npz):
+    """Box-mean 10 m u/v wind + instantaneous gust time series for each
+    surface airport (see surface_nc_paths), combined into one npz with
+    per-airport-prefixed keys (e.g. "KJFK_time", "KJFK_u10", "KJFK_v10",
+    "KJFK_i10fg"). A box mean, not an interpolation to a point: at 0.25 deg
+    native resolution there is no single "airport" grid cell inside
+    SURFACE_AREAS's ~1x1 deg box, and a box mean is good enough for a wind
+    screen. runways.py reads this; nothing downstream reopens the netCDF."""
+    arrays = {}
+    for name, paths in nc_paths_by_airport.items():
+        ds = xr.open_mfdataset([str(p) for p in paths], combine="by_coords")
+        box_mean = ds.mean(dim=("latitude", "longitude"))
+        time_dim = "valid_time" if "valid_time" in box_mean.dims else "time"
+
+        arrays[f"{name}_time"] = box_mean[time_dim].values
+        arrays[f"{name}_u10"] = box_mean["u10"].values
+        arrays[f"{name}_v10"] = box_mean["v10"].values
+        arrays[f"{name}_i10fg"] = box_mean["i10fg"].values
+        ds.close()
+
+    np.savez(out_npz, **arrays)
+    return Path(out_npz)
+
+
+def load_surface_npz(path):
+    """out_npz from reduce_surface_to_npz -> {"KJFK": {...}, "EGLL":
+    {...}}, one dict of time/u10/v10/i10fg arrays per airport. Everything
+    downstream (runways.py) reads this; nothing downstream reopens the
+    netCDF."""
+    with np.load(path) as z:
+        airports = sorted({k.split("_", 1)[0] for k in z.files})
+        return {
+            name: {var: z[f"{name}_{var}"] for var in ("time", "u10", "v10", "i10fg")}
+            for name in airports
+        }
 
 
 def reduce_to_legs(nc_paths, legs, out_npz):
