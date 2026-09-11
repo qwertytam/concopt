@@ -7,7 +7,7 @@ import datetime as dt
 from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                                DEFAULT_LOOKAHEAD_NM, run_inflight)
 from concopt.limits import CRUISE_MACH
-from concopt.report import DEFAULT_DECEL_DESCENT_S, best_candidate_from_csv, run_report
+from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import DECEL_DESCENT_S, DEPARTURE_TO_ACCEL_S, run_search
 from concopt.verify import run_verify
@@ -135,9 +135,9 @@ def main(argv=None):
                                 help='minutes from brakes release to the accel '
                                      'point/first supersonic leg (default: 20)')
     report_parser.add_argument('--decel-descent-min', type=float,
-                                default=DEFAULT_DECEL_DESCENT_S / 60.0,
+                                default=DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, decel + descent '
-                                     '(default: seeded from conc_desc_time.csv at FL600)')
+                                     f'(default: {DECEL_DESCENT_S / 60.0:.0f})')
     report_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

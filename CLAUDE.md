@@ -96,9 +96,9 @@ for its own sake, no defensive error handling.
   buffer. Picks the greatest-headwind runway among those that pass; if
   none pass, the day is flagged `unflyable` at that airport but still
   reports the greatest-headwind runway and a computed time — never
-  dropped. `search.DECEL_DESCENT_S` (35 min default, distinct from
-  `report.DEFAULT_DECEL_DESCENT_S`) is only used here, to estimate
-  touchdown clock time for sampling EGLL's arrival wind.
+  dropped. `search.DECEL_DESCENT_S` (35 min default; `report.py` imports
+  the same constant, so the two CLIs agree on this segment) is only used
+  here, to estimate touchdown clock time for sampling EGLL's arrival wind.
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers
@@ -180,7 +180,6 @@ for its own sake, no defensive error handling.
   so one constant temperature is exact at every level, no pressure->
   altitude inversion needed. Needs `matplotlib` (added as a dependency for
   this).
-- `nb/max_gs.ipynb` — stale (imports a pre-2023 layout). Do not run or fix.
 
 ## Conventions
 - SI internally (K, Pa, m/s, m). Convert at the edges only.
@@ -206,6 +205,12 @@ for its own sake, no defensive error handling.
   service ceiling); one cell (165 t, ISA-30) is thrust-limited and flagged
   in its `note`, excluded from the max_mach/ceiling cross-check in
   `tests/test_perf_table.py`.
+
+## Data present but not yet wired in
+- `src/concopt/data/conc_descent.csv` — decel-to-Mach1 + descent-to-1500ft
+  performance table (speed/temp-band/level -> fuel, time, distance), for a
+  proper per-leg decel/descent model. Phase 4b, never built; nothing
+  imports this file yet.
 
 ## Known non-problems — do not "fix" these
 - The CSVs have a UTF-8 BOM. Current pandas and numpy strip it. Leave it.

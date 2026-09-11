@@ -13,19 +13,14 @@ import numpy as np
 import pandas as pd
 
 from concopt import limits
-from concopt.data.conc_data import desc_time_min
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import (DEPARTURE_TO_ACCEL_S, NM_TO_M, NY_TZ, _format_hmm,
-                             local_to_departure_utc, march_legs)
+from concopt.search import (DECEL_DESCENT_S, DEPARTURE_TO_ACCEL_S, NM_TO_M,
+                             NY_TZ, _format_hmm, local_to_departure_utc,
+                             march_legs)
 
-# 307 nm of deceleration + descent from BARIX to touchdown. No separate
-# deceleration-time table exists -- only conc_desc_time.csv (descent time vs
-# altitude, FL600 -> 17.1 min) -- so this default folds decel + descent into
-# that one number, seeded from FL600 (the top of TARGET_FL), until Phase 4
-# has a better split.
+# 307 nm of deceleration + descent from BARIX to touchdown.
 DECEL_DESCENT_NM = 307.0
-DEFAULT_DECEL_DESCENT_S = float(desc_time_min(60000.0)) * 60.0
 
 
 def _format_mmss(seconds):
@@ -114,7 +109,7 @@ def _step_climb_schedule(ss_legs, chosen_fl):
 def run_report(pln_path, npz_path, local_date, local_hour, accel_id="LINND",
                 decel_id="BARIX", out_path="report.csv",
                 departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
-                decel_descent_s=DEFAULT_DECEL_DESCENT_S,
+                decel_descent_s=DECEL_DESCENT_S,
                 cruise_mach=limits.CRUISE_MACH):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
