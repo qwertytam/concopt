@@ -48,12 +48,11 @@ TARGET_FL = np.arange(450.0, 601.0, 10.0)
 # and the total elapsed time is usable by Phase 4. Configurable from the CLI.
 DEPARTURE_TO_ACCEL_S = 20.0 * 60.0
 
-# Deceleration+descent time from the decel point (BARIX) to touchdown --
-# used here only to estimate touchdown clock time, for sampling EGLL's
-# arrival surface wind (runways.py). Not a performance figure: contrast
-# report.DEFAULT_DECEL_DESCENT_S, which is seeded from the descent-time
-# table instead, for the profile totals printed by `concopt report`.
-# CLI flag: --decel-descent-min.
+# Deceleration+descent time from the decel point (BARIX) to touchdown. Used
+# here to estimate touchdown clock time, for sampling EGLL's arrival surface
+# wind (runways.py); report.py imports this same constant for its
+# brakes-release-to-touchdown profile totals, so `concopt search` and
+# `concopt report` agree on this segment. CLI flag: --decel-descent-min.
 DECEL_DESCENT_S = 35.0 * 60.0
 
 
