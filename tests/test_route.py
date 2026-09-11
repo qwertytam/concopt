@@ -6,9 +6,13 @@ import pytest
 
 from concopt.route import (
     build_legs,
+    current_progress_nm,
+    destination_point,
     great_circle_nm,
+    initial_bearing_deg,
     intermediate_point,
     parse_pln,
+    project_along_route,
     supersonic_segment,
 )
 
@@ -129,3 +133,63 @@ def test_build_legs_coincident_waypoints_no_nan():
     legs = build_legs(waypoints, max_leg_nm=1e9)
     assert not any(np.isnan(leg.lat_mid) or np.isnan(leg.lon_mid) for leg in legs)
     assert legs[0].dist_nm == pytest.approx(0.0)
+
+
+def test_destination_point_round_trips_with_great_circle_nm():
+    """destination_point is the direct geodesic problem, the inverse of
+    great_circle_nm/initial_bearing_deg: going dist_nm along the bearing to
+    a point lands back on it."""
+    lat1, lon1, lat2, lon2 = 40.0, -73.0, 51.0, 0.0
+    dist_nm = great_circle_nm(lat1, lon1, lat2, lon2)
+    brng = initial_bearing_deg(lat1, lon1, lat2, lon2)
+
+    lat_out, lon_out = destination_point(lat1, lon1, brng, dist_nm)
+
+    assert lat_out == pytest.approx(lat2, abs=1e-6)
+    assert lon_out == pytest.approx(lon2, abs=1e-6)
+
+
+def test_destination_point_zero_distance_is_identity():
+    lat_out, lon_out = destination_point(40.0, -73.0, 90.0, 0.0)
+    assert lat_out == pytest.approx(40.0)
+    assert lon_out == pytest.approx(-73.0)
+
+
+def test_current_progress_nm_at_a_leg_midpoint(legs):
+    """Standing exactly on a leg's own midpoint, progress is that leg's
+    along-track midpoint distance -- half the leg's own length short of its
+    cum_nm."""
+    leg = legs[5]
+    cum_nm, leg_idx, along_nm = current_progress_nm(legs, leg.lat_mid, leg.lon_mid)
+
+    assert leg_idx == 5
+    assert along_nm == pytest.approx(leg.dist_nm / 2.0, abs=0.5)
+    assert cum_nm == pytest.approx(leg.cum_nm - leg.dist_nm / 2.0, abs=0.5)
+
+
+def test_current_progress_nm_monotonic_along_route(legs):
+    """Progress increases leg by leg down the route."""
+    progress = [current_progress_nm(legs, leg.lat_mid, leg.lon_mid)[0] for leg in legs]
+    assert np.all(np.diff(progress) > 0)
+
+
+def test_project_along_route_advances_by_lookahead_nm(legs):
+    """From a leg's own midpoint, the projected point should be roughly
+    lookahead_nm of path length further down the route (chord distance can
+    fall a bit short across a turn, but not by much over a short hop)."""
+    leg = legs[3]
+    lat, lon, track_deg = project_along_route(legs, leg.lat_mid, leg.lon_mid, 20.0)
+
+    d = great_circle_nm(leg.lat_mid, leg.lon_mid, lat, lon)
+    assert d == pytest.approx(20.0, rel=0.1)
+    assert 0.0 <= track_deg < 360.0
+
+
+def test_project_along_route_clamps_past_route_end(legs):
+    """A lookahead far beyond the route's end clamps to (approximately) the
+    last leg's own endpoint, rather than extrapolating or raising."""
+    last = legs[-1]
+    lat, lon, _track_deg = project_along_route(legs, last.lat_mid, last.lon_mid, 1_000_000.0)
+
+    end_lat, end_lon = destination_point(last.lat_mid, last.lon_mid, last.track_deg, last.dist_nm / 2.0)
+    assert great_circle_nm(lat, lon, end_lat, end_lon) < 1.0

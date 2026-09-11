@@ -18,6 +18,7 @@ classifiers = [
 dependencies = [
     "cdsapi",
     "dask",
+    "matplotlib",
     "netCDF4",
     "numpy",
     "pandas",
@@ -25,13 +26,14 @@ dependencies = [
     "pint-pandas",
     "requests",
     "scipy",
+    "SimConnect",
     "xarray"
 ]
 
 version = "0.0.1"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "ipykernel"]
 
 [project.scripts]
 concopt = "concopt.cli:main"

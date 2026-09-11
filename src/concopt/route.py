@@ -84,6 +84,26 @@ def initial_bearing_deg(lat1, lon1, lat2, lon2):
     return (np.degrees(np.arctan2(x, y)) + 360.0) % 360.0
 
 
+def destination_point(lat, lon, bearing_deg, dist_nm):
+    """The point dist_nm along true bearing_deg (deg clockwise from north)
+    from (lat, lon) -- the direct geodesic problem, inverse of
+    great_circle_nm/initial_bearing_deg. Used to reconstruct a leg's
+    endpoints from its stored midpoint/track/dist_nm (Leg keeps only the
+    midpoint), and to walk a lookahead distance along the route in
+    project_along_route."""
+    lat1 = np.radians(np.asarray(lat, dtype=float))
+    lon1 = np.radians(np.asarray(lon, dtype=float))
+    brng = np.radians(np.asarray(bearing_deg, dtype=float))
+    delta = np.asarray(dist_nm, dtype=float) / R_NM
+
+    lat2 = np.arcsin(np.sin(lat1) * np.cos(delta) + np.cos(lat1) * np.sin(delta) * np.cos(brng))
+    lon2 = lon1 + np.arctan2(
+        np.sin(brng) * np.sin(delta) * np.cos(lat1),
+        np.cos(delta) - np.sin(lat1) * np.sin(lat2),
+    )
+    return np.degrees(lat2), np.degrees(lon2)
+
+
 def intermediate_point(lat1, lon1, lat2, lon2, f):
     """Great-circle interpolation (slerp) between point 1 and point 2,
     f in [0, 1]. f may be an array, broadcasting against scalar endpoints.
@@ -152,6 +172,63 @@ def build_legs(waypoints, max_leg_nm=100.0):
             legs.append(Leg(from_id, to_id, float(mid_lat[k]), float(mid_lon[k]),
                             float(tracks[k]), sub_dist_nm, cum_nm))
     return legs
+
+
+def current_progress_nm(legs, lat, lon):
+    """(lat, lon)'s along-route progress (cum_nm), for Phase 6's advisor and
+    recorder. Finds the leg whose midpoint is nearest (lat, lon),
+    reconstructs that leg's endpoints (destination_point against its own
+    midpoint/track/dist_nm -- Leg keeps only the midpoint), and projects
+    (lat, lon) onto its track to get an along-track offset from the leg's
+    start -- clamped to [0, dist_nm], so being off to the side of the route
+    doesn't run the projection backwards or past the leg.
+
+    Not vectorised across candidates -- there is only ever one live
+    aircraft position, unlike search.py's ~31,000-candidate scan.
+
+    Returns (cum_nm, leg_idx, along_nm): leg_idx/along_nm let
+    project_along_route resume the walk from exactly this point without
+    redoing the nearest-leg search."""
+    mid_lat = np.array([leg.lat_mid for leg in legs])
+    mid_lon = np.array([leg.lon_mid for leg in legs])
+    i = int(np.argmin(great_circle_nm(lat, lon, mid_lat, mid_lon)))
+    leg = legs[i]
+
+    start_lat, start_lon = destination_point(leg.lat_mid, leg.lon_mid, leg.track_deg + 180.0, leg.dist_nm / 2.0)
+    d_from_start = great_circle_nm(start_lat, start_lon, lat, lon)
+    brng_from_start = initial_bearing_deg(start_lat, start_lon, lat, lon)
+    along_nm = float(np.clip(
+        d_from_start * np.cos(np.radians(brng_from_start - leg.track_deg)),
+        0.0, leg.dist_nm,
+    ))
+    cum_nm = (leg.cum_nm - leg.dist_nm) + along_nm
+    return cum_nm, i, along_nm
+
+
+def project_along_route(legs, lat, lon, lookahead_nm):
+    """The point lookahead_nm ahead of (lat, lon) along the leg sequence, for
+    Phase 6's advisor (project forward from the live aircraft position to
+    get an Active Sky query point). Starts from current_progress_nm's
+    along-track offset into the current leg, adds lookahead_nm, and carries
+    any overflow past that leg's end into however many further legs it
+    takes -- clamping to the route's last point if lookahead_nm overruns it.
+
+    Returns (lookahead_lat, lookahead_lon, track_deg) -- track_deg is the
+    track of the leg the lookahead point ends up on, for feeding
+    limits.best_level's wind decomposition."""
+    _cum_nm, i, along_nm = current_progress_nm(legs, lat, lon)
+    leg = legs[i]
+    target_along_nm = along_nm + lookahead_nm
+
+    while target_along_nm > leg.dist_nm and i < len(legs) - 1:
+        target_along_nm -= leg.dist_nm
+        i += 1
+        leg = legs[i]
+    target_along_nm = min(target_along_nm, leg.dist_nm)
+
+    leg_start_lat, leg_start_lon = destination_point(leg.lat_mid, leg.lon_mid, leg.track_deg + 180.0, leg.dist_nm / 2.0)
+    cur_lat, cur_lon = destination_point(leg_start_lat, leg_start_lon, leg.track_deg, target_along_nm)
+    return float(cur_lat), float(cur_lon), float(leg.track_deg)
 
 
 def supersonic_segment(legs, accel_id="LINND", decel_id="BARIX"):

@@ -265,7 +265,7 @@ def march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=DEPARTURE_TO_
 
 
 def run_search(pln_path, npz_path, surface_npz_path, accel_id="LINND", decel_id="BARIX",
-                top=50, out_path="results.csv",
+                top=50, out_path="results.csv", out_all_path=None,
                 departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
                 decel_descent_s=DECEL_DESCENT_S,
                 cruise_mach=limits.CRUISE_MACH):
@@ -279,7 +279,12 @@ def run_search(pln_path, npz_path, surface_npz_path, accel_id="LINND", decel_id=
     runway penalties) rather than supersonic-segment time alone. Prints
     the top 10 rows and eight sanity checks (computed on the same
     filtered/sorted rows as the output table), writes the top `top` rows
-    to out_path, and returns the full ranked DataFrame (no NaN rows)."""
+    to out_path, and returns the full ranked DataFrame (no NaN rows).
+
+    With out_all_path given, also writes the full ranked DataFrame (every
+    valid candidate, ~31,000 rows, raw numeric columns rather than --out's
+    rounded/formatted display strings) there -- for nb/day-search-results.ipynb,
+    which needs the raw distribution rather than just the top rows."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
@@ -418,5 +423,10 @@ def run_search(pln_path, npz_path, surface_npz_path, accel_id="LINND", decel_id=
     out_path = Path(out_path)
     display.head(top).to_csv(out_path, index=False)
     print(f"\nWrote top {min(top, len(display))} rows to {out_path}")
+
+    if out_all_path is not None:
+        out_all_path = Path(out_all_path)
+        candidates.to_csv(out_all_path, index=False)
+        print(f"Wrote all {len(candidates)} ranked candidates to {out_all_path}")
 
     return candidates

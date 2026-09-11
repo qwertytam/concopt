@@ -157,6 +157,7 @@ cython_debug/
 
 # ERA5 downloads (raw netCDF + reduced .npz) -- large, re-downloadable
 data/era5/
+data/*.csv
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

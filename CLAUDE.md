@@ -21,7 +21,18 @@ for its own sake, no defensive error handling.
   a vectorised-scan performance/NaN check. Run with `poetry run pytest` (or
   plain `pytest` inside the venv). This replaced the old ad hoc `check.py`
   script — there is no `check.py` any more.
-- `asky.py` — ActiveSky HTTP client (localhost:19285)
+- `asky.py` — ActiveSky HTTP client (localhost:19285). `get_atmosphere_np`
+  is the pint-free variant (plain numpy arrays), for `verify.py` and
+  `inflight.py`; `get_atmosphere_as_pd` is display-only and accepts either a
+  plain feet sequence or a pint Quantity. Both wrap a `ConnectionError` from
+  `requests` into a `RuntimeError` naming the host/port and telling the user
+  to check Active Sky is running with the historical date loaded.
+  `GetAtmosphere`'s `WeatherData` is a **list of per-altitude records, every
+  field a string** (confirmed live, 2026-09) -- both functions build a
+  `pd.DataFrame` from that list to reshape and parse it; an earlier version
+  assumed a dict-of-arrays and raised `TypeError` against a real server
+  (only passed its own tests because the mocked fixture encoded the wrong
+  shape -- a `verify.py`/`inflight.py` live-proof session caught it).
 - `era5.py` — ERA5 reanalysis download (`cdsapi`) + reduction to per-leg
   wind/temperature arrays (`xarray`, needs `dask` for the multi-file
   open). `download_upper_air(out_dir, year, month)` is one CDS request
@@ -64,6 +75,10 @@ for its own sake, no defensive error handling.
   the leg axes line up by position — it does not re-check this. Also
   screens each candidate's KJFK departure / EGLL arrival wind through
   `runways.py` (see below) and ranks on `total_time`, not supersonic time.
+  `--out-all` writes the *full* ranked candidate set (raw numeric columns,
+  ~31,000 rows) alongside `--out`'s top-N formatted display CSV — for
+  `nb/day-search-results.ipynb`, which needs the whole distribution rather
+  than just the shortlist.
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -84,11 +99,87 @@ for its own sake, no defensive error handling.
   dropped. `search.DECEL_DESCENT_S` (35 min default, distinct from
   `report.DEFAULT_DECEL_DESCENT_S`) is only used here, to estimate
   touchdown clock time for sampling EGLL's arrival wind.
+- `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
+  time in Active Sky by hand first (a static snapshot of its global weather
+  model — the API takes an explicit lat/lon/altitude, so one load covers
+  every point queried below, no flying required). Takes `--points` (default
+  6) evenly spaced supersonic legs, including the first and last; at each
+  one queries Active Sky live for the FL450-FL600 `TARGET_FL` grid and
+  compares against the ERA5 values `search.march_legs` would have used at
+  that same point and clock time (reuses `march_legs`, never reimplements
+  its interpolation). Both sources pick their best level with the *same*
+  weight (the ERA5 march's `weight_per_leg`) and cruise Mach, so a level
+  disagreement between them reflects a genuine wind/temp difference, not a
+  weight mismatch. The recomputed "AS total time" extends the `--points`
+  ground speeds across every sub-leg by nearest-point assignment — an
+  eyeball approximation, not a full AS march (which would need Active Sky
+  queried at every sub-leg). Needs a live, running Active Sky; not covered
+  by the test suite (which mocks `asky.get_atmosphere_np`) — run it by hand
+  against the top few `concopt search` days and eyeball whether the ranking
+  survives, and whether AS/ERA5 divergence looks like a fixable constant
+  bias or unfixable scatter.
+- `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
+  recorder against a running Prepar3D + Active Sky, over SimConnect
+  (`python-SimConnect`, localhost). Every `--interval` seconds: reads the
+  sim, projects `--lookahead-nm` ahead along the loaded route
+  (`route.project_along_route`), queries Active Sky there via
+  `verify._as_atmosphere` (reused, not reimplemented), and feeds the result
+  to `limits.best_level` **unchanged** -- same ceiling, same limits, same
+  code `search.march_legs` uses. `TOTAL WEIGHT` is read live and used
+  directly; there is no burn-off schedule here (contrast `search.py`'s
+  state-variable weight). Prints the FL450-FL600 table with the current and
+  recommended levels marked and which limit binds at the recommendation,
+  then one actionable line ("CLIMB to FL530 (+109 kt, ...) -- binding:
+  cruise_mach" / "HOLD FLxxx"), suppressed to a HOLD when the gain is under
+  `--gain-threshold-kt` (default 3). With `--record`, runs a small state
+  machine alongside it (brake release, detected as on-ground ground speed
+  crossing 40 kt upward, through touchdown) writing one CSV row per interval
+  and tracking each `.pln` waypoint's closest point of approach as it goes;
+  elapsed time is measured off `time.monotonic()`, not `ZULU_TIME` (which
+  wraps at 86,400 s and a flight can span midnight UTC). With `--compare`
+  (a `concopt report --out` CSV, requires `--record`), runs
+  `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
+  the three numbers the recorder exists to measure: measured brake-release
+  -> accel point vs `DEPARTURE_TO_ACCEL_S` (20 min), measured decel point ->
+  touchdown vs `DECEL_DESCENT_S` (35 min), and measured vs predicted
+  supersonic segment time. `_level_table`/`_recommendation_line`/
+  `compare_to_report` are pure and unit-tested; `run_inflight` itself needs
+  a live sim and isn't (same convention as `search.run_search`/
+  `verify.run_verify`).
+
+  SimConnect caveat, proven live against this project's P3D v5 install
+  (2026-09): `python-SimConnect`'s own bundled `SimConnect.dll` does not
+  speak P3D v5's protocol -- `SimConnect()` doesn't raise, it **hangs
+  forever**, because `SimConnect.connect()` only breaks its
+  `while self.ok is False: pass` spin-wait on an OPEN event, and a version
+  mismatch gets a `SIMCONNECT_EXCEPTION` back instead of OPEN, silently,
+  with no timeout. Fix: `--simconnect-dll` pointing at a copy already known
+  to work with the running sim -- any P3D add-on that talks SimConnect
+  ships one (this project's dev machine used FSLabs's
+  `Libraries\SimConnect_P3D_v5.dll`; Little Navmap's install has one too).
+  Confirmed live: `PLANE_LATITUDE` read back correctly with that dll, hung
+  indefinitely with the bundled one.
+
 - `data/` — CSV limit tables + `conc_data.py` loader
 - `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
   `nondimensional.py` — vendored fork of the `flightcondition` package.
   **Do not read or modify these.** Legacy; retained only for the pretty
   `tostring()` output in the future in-flight display.
+- `nb/day-search-results.ipynb` — exploratory reporting on a `concopt
+  search --out-all` run: distribution of total block time (histogram +
+  top-50 marked, box plot by month, wind/ISA-deviation scatter), a
+  formatted top-10 table, and the winning day's profile (chosen FL vs
+  `ceiling_ft`, TAS/GS/along-track wind vs distance) plus a flag-count
+  summary. Loads only; every computed value reuses concopt's own
+  functions (`search.march_legs` rerun for the single winning candidate —
+  the same call `report.run_report` makes — `report._step_climb_schedule`,
+  `limits.ceiling_ft`), it does not reimplement the march. The still-air
+  ISA+0 reference figure feeds `march_legs` a synthetic zero-wind
+  atmosphere rather than hand-computing a time, exploiting FL450-FL600
+  sitting entirely inside the ISA's 11-20 km isothermal layer (`atmos.isa`)
+  so one constant temperature is exact at every level, no pressure->
+  altitude inversion needed. Needs `matplotlib` (added as a dependency for
+  this).
 - `nb/max_gs.ipynb` — stale (imports a pre-2023 layout). Do not run or fix.
 
 ## Conventions
