@@ -12,9 +12,9 @@ import pytest
 
 from concopt import limits
 from concopt.atmos import isa
-from concopt.data.conc_data import ceiling_ft_table
-from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import march_legs
+from concopt.data.conc_data import ceiling_ft_table, climb_to
+from concopt.route import build_legs, climb_cruise_segment, parse_pln
+from concopt.search import DEFAULT_TOW_T, march_legs
 
 SAMPLE_PLN = Path(__file__).parent / "data" / "KJFKEGLL_CONC_01.pln"
 
@@ -112,24 +112,33 @@ def _still_air_data(legs):
 
 
 def test_still_air_reference():
-    """Marching the real 2,731 nm supersonic segment at ISA+0 with zero
-    wind (so weight is the only thing changing the level/speed picked)
-    should burn the aircraft down from 165 t to about 111 t by BARIX, in
-    about 144 minutes."""
+    """Marching brake release through BARIX at ISA+0 with zero wind (so
+    weight is the only thing changing the level/speed picked) should climb
+    DEFAULT_TOW_T (185 t) down to the ISA..+10 band's top-of-climb mass
+    (climb_to(502, 185, "isa_to_isa_plus_10") == 149 t / 1047 nm / 65 min,
+    zero wind so ground distance == the table's air distance exactly), then
+    burn further to about 115 t over the remaining ~1804 nm cruise, ~90 min
+    after that."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = supersonic_segment(legs)
-    ss_idx = np.flatnonzero(mask)
-    ss_legs = [legs[i] for i in ss_idx]
+    mask = climb_cruise_segment(legs)
+    cc_idx = np.flatnonzero(mask)
+    cc_legs = [legs[i] for i in cc_idx]
 
     data = _still_air_data(legs)
     dep_i8 = np.array([data["time"][0].astype("int64") + int(30 * 60 * 1e9)])  # mid-window
 
-    legs_out, weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8, departure_to_accel_s=0.0)
+    legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T)
 
-    assert weight_per_leg[0, 0] == pytest.approx(165.0)
+    toc_mass_t, _fuel_used_kg, toc_dist_nm, toc_time_min = climb_to(
+        502.0, DEFAULT_TOW_T, "isa_to_isa_plus_10"
+    )
+    assert float(climb["mass_t"][0]) == pytest.approx(float(toc_mass_t), abs=0.5)
+    assert float(climb["ground_dist_nm"][0]) == pytest.approx(float(toc_dist_nm), abs=0.5)
+    assert weight_per_leg[0, 0] == pytest.approx(float(toc_mass_t), abs=0.5)
+
     total_min = legs_out["accumulated_s"][0] / 60.0
     weight_at_barix = legs_out["weight_at_barix"][0]
 
-    assert total_min == pytest.approx(144.0, abs=5.0)
-    assert weight_at_barix == pytest.approx(111.0, abs=3.0)
+    assert total_min == pytest.approx(float(toc_time_min) + 90.0, abs=10.0)
+    assert weight_at_barix == pytest.approx(115.0, abs=5.0)

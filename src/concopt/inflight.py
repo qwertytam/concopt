@@ -39,8 +39,7 @@ from concopt.atmos import KT_TO_MS, isa, speed_of_sound
 from concopt.route import (build_legs, current_progress_nm,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
-from concopt.search import (DECEL_DESCENT_S, DEPARTURE_TO_ACCEL_S, NM_TO_M,
-                             TARGET_FL, _format_hmm)
+from concopt.search import DECEL_DESCENT_S, NM_TO_M, TARGET_FL, _format_hmm
 from concopt.verify import _as_atmosphere
 
 DEFAULT_INTERVAL_S = 60.0
@@ -222,9 +221,11 @@ def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id="LINND", dec
 
     Returns (table, constants): table is a DataFrame of predicted/actual/
     delta per waypoint; constants is a dict of the three feedback numbers
-    (measured_*_s, plus the DEPARTURE_TO_ACCEL_S/DECEL_DESCENT_S defaults
-    and the report's own predicted supersonic time, for the caller to print
-    against)."""
+    (measured_*_s, plus the report's own predicted brake-to-accel/decel-to-
+    touchdown/supersonic times, for the caller to print against).
+    predicted_brake_to_accel_s comes from report_df's own accel_id row
+    (report.py's climb model makes this vary by day/TOW, so it's read back
+    from the report rather than a fixed constant)."""
     rows = []
     for _, r in report_df.iterrows():
         wid = r["waypoint"]
@@ -251,7 +252,8 @@ def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id="LINND", dec
 
     constants = dict(
         measured_brake_to_accel_s=accel_actual_s,
-        predicted_brake_to_accel_s=DEPARTURE_TO_ACCEL_S,
+        predicted_brake_to_accel_s=(float(accel_rows["pred_elapsed_s"].iloc[0])
+                                     if not accel_rows.empty else np.nan),
         measured_decel_to_touchdown_s=(touchdown_elapsed_s - decel_actual_s
                                         if not decel_rows.empty else np.nan),
         predicted_decel_to_touchdown_s=DECEL_DESCENT_S,

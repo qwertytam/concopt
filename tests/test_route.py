@@ -6,6 +6,7 @@ import pytest
 
 from concopt.route import (
     build_legs,
+    climb_cruise_segment,
     current_progress_nm,
     destination_point,
     great_circle_nm,
@@ -120,6 +121,22 @@ def test_supersonic_segment_unknown_decel_id_raises(legs):
 def test_supersonic_segment_swapped_raises(legs):
     with pytest.raises(ValueError, match="swapped"):
         supersonic_segment(legs, accel_id="BARIX", decel_id="LINND")
+
+
+def test_climb_cruise_segment_spans_from_brake_release(legs):
+    """Unlike supersonic_segment, climb_cruise_segment starts at leg 0
+    (brake release), not at a named accel waypoint."""
+    mask = climb_cruise_segment(legs)
+    assert mask[0]
+    cum = np.array([leg.cum_nm for leg in legs])
+    barix_leg = [leg for leg in legs if leg.to_id == "BARIX"][-1]
+    end_cum = cum[mask][-1]
+    assert end_cum == pytest.approx(barix_leg.cum_nm, abs=1e-6)
+
+
+def test_climb_cruise_segment_unknown_decel_id_raises(legs):
+    with pytest.raises(ValueError, match="NOPE.*BARIX"):
+        climb_cruise_segment(legs, decel_id="NOPE")
 
 
 def test_intermediate_point_coincident_waypoints():

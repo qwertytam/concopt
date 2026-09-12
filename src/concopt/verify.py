@@ -3,8 +3,11 @@
 Workflow: the user loads a historical date/time in Active Sky by hand (a
 static snapshot of ActiveSky's global weather model for that moment -- the
 API takes an explicit lat/lon/altitude, not "wherever the aircraft is", so
-one load covers every point queried below), then runs `concopt verify`. It
-takes --points evenly spaced supersonic legs (including the first and last),
+one load covers every point queried below), then runs `concopt verify`
+(--tow should match the day's --tow in `concopt search`). It marches the
+same TOW-based climb search.py uses, then takes --points evenly spaced
+cruise legs past top of climb (including the first and last; climb-altitude
+legs are excluded -- Active Sky's FL450-FL600 grid doesn't apply there),
 queries Active Sky live at each one's midpoint for the same FL450-FL600
 TARGET_FL grid the search uses, and pulls the ERA5 values search.march_legs
 would have used at that same point and clock time (reusing march_legs --
@@ -26,9 +29,9 @@ from concopt import limits
 from concopt.asky import get_atmosphere_np
 from concopt.atmos import KT_TO_MS
 from concopt.era5 import load_legs_npz
-from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import (DEPARTURE_TO_ACCEL_S, NM_TO_M, TARGET_FL,
-                             _format_hmm, local_to_departure_utc, march_legs)
+from concopt.route import build_legs, climb_cruise_segment, parse_pln
+from concopt.search import (DEFAULT_TOW_T, NM_TO_M, TARGET_FL, _format_hmm,
+                             local_to_departure_utc, march_legs)
 
 
 def _select_points(n_legs, n_points):
@@ -83,33 +86,45 @@ def _as_atmosphere(lat, lon, host, port):
     return temp_k, u_ms, v_ms
 
 
-def run_verify(pln_path, npz_path, local_date, local_hour, accel_id="LINND",
+def run_verify(pln_path, npz_path, local_date, local_hour,
                decel_id="BARIX", n_points=6, host="localhost", port=19285,
-               departure_to_accel_s=DEPARTURE_TO_ACCEL_S,
+               tow_t=DEFAULT_TOW_T,
                cruise_mach=limits.CRUISE_MACH):
     """Compare Active Sky's live atmosphere against the ERA5 values the
-    search used, at n_points evenly spaced supersonic legs for local_date/
-    local_hour (America/New_York). Prints the per-point comparison and the
+    search used, at n_points evenly spaced cruise legs (climb-consumed legs
+    excluded -- see march_legs' eff_dist_nm) for local_date/local_hour
+    (America/New_York). tow_t should match the --tow the day was found
+    under in `concopt search`, so the comparison uses the same top-of-climb
+    weight/time search did. Prints the per-point comparison and the
     recomputed segment time under each source, and returns a DataFrame of
     the per-point rows."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
-    mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
-    ss_idx = np.flatnonzero(mask)
-    ss_legs = [legs[i] for i in ss_idx]
-    n_legs = len(ss_legs)
+    mask = climb_cruise_segment(legs, decel_id=decel_id)
+    cc_idx = np.flatnonzero(mask)
+    cc_legs = [legs[i] for i in cc_idx]
 
     data = load_legs_npz(npz_path)
     departure_utc = local_to_departure_utc(local_date, local_hour)
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
-    legs_out, weight_per_leg = march_legs(ss_legs, ss_idx, data, dep_i8,
-                                            departure_to_accel_s, cruise_mach)
-    era5 = {k: v[0] for k, v in legs_out.items()
+    legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
+                                                   tow_t, cruise_mach)
+
+    # Restrict to legs entirely past top of climb -- verify.py compares
+    # against Active Sky's FL450-FL600 TARGET_FL grid, which doesn't apply
+    # to the climb-altitude portion of the flight.
+    climb_ground_nm = float(climb["ground_dist_nm"][0])
+    cruise_local_idx = [i for i, leg in enumerate(cc_legs)
+                         if leg.cum_nm - leg.dist_nm >= climb_ground_nm - 1e-6]
+    ss_legs = [cc_legs[i] for i in cruise_local_idx]
+    n_legs = len(ss_legs)
+
+    era5 = {k: v[0][cruise_local_idx] for k, v in legs_out.items()
             if k not in ("accumulated_s", "weight_at_barix")}
-    era5_total_s = float(legs_out["accumulated_s"][0]) - departure_to_accel_s
-    weight_per_leg = weight_per_leg[0]  # (n_legs,), the ERA5 march's weight state
+    era5_total_s = float(legs_out["accumulated_s"][0]) - float(climb["time_min"][0]) * 60.0
+    weight_per_leg = weight_per_leg[0][cruise_local_idx]  # (n_legs,), the ERA5 march's weight state
 
     point_idx = _select_points(n_legs, n_points)
 

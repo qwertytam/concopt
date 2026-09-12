@@ -76,6 +76,63 @@ def fuel_total_kgh_table(weight_t, isa_dev_c):
     ).reshape(weight_t.shape)
 
 
+CLIMB_BANDS = ("isa_minus_20_to_minus_10", "isa_minus_10_to_isa", "isa_to_isa_plus_10")
+
+_climb_fp = files("concopt").joinpath("data/conc_climb.csv")
+_climb_tbl = pd.read_csv(_climb_fp, encoding="utf-8-sig")
+_CLIMB_TOW_T = np.sort(_climb_tbl["tow_t"].unique())
+_CLIMB_LEVEL_FL = np.sort(_climb_tbl["level_fl"].unique())
+_CLIMB_COLS = ("mass_t", "fuel_used_kg", "dist_nm", "time_min")
+
+
+def _build_climb_interps():
+    """{band: {col: RegularGridInterpolator}}, one (tow_t, level_fl) grid per
+    band per column -- built once at import, same pattern as the cruise
+    table's _ceiling_interp/_fuel_total_interp above."""
+    interps = {}
+    for band in CLIMB_BANDS:
+        band_tbl = (_climb_tbl[_climb_tbl["temp_band"] == band]
+                    .sort_values(["tow_t", "level_fl"]))
+        interps[band] = {}
+        for col in _CLIMB_COLS:
+            grid = (band_tbl.pivot(index="tow_t", columns="level_fl", values=col)
+                    .loc[_CLIMB_TOW_T, _CLIMB_LEVEL_FL].to_numpy(float))
+            interps[band][col] = RegularGridInterpolator(
+                (_CLIMB_TOW_T, _CLIMB_LEVEL_FL), grid, bounds_error=False, fill_value=None
+            )
+    return interps
+
+
+_CLIMB_INTERPS = _build_climb_interps()
+
+
+def climb_to(level_fl, tow_t, temp_band):
+    """(mass_t, fuel_used_kg, dist_nm, time_min) at level_fl, from
+    conc_climb.csv, bilinear over (tow_t, level_fl) within temp_band (one
+    of CLIMB_BANDS -- discrete bands, never interpolated between: a day's
+    temperature regime picks exactly one). Clamped to the table's
+    (tow_t, level_fl) bounds, no extrapolation; tow_t/level_fl broadcast
+    against each other.
+
+    dist_nm is AIR distance -- the climb tables carry no wind columns,
+    unlike the descent tables (conc_descent.csv). Ground distance =
+    dist_nm + wind_component_kt * time_min / 60, the same relation the
+    descent tables tabulate explicitly; applying it is the caller's job
+    (search.py), since the along-track wind isn't available here."""
+    if temp_band not in _CLIMB_INTERPS:
+        raise ValueError(f"temp_band {temp_band!r} not one of {CLIMB_BANDS}")
+
+    level_fl = np.clip(np.asarray(level_fl, float), _CLIMB_LEVEL_FL[0], _CLIMB_LEVEL_FL[-1])
+    tow_t = np.clip(np.asarray(tow_t, float), _CLIMB_TOW_T[0], _CLIMB_TOW_T[-1])
+    tow_t, level_fl = np.broadcast_arrays(tow_t, level_fl)
+    pts = np.stack([tow_t.ravel(), level_fl.ravel()], axis=-1)
+
+    interps = _CLIMB_INTERPS[temp_band]
+    return tuple(
+        interps[col](pts).reshape(tow_t.shape) for col in _CLIMB_COLS
+    )
+
+
 _desc_fp = files("concopt").joinpath("data/conc_desc_time.csv")
 _desc_tbl = pd.read_csv(_desc_fp, encoding="utf-8-sig")
 # Table is FL600 (60,000 ft) down to 3,000 ft; reversed to ascending altitude
