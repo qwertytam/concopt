@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c \"import concopt.search\")",
+      "Bash(.venv/Scripts/python.exe -c \"import concopt.report\")",
+      "Bash(.venv/Scripts/python.exe -c \"import concopt.cli\")",
+      "Bash(.venv/Scripts/python.exe -m pytest -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_perf_table.py::test_still_air_reference -q)",
+      "Bash(.venv/Scripts/python.exe -m concopt.cli report --pln tests/data/KJFKEGLL_CONC_01.pln --npz data/era5/route_legs.npz --date 2016-02-12 --hour 14 --out /dev/null)",
+      "Bash(time .venv/Scripts/python.exe -m concopt.cli search --pln tests/data/KJFKEGLL_CONC_01.pln --npz data/era5/route_legs.npz --surface-npz data/era5/surface_legs.npz --out C:/Users/qwert/AppData/Local/Temp/claude/e--Repos-concopt/ce58651e-c1f3-4bdf-b761-c85ada76f85e/scratchpad/after_results.csv --out-all C:/Users/qwert/AppData/Local/Temp/claude/e--Repos-concopt/ce58651e-c1f3-4bdf-b761-c85ada76f85e/scratchpad/after_results_all.csv)",
+      "Bash(.venv/Scripts/python.exe -m concopt.cli report --pln tests/data/KJFKEGLL_CONC_01.pln --npz data/era5/route_legs.npz --date 2026-01-21 --hour 14 --out C:/Users/qwert/AppData/Local/Temp/claude/e--Repos-concopt/ce58651e-c1f3-4bdf-b761-c85ada76f85e/scratchpad/after_report.csv)",
+      "Bash(grep -n \"^- \\\\`\" CLAUDE.md)",
+      "Bash(awk -F, 'NR>1{print $6}' src/concopt/data/conc_climb.csv)",
+      "Bash(awk -F, 'NR>1 && $3==\"502\"{print $6}' src/concopt/data/conc_climb.csv)",
+      "Bash(python -c ' *)",
+      "Bash(.venv/Scripts/python.exe \"C:/Users/qwert/AppData/Local/Temp/claude/e--Repos-concopt/ce58651e-c1f3-4bdf-b761-c85ada76f85e/scratchpad/fix_notebook.py\")",
+      "Bash(python -c \"import json; json.load\\(open\\('nb/day-search-results.ipynb', encoding='utf-8'\\)\\); print\\('valid json'\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_route.py -q)",
+      "Bash(.venv/Scripts/python.exe -m concopt.cli report --pln tests/data/KJFKEGLL_CONC_01.pln --npz data/era5/route_legs.npz --date 2025-02-19 --hour 13 --out /dev/null)",
+      "Bash(git commit -m ' *)",
+      "Bash(gh pr create --title 'Add TOW-based climb model, replacing fixed accel-point assumption' --body ' *)",
+      "Bash(git pull *)"
+    ]
+  }
+}
