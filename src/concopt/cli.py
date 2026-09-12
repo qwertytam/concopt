@@ -9,16 +9,18 @@ from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
 from concopt.limits import CRUISE_MACH
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import DECEL_DESCENT_S, DEPARTURE_TO_ACCEL_S, run_search
+from concopt.search import DECEL_DESCENT_S, DEFAULT_TOW_T, run_search
 from concopt.verify import run_verify
 
 
 def _add_common_route_args(parser):
-    """--pln/--accel/--decel, shared verbatim by every subcommand that
-    works from a parsed flight plan."""
+    """--pln/--decel, shared verbatim by every subcommand that works from a
+    parsed flight plan. --accel is added separately, only where a named
+    accel waypoint is still meaningful (route's display, inflight's live
+    supersonic-segment tracking) -- search/report/verify now derive their
+    climb-end point from conc_data.climb_to (TOW + weather), not a fixed
+    waypoint, so --accel would be silently ignored there."""
     parser.add_argument('--pln', required=True, help='path to a P3D .pln flight plan')
-    parser.add_argument('--accel', default='LINND',
-                         help='acceleration waypoint id (default: LINND)')
     parser.add_argument('--decel', default='BARIX',
                          help='deceleration waypoint id (default: BARIX)')
 
@@ -42,9 +44,9 @@ def _cmd_route(args):
 
 
 def _cmd_search(args):
-    run_search(args.pln, args.npz, args.surface_npz, accel_id=args.accel, decel_id=args.decel,
+    run_search(args.pln, args.npz, args.surface_npz, decel_id=args.decel,
                top=args.top, out_path=args.out, out_all_path=args.out_all,
-               departure_to_accel_s=args.departure_to_accel_min * 60.0,
+               tow_t=args.tow,
                decel_descent_s=args.decel_descent_min * 60.0,
                cruise_mach=args.cruise_mach)
 
@@ -58,17 +60,17 @@ def _cmd_report(args):
         raise SystemExit('report: either --best, or both --date and --hour, is required')
 
     run_report(args.pln, args.npz, local_date, local_hour,
-               accel_id=args.accel, decel_id=args.decel, out_path=args.out,
-               departure_to_accel_s=args.departure_to_accel_min * 60.0,
+               decel_id=args.decel, out_path=args.out,
+               tow_t=args.tow,
                decel_descent_s=args.decel_descent_min * 60.0,
                cruise_mach=args.cruise_mach)
 
 
 def _cmd_verify(args):
     run_verify(args.pln, args.npz, dt.date.fromisoformat(args.date), args.hour,
-               accel_id=args.accel, decel_id=args.decel, n_points=args.points,
+               decel_id=args.decel, n_points=args.points,
                host=args.host, port=args.port,
-               departure_to_accel_s=args.departure_to_accel_min * 60.0,
+               tow_t=args.tow,
                cruise_mach=args.cruise_mach)
 
 
@@ -90,6 +92,9 @@ def main(argv=None):
 
     route_parser = subparsers.add_parser(
         'route', parents=[common], help='parse a .pln and list its legs')
+    route_parser.add_argument('--accel', default='LINND',
+                               help='acceleration waypoint id, for the supersonic-span marker '
+                                    'column only (default: LINND)')
     route_parser.add_argument('--max-leg-nm', type=float, default=100.0,
                                help='subdivide legs longer than this (nm, default: 100)')
     route_parser.set_defaults(func=_cmd_route)
@@ -107,10 +112,9 @@ def main(argv=None):
                                 help='also write the full ranked candidate set (raw numeric columns, '
                                      'not just the top rows) to this CSV path -- for '
                                      'nb/day-search-results.ipynb')
-    search_parser.add_argument('--departure-to-accel-min', type=float,
-                                default=DEPARTURE_TO_ACCEL_S / 60.0,
-                                help='minutes from brakes release to the accel '
-                                     'point/first supersonic leg (default: 20)')
+    search_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
+                                help='take-off weight, tonnes -- drives the brake-release-to-'
+                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f})')
     search_parser.add_argument('--decel-descent-min', type=float,
                                 default=DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, for estimating '
@@ -130,10 +134,9 @@ def main(argv=None):
     report_parser.add_argument('--search-csv', default='results.csv',
                                 help='concopt search --out CSV to read --best from (default: results.csv)')
     report_parser.add_argument('--out', default='report.csv', help='output CSV path (default: report.csv)')
-    report_parser.add_argument('--departure-to-accel-min', type=float,
-                                default=DEPARTURE_TO_ACCEL_S / 60.0,
-                                help='minutes from brakes release to the accel '
-                                     'point/first supersonic leg (default: 20)')
+    report_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
+                                help='take-off weight, tonnes -- drives the brake-release-to-'
+                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f})')
     report_parser.add_argument('--decel-descent-min', type=float,
                                 default=DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, decel + descent '
@@ -156,10 +159,10 @@ def main(argv=None):
                                      'Active Sky at (default: 6)')
     verify_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
     verify_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
-    verify_parser.add_argument('--departure-to-accel-min', type=float,
-                                default=DEPARTURE_TO_ACCEL_S / 60.0,
-                                help='minutes from brakes release to the accel '
-                                     'point/first supersonic leg (default: 20)')
+    verify_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
+                                help='take-off weight, tonnes -- drives the brake-release-to-'
+                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f}); should '
+                                     'match the search --tow of the day under test')
     verify_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
@@ -168,6 +171,9 @@ def main(argv=None):
     inflight_parser = subparsers.add_parser(
         'inflight', parents=[common],
         help='live altitude advisor + flight recorder against a running Prepar3D/Active Sky')
+    inflight_parser.add_argument('--accel', default='LINND',
+                                  help='acceleration waypoint id, for the recorder\'s supersonic-'
+                                       'span tracking and compare_to_report (default: LINND)')
     inflight_parser.add_argument('--interval', type=float, default=DEFAULT_INTERVAL_S,
                                   help=f'seconds between advisor ticks (default: {DEFAULT_INTERVAL_S:.0f})')
     inflight_parser.add_argument('--lookahead-nm', type=float, default=DEFAULT_LOOKAHEAD_NM,

@@ -231,6 +231,29 @@ def project_along_route(legs, lat, lon, lookahead_nm):
     return float(cur_lat), float(cur_lon), float(leg.track_deg)
 
 
+def climb_cruise_segment(legs, decel_id="BARIX"):
+    """Boolean mask over legs, True from the first leg (brake release)
+    through the leg arriving at decel_id (inclusive) -- the span
+    search.march_legs covers now that a TOW-based climb model
+    (data.conc_data.climb_to) replaces the old fixed accel-point/weight
+    assumption: the march starts at brake release, not at a named accel
+    waypoint, since top of climb falls at a distance search.py computes
+    per candidate rather than at a fixed .pln fix. Contrast
+    supersonic_segment, which still marks the physically-supersonic-only
+    span for `concopt route`'s display."""
+    to_ids = np.array([leg.to_id for leg in legs])
+    decel_matches = np.flatnonzero(to_ids == decel_id)
+    if decel_matches.size == 0:
+        raise ValueError(
+            f"decel_id {decel_id!r} not found; available waypoint ids: "
+            f"{sorted(set(to_ids))}"
+        )
+    end_idx = decel_matches[-1]
+    mask = np.zeros(len(legs), dtype=bool)
+    mask[:end_idx + 1] = True
+    return mask
+
+
 def supersonic_segment(legs, accel_id="LINND", decel_id="BARIX"):
     """Boolean mask over legs, True from the leg departing accel_id through
     the leg arriving at decel_id (inclusive). Sub-legs of a subdivided

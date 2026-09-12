@@ -59,26 +59,60 @@ for its own sake, no defensive error handling.
   date from `era5.ARCHIVE_START` to today at 08:00-14:00 America/New_York
   (7/day), built tz-aware with `zoneinfo` and converted to UTC so DST
   doesn't silently shift winter candidates by an hour — about 30,933 for
-  the real archive. `run_search` marches the supersonic legs (from
-  `route.supersonic_segment`) one at a time in a plain Python loop, but
-  every op inside that loop (time-interpolation into the `era5.py` `.npz`,
-  vertical interpolation of u/v/t onto the FL450-FL600 1,000 ft grid,
-  `limits.best_level`) is vectorised across all candidates at once — never
-  loop over candidates. Weight is a state variable, not a schedule: it
-  starts at 165 t at the accel point and is burned off leg by leg from
-  `conc_data.fuel_total_kgh_table` (the Air France performance table), at
-  the weight/ISA-deviation the leg was actually flown at, feeding
-  `limits.ceiling_ft(weight_t, isa_dev_c)` for the next leg — a still-air,
-  ISA+0 run over the real supersonic segment burns 165 t down to ~111 t by
-  BARIX (see the printed sanity checks, which report rather than assert).
-  Assumes the `.npz` was built from the same `--pln`/`build_legs` call, so
-  the leg axes line up by position — it does not re-check this. Also
-  screens each candidate's KJFK departure / EGLL arrival wind through
-  `runways.py` (see below) and ranks on `total_time`, not supersonic time.
-  `--out-all` writes the *full* ranked candidate set (raw numeric columns,
-  ~31,000 rows) alongside `--out`'s top-N formatted display CSV — for
-  `nb/day-search-results.ipynb`, which needs the whole distribution rather
-  than just the shortlist.
+  the real archive. `run_search` marches the climb+cruise span (brake
+  release through the decel point — `route.climb_cruise_segment`, not just
+  the physically-supersonic legs) one leg at a time in a plain Python loop,
+  but every op inside that loop (time-interpolation into the `era5.py`
+  `.npz`, vertical interpolation of u/v/t onto the FL450-FL600 1,000 ft
+  grid, `limits.best_level`) is vectorised across all candidates at once —
+  never loop over candidates.
+
+  The march starts with a TOW-based climb (`data.conc_data.climb_to`,
+  `conc_climb.csv`; `--tow`, default 185 t): brake release to top of climb
+  (FL502) burns TOW down to a top-of-climb mass over some ground distance
+  and time, both used as the cruise's starting state — replacing an older
+  fixed 20-minute/165 t accel-point assumption that credited full cruise
+  ground speed over hundreds of miles still spent climbing. The table's
+  temp band (`isa_minus_20_to_minus_10`/`isa_minus_10_to_isa`/
+  `isa_to_isa_plus_10`, discrete, never interpolated between) is picked
+  from the ISA deviation over the first `CLIMB_BAND_SAMPLE_NM` (300) nm of
+  route at the lowest stored ERA5 pressure level — the upper-air `.npz`
+  only carries the 4 mandatory levels used for the supersonic scan, nothing
+  low enough for a real climb-altitude reading, so this is a coarse proxy,
+  good enough to bucket the day and correct the table's air distance for
+  wind (`ground_dist_nm = dist_nm + wind_component_kt * time_min / 60`,
+  the same relation `conc_descent.csv` tabulates explicitly for descent).
+  Days colder than ISA-20 clamp into the coldest band silently; days
+  warmer than ISA+10 clamp into the warmest band and are flagged
+  (`climb_warm_clamped`/`flags` column) — clamping warm is optimistic.
+
+  Since the climb's ground distance varies per candidate (TOW is fixed for
+  a run, but temp band and the wind correction vary day to day), so does
+  where the cruise starts along the route — a leg wholly inside one
+  candidate's climb is wholly past another's. Rather than reconstructing
+  per-candidate Leg objects, `march_legs` computes `eff_dist_nm` (n_cand,
+  n_legs): the actual ground distance each candidate flew each leg, 0 for
+  one wholly consumed by climb, the full leg for one wholly past it,
+  a partial amount for the one leg straddling top of climb. `mean_fl`/
+  `mean_wind_kt`/`mean_isa_dev_k` are `eff_dist_nm`-weighted means, so the
+  climb's leading zero/partial-distance legs (whose chosen level is
+  climb-altitude noise — `limits.best_level` still runs on them regardless)
+  don't pollute the cruise-only averages.
+
+  Weight is a state variable, not a schedule: after the climb it's
+  integrated leg by leg from `conc_data.fuel_total_kgh_table` (the Air
+  France performance table), at the weight/ISA-deviation the leg was
+  actually flown at, feeding `limits.ceiling_ft(weight_t, isa_dev_c)` for
+  the next leg — a still-air, ISA+0 run at TOW 185 t burns to a ~149 t
+  top-of-climb mass, then to ~115 t by BARIX (see the printed sanity
+  checks, which report rather than assert). Assumes the `.npz` was built
+  from the same `--pln`/`build_legs` call, so the leg axes line up by
+  position — it does not re-check this. Also screens each candidate's KJFK
+  departure / EGLL arrival wind through `runways.py` (see below) and ranks
+  on `total_time`, not supersonic time. `--out-all` writes the *full*
+  ranked candidate set (raw numeric columns, ~31,000 rows) alongside
+  `--out`'s top-N formatted display CSV — for `nb/day-search-results.ipynb`,
+  which needs the whole distribution rather than just the shortlist.
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -102,13 +136,18 @@ for its own sake, no defensive error handling.
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers
-  every point queried below, no flying required). Takes `--points` (default
-  6) evenly spaced supersonic legs, including the first and last; at each
-  one queries Active Sky live for the FL450-FL600 `TARGET_FL` grid and
-  compares against the ERA5 values `search.march_legs` would have used at
-  that same point and clock time (reuses `march_legs`, never reimplements
-  its interpolation). Both sources pick their best level with the *same*
-  weight (the ERA5 march's `weight_per_leg`) and cruise Mach, so a level
+  every point queried below, no flying required). `--tow` should match the
+  `--tow` the day was shortlisted under in `concopt search`, so the same
+  climb model (`search._climb_profile`) puts both sources on the same
+  top-of-climb weight/time; legs still inside the climb are excluded from
+  the comparison (Active Sky's FL450-FL600 `TARGET_FL` grid doesn't apply
+  to climb altitude). Takes `--points` (default 6) evenly spaced cruise
+  legs, including the first and last; at each one queries Active Sky live
+  for the FL450-FL600 `TARGET_FL` grid and compares against the ERA5 values
+  `search.march_legs` would have used at that same point and clock time
+  (reuses `march_legs`, never reimplements its interpolation). Both sources
+  pick their best level with the *same* weight (the ERA5 march's
+  `weight_per_leg`) and cruise Mach, so a level
   disagreement between them reflects a genuine wind/temp difference, not a
   weight mismatch. The recomputed "AS total time" extends the `--points`
   ground speeds across every sub-leg by nearest-point assignment — an
@@ -140,9 +179,11 @@ for its own sake, no defensive error handling.
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release
-  -> accel point vs `DEPARTURE_TO_ACCEL_S` (20 min), measured decel point ->
-  touchdown vs `DECEL_DESCENT_S` (35 min), and measured vs predicted
-  supersonic segment time. `_level_table`/`_recommendation_line`/
+  -> accel point vs that report's own predicted elapsed time there
+  (`search.py`'s TOW-based climb model makes this vary by day/TOW, so it's
+  read back from the report rather than a fixed constant), measured decel
+  point -> touchdown vs `DECEL_DESCENT_S` (35 min), and measured vs
+  predicted supersonic segment time. `_level_table`/`_recommendation_line`/
   `compare_to_report` are pure and unit-tested; `run_inflight` itself needs
   a live sim and isn't (same convention as `search.run_search`/
   `verify.run_verify`).
@@ -205,6 +246,13 @@ for its own sake, no defensive error handling.
   service ceiling); one cell (165 t, ISA-30) is thrust-limited and flagged
   in its `note`, excluded from the max_mach/ceiling cross-check in
   `tests/test_perf_table.py`.
+- Climb table: `data/conc_climb.csv` (`conc_data.climb_to`), brake release
+  to top of climb (FL502), temp band (3 discrete bands, never interpolated
+  between) × TOW t (160-185, 5 t steps) × level_fl (18 levels) — 324 rows.
+  `dist_nm` is air distance (no wind columns, unlike the descent tables);
+  `search.py`'s `_climb_profile` applies the wind correction. Top of climb
+  ranges 210-1047 nm depending on TOW/temperature — see `search.py`'s
+  climb-model paragraph above.
 
 ## Data present but not yet wired in
 - `src/concopt/data/conc_descent.csv` — decel-to-Mach1 + descent-to-1500ft
