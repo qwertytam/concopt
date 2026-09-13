@@ -4,6 +4,7 @@ phase 5, `inflight` is phase 6."""
 import argparse
 import datetime as dt
 
+from concopt.fuel import MIN_LANDING_FUEL_T
 from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                                DEFAULT_LOOKAHEAD_NM, run_inflight)
 from concopt.limits import CRUISE_MACH
@@ -62,7 +63,8 @@ def _cmd_report(args):
 
     run_report(args.pln, args.npz, local_date, local_hour,
                decel_id=args.decel, out_path=args.out,
-               tow_t=args.tow,
+               tow_t=args.tow, zfw_t=args.zfw,
+               min_landing_fuel_t=args.min_landing_fuel,
                decel_descent_s=args.decel_descent_min * 60.0,
                cruise_mach=args.cruise_mach)
 
@@ -140,9 +142,17 @@ def main(argv=None):
     report_parser.add_argument('--search-csv', default='results.csv',
                                 help='concopt search --out CSV to read --best from (default: results.csv)')
     report_parser.add_argument('--out', default='report.csv', help='output CSV path (default: report.csv)')
-    report_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
-                                help='take-off weight, tonnes -- drives the brake-release-to-'
-                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f})')
+    report_parser.add_argument('--zfw', type=float, default=None,
+                                help='zero fuel weight, tonnes -- TOW is solved for by fixed-point '
+                                     'iteration (uplift = trip fuel + reserve) rather than given; '
+                                     f'neither this nor --tow given falls back to a flat '
+                                     f'{DEFAULT_TOW_T:.0f} t TOW')
+    report_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
+                                help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
+                                     f'reserve (default: {MIN_LANDING_FUEL_T:.0f})')
+    report_parser.add_argument('--tow', type=float, default=None,
+                                help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
+                                     'point entirely, for "what if I actually load X"')
     report_parser.add_argument('--decel-descent-min', type=float,
                                 default=DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, decel + descent '

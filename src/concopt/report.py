@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from concopt import limits
+from concopt import fuel, limits
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import (DECEL_DESCENT_S, DEFAULT_TOW_T, NM_TO_M,
@@ -21,6 +21,22 @@ from concopt.search import (DECEL_DESCENT_S, DEFAULT_TOW_T, NM_TO_M,
 
 # 307 nm of deceleration + descent from BARIX to touchdown.
 DECEL_DESCENT_NM = 307.0
+
+# What each fuel.py boundary flag means, spelled out rather than left as the
+# bare token the search CSV carries -- `concopt report` is read by a person
+# deciding whether to fly the day, and a clamped or unconverged fuel plan is
+# not a plan.
+_FUEL_FLAG_NOTES = {
+    f"tow_above_mtow_{fuel.MTOW_T:.0f}":
+        "the uplift this ZFW needs puts TOW over the {mtow:.0f} t structural "
+        "limit -- INFEASIBLE; TOW below is clamped, the plan wanted {req:.1f} t",
+    f"tow_below_climb_table_{fuel.CLIMB_TOW_MIN_T:.0f}":
+        "TOW fell below conc_climb.csv's {floor:.0f} t floor and was clamped "
+        "(the plan wanted {req:.1f} t) -- lower-weight climb pages needed",
+    "fuel_not_converged":
+        "the fixed point was still moving after {iters} iterations -- the "
+        "weights below are the last iterate, not a solution",
+}
 
 
 def _format_mmss(seconds):
@@ -115,6 +131,45 @@ def _waypoint_table(cc_legs, departure_utc_ts, leg):
     return table
 
 
+def _fuel_plan_lines(plan):
+    """fuel.fuel_plan's dict (n_cand=1) -> the printed fuel-plan block, as a
+    list of lines. Trip fuel is broken out into climb / cruise / descent
+    rather than shown as one number: the split is what makes it obvious when
+    the climb is eating the flight, which is the whole reason the fixed point
+    matters. Any boundary flag fuel.py raised is reported here too -- a
+    clamped or unconverged result has to say so in the report, not only in
+    the search CSV."""
+    one = {k: (float(v[0]) if isinstance(v, np.ndarray) and k != "flags" else v)
+           for k, v in plan.items()}
+    flag = plan["flags"][0]
+
+    lines = [
+        f"Fuel plan (ZFW {one['zfw_t']:.1f} t, reserve "
+        f"{one['min_landing_fuel_t']:.1f} t at touchdown)",
+        f"  {'uplift':<15} {one['uplift_t']:.1f} t",
+        f"  {'trip fuel':<15} {one['trip_fuel_t']:.1f} t      "
+        f"climb {one['climb_fuel_t']:.1f} / cruise {one['cruise_fuel_t']:.1f} "
+        f"/ descent {one['descent_fuel_t']:.1f}*",
+        f"  {'take-off weight':<15} {one['tow_t']:.1f} t",
+        f"  {'landing weight':<15} {one['landing_weight_t']:.1f} t",
+    ]
+
+    if plan["n_iterations"] is None:
+        lines.append("  TOW given, no fixed point -- ZFW above is what that TOW implies")
+    else:
+        lines.append(f"  converged in {plan['n_iterations']} iterations")
+
+    if flag:
+        note = _FUEL_FLAG_NOTES[flag].format(
+            mtow=fuel.MTOW_T, floor=fuel.CLIMB_TOW_MIN_T,
+            req=one["tow_required_t"], iters=plan["n_iterations"],
+        )
+        lines.append(f"  !! {flag}: {note}")
+
+    lines.append("  * descent fuel is a placeholder until the descent tables are wired")
+    return lines
+
+
 def _step_climb_schedule(legs, chosen_fl):
     """[(cum_nm, FL), ...] at every sub-leg where the chosen level differs
     from the one before it -- sub-leg granularity, not waypoint-aggregated,
@@ -132,16 +187,25 @@ def _step_climb_schedule(legs, chosen_fl):
 
 def run_report(pln_path, npz_path, local_date, local_hour,
                 decel_id="BARIX", out_path="report.csv",
-                tow_t=DEFAULT_TOW_T,
+                tow_t=None, zfw_t=None,
+                min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 decel_descent_s=DECEL_DESCENT_S,
                 cruise_mach=limits.CRUISE_MACH):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
-    run_search uses -- for this single candidate, then prints the waypoint
-    table, climb segment, profile summary and brakes-release-to-touchdown
-    totals, and writes the waypoint table to out_path."""
-    plan = parse_pln(pln_path)
-    legs = build_legs(plan["waypoints"])
+    run_search uses -- for this single candidate, then prints the fuel plan,
+    waypoint table, climb segment, profile summary and brakes-release-to-
+    touchdown totals, and writes the waypoint table to out_path.
+
+    zfw_t (tonnes) is the primary weight input: TOW is solved for by
+    fuel.fixed_point_fuel_iteration rather than given, so the report shows
+    the weight the day actually needs. tow_t overrides that -- given, the
+    fixed point is skipped entirely and ZFW is instead derived from the trip
+    fuel that TOW produces ("what if I actually load X"). Neither given
+    falls back to a flat DEFAULT_TOW_T, same as before the fuel plan
+    existed."""
+    parsed_pln = parse_pln(pln_path)
+    legs = build_legs(parsed_pln["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
     cc_idx = np.flatnonzero(mask)
     cc_legs = [legs[i] for i in cc_idx]
@@ -151,8 +215,34 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
-    legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
-                                                   tow_t, cruise_mach)
+    if tow_t is None and zfw_t is None:
+        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan behaviour
+
+    if tow_t is None:
+        zfw_arr = np.array([zfw_t], dtype=float)
+        tow_arr, n_iterations, plan_flags, legs_out, weight_per_leg, climb = (
+            fuel.fixed_point_fuel_iteration(
+                cc_legs, cc_idx, data, dep_i8, zfw_arr,
+                min_landing_fuel_t=min_landing_fuel_t,
+                march_legs_fn=march_legs, cruise_mach=cruise_mach,
+            )
+        )
+        plan = fuel.fuel_plan(climb, legs_out, zfw_t=zfw_arr,
+                               min_landing_fuel_t=min_landing_fuel_t,
+                               tow_t=tow_arr, n_iterations=n_iterations,
+                               flags=plan_flags)
+        tow_t = float(tow_arr[0])
+    else:
+        legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
+                                                       tow_t, cruise_mach)
+        plan = fuel.fuel_plan(climb, legs_out, zfw_t=None,
+                               min_landing_fuel_t=min_landing_fuel_t,
+                               tow_t=np.array([tow_t], dtype=float))
+
+    for line in _fuel_plan_lines(plan):
+        print(line)
+    print()
+
     # Squeeze the n_cand=1 axis -- everything below is per sub-leg (1-D).
     scalar_keys = ("accumulated_s", "weight_at_barix")
     leg = {k: v[0] for k, v in legs_out.items() if k not in scalar_keys}

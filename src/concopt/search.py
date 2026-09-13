@@ -160,12 +160,20 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
     """Per-candidate brake-release-to-top-of-climb profile: mass_t,
     fuel_used_kg, dist_nm (air), ground_dist_nm (wind-corrected, what the
     march actually starts the cruise at), time_min, temp_band, warm_flag.
-    tow_t is the same for every candidate (one --tow per run); temp_band
-    varies per candidate, so conc_data.climb_to (one temp_band at a time)
-    is called once per band (CLIMB_BANDS has only 3) rather than per
-    candidate."""
+    tow_t is either a scalar (one --tow for the whole run) or a (n_cand,)
+    array -- fuel.py's fixed point marches every candidate at its own
+    current TOW estimate, so this has to accept a per-candidate vector, not
+    just one shared weight. temp_band varies per candidate, so
+    conc_data.climb_to (one temp_band at a time) is called once per band
+    (CLIMB_BANDS has only 3) rather than per candidate."""
     n_cand = len(dep_i8)
     temp_band, warm_flag, wind_component_kt = _climb_conditions(data, dep_i8, cc_legs, cc_idx)
+
+    # Scalar or (n_cand,) in, always (n_cand,) here, so the per-band masks
+    # below select each candidate's own TOW rather than broadcasting a
+    # single weight into a band-sized slot (which raised for any run whose
+    # candidates spanned more than one band).
+    tow_per_cand = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,))
 
     mass_t = np.empty(n_cand)
     fuel_used_kg = np.empty(n_cand)
@@ -175,7 +183,7 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
         band_mask = temp_band == band
         if not band_mask.any():
             continue
-        m, f, d, t = climb_to(TOP_OF_CLIMB_FL, np.full(int(band_mask.sum()), tow_t), band)
+        m, f, d, t = climb_to(TOP_OF_CLIMB_FL, tow_per_cand[band_mask], band)
         mass_t[band_mask] = m
         fuel_used_kg[band_mask] = f
         dist_nm[band_mask] = d
