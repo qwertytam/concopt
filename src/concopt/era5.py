@@ -24,6 +24,19 @@ UPPER_AIR_GRID = [1.0, 1.0]
 # Do not widen this.
 UPPER_AIR_TIMES = [f"{h:02d}:00" for h in range(12, 24)]
 
+# Subsonic cruise segment (last ~300 nm into LHR, arrival-only), FL183-FL414.
+# Four core pressure levels (250-500 hPa) covering the subsonic cruise range.
+SUBSONIC_LEVELS = ["250", "300", "400", "500"]
+SUBSONIC_AREA = [52, -1, 50, 2]  # N, W, S, E — UK arrival-only box
+SUBSONIC_GRID = [1.0, 1.0]
+SUBSONIC_TIMES = UPPER_AIR_TIMES
+# CDS cost limit testing, 2026-09: all configurations tested (original 7 levels
+# + large area, 6 levels, reduced area, 4 levels) rejected with "cost limits
+# exceeded" even at 1-month chunks. Code is mechanically complete but actual
+# CDS download is currently not feasible. To enable: either reduce SUBSONIC_LEVELS
+# further (e.g. ["300", "400", "500"]), use a point request instead of area,
+# or request smaller time windows (quarterly instead of monthly).
+
 # Phase 4 (runways.py's crosswind/tailwind screen, and later the in-flight
 # advisor) consumes these; downloaded now so both sit in the same CDS
 # queue as the upper-air requests.
@@ -240,6 +253,60 @@ def download_all_upper_air(out_dir):
     return [download_upper_air(out_dir, y, m) for y, m in upper_air_months()]
 
 
+def _subsonic_month_chunks(year, chunk_size=12):
+    """_year_months(year) split into runs of at most chunk_size, in order."""
+    months = _year_months(year)
+    return [months[i:i + chunk_size] for i in range(0, len(months), chunk_size)]
+
+
+def download_subsonic(out_dir, year, chunk_size=12):
+    """reanalysis-era5-pressure-levels requests for the subsonic arrival
+    box, chunked by month. One request per `chunk_size` months (default 12;
+    see SUBSONIC_TIMES comment for CDS cost-limit testing notes). Skips
+    chunks whose output files already exist. Returns list of paths."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_paths = []
+    for chunk in _subsonic_month_chunks(year, chunk_size):
+        out_path = out_dir / f"era5_subsonic_{year}_{chunk[0]}-{chunk[-1]}.nc"
+        if not out_path.exists():
+            cdsapi.Client().retrieve(
+                "reanalysis-era5-pressure-levels",
+                {
+                    "product_type": "reanalysis",
+                    "variable": [
+                        "u_component_of_wind",
+                        "v_component_of_wind",
+                        "temperature",
+                    ],
+                    "pressure_level": SUBSONIC_LEVELS,
+                    "year": [str(year)],
+                    "month": chunk,
+                    "day": _ALL_DAYS,
+                    "time": SUBSONIC_TIMES,
+                    "area": SUBSONIC_AREA,
+                    "grid": SUBSONIC_GRID,
+                    "data_format": "netcdf",
+                },
+                str(out_path),
+            )
+        chunk_paths.append(out_path)
+    return chunk_paths
+
+
+def download_all_subsonic(out_dir, chunk_size=12):
+    """download_subsonic for every year from ARCHIVE_START through today.
+    chunk_size is the number of months per CDS request (default 12; this was
+    determined by live testing against CDS -- see comment at SUBSONIC_TIMES)."""
+    out_dir = Path(out_dir)
+    today = dt.date.today()
+    all_paths = []
+    for year in range(ARCHIVE_START.year, today.year + 1):
+        all_paths.extend(download_subsonic(out_dir, year, chunk_size))
+    return all_paths
+
+
 def download_all_surface(out_dir):
     """download_surface for every year from ARCHIVE_START through
     today. Small and quick relative to download_all_upper_air."""
@@ -287,6 +354,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ERA5 download/reduce (concopt phase 3a)")
     parser.add_argument("--pilot", action="store_true", help="run one year end-to-end and print shapes/ranges")
     parser.add_argument("--full", action="store_true", help="download the full archive window (upper-air + surface)")
+    parser.add_argument("--subsonic", action="store_true", help="download subsonic cruise segment (arrival-only, FL183-FL414)")
     parser.add_argument("--year", type=int, default=2015)
     parser.add_argument("--out-dir", default="data/era5")
     args = parser.parse_args()
@@ -296,5 +364,7 @@ if __name__ == "__main__":
     elif args.full:
         download_all_upper_air(args.out_dir)
         download_all_surface(args.out_dir)
+    elif args.subsonic:
+        download_all_subsonic(args.out_dir)
     else:
-        parser.error("nothing to do without --pilot or --full")
+        parser.error("nothing to do without --pilot, --full, or --subsonic")

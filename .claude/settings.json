@@ -20,7 +20,31 @@
       "Bash(.venv/Scripts/python.exe -m concopt.cli report --pln tests/data/KJFKEGLL_CONC_01.pln --npz data/era5/route_legs.npz --date 2025-02-19 --hour 13 --out /dev/null)",
       "Bash(git commit -m ' *)",
       "Bash(gh pr create --title 'Add TOW-based climb model, replacing fixed accel-point assumption' --body ' *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(sleep 5 && cat C:\\\\Users\\\\qwert\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--Repos-concopt\\\\9224c0d2-9983-44c9-a6f1-192cdf06a86e\\\\tasks\\\\b9gqyzw9o.output 2>&1 | head -100)",
+      "Read(//c/C:/**)",
+      "Bash(python -m pytest tests/test_fuel.py -v)",
+      "Bash(python -m pytest tests/test_climb.py::test_row_count -v)",
+      "Bash(python -m pytest tests/test_fuel.py::test_fixed_point_converges -xvs)",
+      "Bash(python)",
+      "Bash(python -m pytest tests/test_climb.py -v)",
+      "Bash(\nif [ -f ~/.cdsapirc ]; then\n  echo \"=== .cdsapirc found ===\"\n  cat ~/.cdsapirc | sed 's/key:.*/key: [REDACTED]/'\nelse\n  echo \"No ~/.cdsapirc found\"\nfi\necho \"\"\necho \"=== env vars ===\"\nenv | grep -i cds || echo \"none set\"\n)",
+      "Read(//c/Users/qwert/**)",
+      "Bash(python -m pytest tests/test_fuel.py tests/test_climb.py -v --tb=no)",
+      "Bash(python C:\\\\Users\\\\qwert\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\e--Repos-concopt\\\\6776ea7a-9bf3-4015-8705-c8878d2446b7\\\\scratchpad\\\\fuel_demo.py)",
+      "Bash(python -m pytest tests/test_fuel.py tests/test_climb.py -v --tb=short)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -)",
+      "Bash(python -m pytest tests/test_fuel.py -q)",
+      "Bash(python -m pytest tests/test_report.py -v)",
+      "Bash(python -m concopt.cli report --help)",
+      "Bash(rm -f A2_IMPLEMENTATION_SUMMARY.md && git status --short)",
+      "Bash(git status *)",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit:$?\")"
+    ],
+    "additionalDirectories": [
+      "E:\\Repos\\concopt"
     ]
   }
 }

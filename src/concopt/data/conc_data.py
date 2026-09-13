@@ -84,6 +84,13 @@ _CLIMB_TOW_T = np.sort(_climb_tbl["tow_t"].unique())
 _CLIMB_LEVEL_FL = np.sort(_climb_tbl["level_fl"].unique())
 _CLIMB_COLS = ("mass_t", "fuel_used_kg", "dist_nm", "time_min")
 
+# The climb table's own TOW span, read off the file rather than written out
+# as a literal -- fuel.py clamps its fixed point to this, and the table has
+# already been extended downwards once (160 -> 130 t) since that clamp was
+# written. Anything that needs the bound should import it from here.
+CLIMB_TOW_MIN_T = float(_CLIMB_TOW_T[0])
+CLIMB_TOW_MAX_T = float(_CLIMB_TOW_T[-1])
+
 
 def _build_climb_interps():
     """{band: {col: RegularGridInterpolator}}, one (tow_t, level_fl) grid per

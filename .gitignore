@@ -156,7 +156,7 @@ dmypy.json
 cython_debug/
 
 # ERA5 downloads (raw netCDF + reduced .npz) -- large, re-downloadable
-data/era5/
+data/era5*/
 data/*.csv
 
 # Ad hoc command output (e.g. `concopt verify ... | Tee-Object -FilePath
