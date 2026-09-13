@@ -25,17 +25,25 @@ UPPER_AIR_GRID = [1.0, 1.0]
 UPPER_AIR_TIMES = [f"{h:02d}:00" for h in range(12, 24)]
 
 # Subsonic cruise segment (last ~300 nm into LHR, arrival-only), FL183-FL414.
-# Four core pressure levels (250-500 hPa) covering the subsonic cruise range.
-SUBSONIC_LEVELS = ["250", "300", "400", "500"]
-SUBSONIC_AREA = [52, -1, 50, 2]  # N, W, S, E — UK arrival-only box
+# Seven levels (175-500 hPa) join up with the 150 hPa data already downloaded.
+SUBSONIC_LEVELS = ["175", "200", "225", "250", "300", "400", "500"]
+SUBSONIC_AREA = [54, -13, 47, 2]  # N, W, S, E — arrival box only
 SUBSONIC_GRID = [1.0, 1.0]
 SUBSONIC_TIMES = UPPER_AIR_TIMES
-# CDS cost limit testing, 2026-09: all configurations tested (original 7 levels
-# + large area, 6 levels, reduced area, 4 levels) rejected with "cost limits
-# exceeded" even at 1-month chunks. Code is mechanically complete but actual
-# CDS download is currently not feasible. To enable: either reduce SUBSONIC_LEVELS
-# further (e.g. ["300", "400", "500"]), use a point request instead of area,
-# or request smaller time windows (quarterly instead of monthly).
+# CDS caps this dataset at 4 distinct pressure levels per request, regardless
+# of area size or month count -- confirmed by live bisection, 2026-09: every
+# single level and every pair of SUBSONIC_LEVELS succeeded; 3- and 4-level
+# combos succeeded (including at the full SUBSONIC_AREA above, not just a
+# shrunk test box); 5, 6, and the full 7 were all rejected with "cost limits
+# exceeded" -- even a 5-level/6-grid-cell request (a smaller total volume)
+# was rejected while an unrelated 4-level/105-grid-cell request (a *larger*
+# volume) had already succeeded, ruling out total data volume as the driver.
+# Separately, a 12-month chunk of just 4 levels was *also* rejected, so the
+# existing 1-month chunking (upper_air_months) still has to apply on top of
+# the level cap -- the two are independent limits. SUBSONIC_LEVELS is
+# therefore split into two <=4-level groups, one CDS request per (month,
+# group) -- see download_subsonic.
+SUBSONIC_LEVEL_GROUPS = [SUBSONIC_LEVELS[:4], SUBSONIC_LEVELS[4:]]
 
 # Phase 4 (runways.py's crosswind/tailwind screen, and later the in-flight
 # advisor) consumes these; downloaded now so both sit in the same CDS
@@ -253,24 +261,20 @@ def download_all_upper_air(out_dir):
     return [download_upper_air(out_dir, y, m) for y, m in upper_air_months()]
 
 
-def _subsonic_month_chunks(year, chunk_size=12):
-    """_year_months(year) split into runs of at most chunk_size, in order."""
-    months = _year_months(year)
-    return [months[i:i + chunk_size] for i in range(0, len(months), chunk_size)]
+def download_subsonic(out_dir, year, month):
+    """Two reanalysis-era5-pressure-levels requests for one calendar month
+    -- one per SUBSONIC_LEVEL_GROUPS entry, since CDS caps this dataset at 4
+    distinct pressure levels per request (see SUBSONIC_LEVELS comment): u, v,
+    t at 175/200/225/250 hPa and at 300/400/500 hPa, 12:00-23:00Z, 1x1 deg
+    over the arrival box. Skips a group's request if its output file already
+    exists. Returns both paths."""
+    out_path = Path(out_dir) / f"era5_subsonic_{year}{month:02d}.nc"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-
-def download_subsonic(out_dir, year, chunk_size=12):
-    """reanalysis-era5-pressure-levels requests for the subsonic arrival
-    box, chunked by month. One request per `chunk_size` months (default 12;
-    see SUBSONIC_TIMES comment for CDS cost-limit testing notes). Skips
-    chunks whose output files already exist. Returns list of paths."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    chunk_paths = []
-    for chunk in _subsonic_month_chunks(year, chunk_size):
-        out_path = out_dir / f"era5_subsonic_{year}_{chunk[0]}-{chunk[-1]}.nc"
-        if not out_path.exists():
+    paths = []
+    for i, levels in enumerate(SUBSONIC_LEVEL_GROUPS):
+        group_path = out_path.with_stem(f"{out_path.stem}_{i}")
+        if not group_path.exists():
             cdsapi.Client().retrieve(
                 "reanalysis-era5-pressure-levels",
                 {
@@ -280,31 +284,32 @@ def download_subsonic(out_dir, year, chunk_size=12):
                         "v_component_of_wind",
                         "temperature",
                     ],
-                    "pressure_level": SUBSONIC_LEVELS,
+                    "pressure_level": levels,
                     "year": [str(year)],
-                    "month": chunk,
+                    "month": [f"{month:02d}"],
                     "day": _ALL_DAYS,
                     "time": SUBSONIC_TIMES,
                     "area": SUBSONIC_AREA,
                     "grid": SUBSONIC_GRID,
                     "data_format": "netcdf",
                 },
-                str(out_path),
+                str(group_path),
             )
-        chunk_paths.append(out_path)
-    return chunk_paths
+        paths.append(group_path)
+    return paths
 
 
-def download_all_subsonic(out_dir, chunk_size=12):
-    """download_subsonic for every year from ARCHIVE_START through today.
-    chunk_size is the number of months per CDS request (default 12; this was
-    determined by live testing against CDS -- see comment at SUBSONIC_TIMES)."""
-    out_dir = Path(out_dir)
-    today = dt.date.today()
-    all_paths = []
-    for year in range(ARCHIVE_START.year, today.year + 1):
-        all_paths.extend(download_subsonic(out_dir, year, chunk_size))
-    return all_paths
+def download_all_subsonic(out_dir):
+    """download_subsonic for every month in upper_air_months(), in order.
+    292 requests total (146 months x 2 level-groups) -- twice
+    download_all_upper_air's count, since the 7 subsonic levels don't fit
+    under CDS's 4-level-per-request cap (see SUBSONIC_LEVELS comment). Each
+    already-downloaded group file is skipped, so this is safe to interrupt
+    and re-run."""
+    paths = []
+    for y, m in upper_air_months():
+        paths.extend(download_subsonic(out_dir, y, m))
+    return paths
 
 
 def download_all_surface(out_dir):
