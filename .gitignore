@@ -164,6 +164,10 @@ data/*.csv
 logs/*
 !logs/.gitkeep
 
+# concopt verify's snapshot-guard cache -- machine-local run history, not
+# something to version (see verify.py's SNAPSHOT_CACHE_PATH)
+data/verify_snapshot_cache.json
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

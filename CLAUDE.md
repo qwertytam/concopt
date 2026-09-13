@@ -112,7 +112,18 @@ for its own sake, no defensive error handling.
   on `total_time`, not supersonic time. `--out-all` writes the *full*
   ranked candidate set (raw numeric columns, ~31,000 rows) alongside
   `--out`'s top-N formatted display CSV — for `nb/day-search-results.ipynb`,
-  which needs the whole distribution rather than just the shortlist.
+  which needs the whole distribution rather than just the top rows. Every
+  row is stamped with its own `tow_t` (the `--tow` that run was made
+  under), read back by `run_shortlist`/`concopt shortlist` (below) so a
+  generated `concopt verify` command always uses the TOW that candidate
+  was actually found under, not a guessed default.
+
+  `run_shortlist`/`concopt shortlist` takes a `concopt search --out` CSV
+  (`--search-csv`, default `results.csv`) and prints its top `--top`
+  (default 10) rows as ready-to-run `concopt verify` command lines (date/
+  hour/tow filled in from that row) — for working through a shortlist by
+  hand (load the date in Active Sky, paste the command, repeat) without
+  re-typing date/hour/tow each time.
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -141,22 +152,52 @@ for its own sake, no defensive error handling.
   climb model (`search._climb_profile`) puts both sources on the same
   top-of-climb weight/time; legs still inside the climb are excluded from
   the comparison (Active Sky's FL450-FL600 `TARGET_FL` grid doesn't apply
-  to climb altitude). Takes `--points` (default 6) evenly spaced cruise
+  to climb altitude). Takes `--points` (default 12) evenly spaced cruise
   legs, including the first and last; at each one queries Active Sky live
   for the FL450-FL600 `TARGET_FL` grid and compares against the ERA5 values
   `search.march_legs` would have used at that same point and clock time
   (reuses `march_legs`, never reimplements its interpolation). Both sources
   pick their best level with the *same* weight (the ERA5 march's
-  `weight_per_leg`) and cruise Mach, so a level
-  disagreement between them reflects a genuine wind/temp difference, not a
-  weight mismatch. The recomputed "AS total time" extends the `--points`
-  ground speeds across every sub-leg by nearest-point assignment — an
-  eyeball approximation, not a full AS march (which would need Active Sky
-  queried at every sub-leg). Needs a live, running Active Sky; not covered
-  by the test suite (which mocks `asky.get_atmosphere_np`) — run it by hand
-  against the top few `concopt search` days and eyeball whether the ranking
-  survives, and whether AS/ERA5 divergence looks like a fixable constant
-  bias or unfixable scatter.
+  `weight_per_leg`) and cruise Mach, so a level disagreement between them
+  reflects a genuine wind/temp difference, not a weight mismatch.
+
+  SNAPSHOT GUARD: every point is queried *before* anything is printed;
+  the whole run's wind+temp is then fingerprinted (SHA-256 over the
+  concatenated arrays, `_atmosphere_fingerprint`) and checked against a
+  small `{"<date> <hour>:00": "<fingerprint>"}` cache at
+  `data/verify_snapshot_cache.json` (gitignored, `_guard_snapshot`). A
+  fingerprint match against a **different** date/hour raises rather than
+  proceeding — confirmed live, 2026-09: a run against 2016-01-06 came back
+  bit-identical, at every point then in use, to the 2016-02-12 run just
+  before it, because Active Sky hadn't actually been reloaded. This is the
+  single most valuable check here: that failure is silent, plausible, and
+  produces numbers that look fine. A repeat run of the *same* date/hour is
+  not an error (re-verifying without reloading is legitimate).
+
+  The per-point table reports the TAS cost of a level mismatch
+  (`_mismatch_tas_cost_kt`, both levels' `limits.max_tas` evaluated under
+  Active Sky's own temperature) rather than just flagging it — a mismatch
+  entirely above the Mmo knee (cruise_mach alone binding, TAS flat with
+  altitude) costs ~0 kt, while one that crosses into the CAS-limited lower
+  envelope costs real speed; a raw mismatch *count* conflates the two. The
+  wind-delta summary also reports the sign count (e.g. "6 of 6 points
+  positive") alongside mean/std — a consistent sign across points is the
+  signal that separates a fixable bias from unfixable scatter, which the
+  mean alone can obscure. `--csv` appends one summary row (mean/std wind
+  and temp delta, wind sign count, ERA5/AS total minutes) per run to a
+  given CSV, so repeated runs accumulate into something rankable instead
+  of living only in scrollback.
+
+  The recomputed "AS total time" extends the `--points` ground speeds
+  across every sub-leg by nearest-point assignment — an eyeball
+  approximation, not a full AS march (which would need Active Sky queried
+  at every sub-leg). Needs a live, running Active Sky; not covered by the
+  test suite (which mocks `asky.get_atmosphere_np`) beyond the snapshot
+  guard's end-to-end test (a synthetic still-air `.npz`, no real Active
+  Sky) — run it by hand against the top few `concopt search`/`concopt
+  shortlist` days and eyeball whether the ranking survives, and whether
+  AS/ERA5 divergence looks like a fixable constant bias or unfixable
+  scatter.
 - `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
   recorder against a running Prepar3D + Active Sky, over SimConnect
   (`python-SimConnect`, localhost). Every `--interval` seconds: reads the

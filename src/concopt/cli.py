@@ -1,6 +1,6 @@
 """concopt command-line entry point. argparse-based subcommand dispatcher;
-`route` is phase 3, `search`/`report` are phase 3b, `verify` is phase 5,
-`inflight` is phase 6."""
+`route` is phase 3, `search`/`report`/`shortlist` are phase 3b, `verify` is
+phase 5, `inflight` is phase 6."""
 import argparse
 import datetime as dt
 
@@ -9,8 +9,9 @@ from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
 from concopt.limits import CRUISE_MACH
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import DECEL_DESCENT_S, DEFAULT_TOW_T, run_search
-from concopt.verify import run_verify
+from concopt.search import (DECEL_DESCENT_S, DEFAULT_TOW_T, run_search,
+                             run_shortlist)
+from concopt.verify import DEFAULT_N_POINTS, run_verify
 
 
 def _add_common_route_args(parser):
@@ -71,7 +72,12 @@ def _cmd_verify(args):
                decel_id=args.decel, n_points=args.points,
                host=args.host, port=args.port,
                tow_t=args.tow,
-               cruise_mach=args.cruise_mach)
+               cruise_mach=args.cruise_mach,
+               csv_path=args.csv)
+
+
+def _cmd_shortlist(args):
+    run_shortlist(args.search_csv, args.pln, args.npz, top=args.top, decel_id=args.decel)
 
 
 def _cmd_inflight(args):
@@ -154,9 +160,9 @@ def main(argv=None):
                                 help='local (America/New_York) departure date, YYYY-MM-DD')
     verify_parser.add_argument('--hour', type=int, required=True,
                                 help='local departure hour, 24h (08-14)')
-    verify_parser.add_argument('--points', type=int, default=6,
-                                help='number of evenly spaced supersonic legs to query '
-                                     'Active Sky at (default: 6)')
+    verify_parser.add_argument('--points', type=int, default=DEFAULT_N_POINTS,
+                                help='number of evenly spaced cruise legs to query '
+                                     f'Active Sky at (default: {DEFAULT_N_POINTS})')
     verify_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
     verify_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
     verify_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
@@ -166,7 +172,21 @@ def main(argv=None):
     verify_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
+    verify_parser.add_argument('--csv', default=None,
+                                help='append one summary row (mean/std wind+temp delta, wind '
+                                     'sign count, ERA5/AS total minutes) to this CSV, so repeated '
+                                     'runs accumulate into something rankable')
     verify_parser.set_defaults(func=_cmd_verify)
+
+    shortlist_parser = subparsers.add_parser(
+        'shortlist', parents=[common],
+        help='print the top N concopt search days as ready-to-run concopt verify commands')
+    shortlist_parser.add_argument('--npz', required=True, help='path to the .npz from era5.reduce_to_legs')
+    shortlist_parser.add_argument('--search-csv', default='results.csv',
+                                   help='concopt search --out CSV to read from (default: results.csv)')
+    shortlist_parser.add_argument('--top', type=int, default=10,
+                                   help='number of days to list (default: 10)')
+    shortlist_parser.set_defaults(func=_cmd_shortlist)
 
     inflight_parser = subparsers.add_parser(
         'inflight', parents=[common],

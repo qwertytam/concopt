@@ -1,12 +1,19 @@
 """Acceptance tests for concopt.verify's pure helpers: point selection,
-nearest-point ground-speed grouping, and the Active Sky wind/temp query
-(mocked -- no live Active Sky needed).
+nearest-point ground-speed grouping, the Active Sky wind/temp query, the
+snapshot guard, and the level-mismatch TAS cost (all mocked -- no live
+Active Sky needed).
 """
+import datetime as dt
+
 import numpy as np
+import pandas as pd
 import pytest
 
 from concopt import verify
-from concopt.search import TARGET_FL
+from concopt.atmos import isa
+from concopt.route import build_legs, climb_cruise_segment, parse_pln
+from concopt.search import DEFAULT_TOW_T, TARGET_FL
+from tests.test_route import SAMPLE_PLN
 
 
 def test_select_points_includes_both_ends():
@@ -106,3 +113,144 @@ def test_as_atmosphere_raises_on_altitude_mismatch(monkeypatch):
 
     with pytest.raises(RuntimeError, match="can't align"):
         verify._as_atmosphere(40.0, -30.0, "localhost", 19285)
+
+
+def _sample_atmospheres(n=3, seed=0):
+    """n synthetic (temp_k, u_ms, v_ms) triples, each (len(TARGET_FL),) --
+    stand-ins for what _as_atmosphere would return per queried point."""
+    rng = np.random.default_rng(seed)
+    return [
+        (rng.uniform(210.0, 220.0, len(TARGET_FL)),
+         rng.uniform(-50.0, 50.0, len(TARGET_FL)),
+         rng.uniform(-50.0, 50.0, len(TARGET_FL)))
+        for _ in range(n)
+    ]
+
+
+def test_atmosphere_fingerprint_deterministic():
+    atmospheres = _sample_atmospheres()
+    assert verify._atmosphere_fingerprint(atmospheres) == verify._atmosphere_fingerprint(atmospheres)
+
+
+def test_atmosphere_fingerprint_differs_on_different_data():
+    fp1 = verify._atmosphere_fingerprint(_sample_atmospheres(seed=1))
+    fp2 = verify._atmosphere_fingerprint(_sample_atmospheres(seed=2))
+    assert fp1 != fp2
+
+
+def test_guard_snapshot_allows_first_run(tmp_path):
+    cache_path = tmp_path / "cache.json"
+    verify._guard_snapshot("abc123", dt.date(2016, 2, 12), 14, cache_path)
+    assert cache_path.exists()
+
+
+def test_guard_snapshot_allows_repeat_of_same_date(tmp_path):
+    """Re-verifying the same date/hour without reloading Active Sky is a
+    legitimate thing to do -- an identical fingerprint under the SAME key
+    is not an error."""
+    cache_path = tmp_path / "cache.json"
+    verify._guard_snapshot("abc123", dt.date(2016, 2, 12), 14, cache_path)
+    verify._guard_snapshot("abc123", dt.date(2016, 2, 12), 14, cache_path)  # no raise
+
+
+def test_guard_snapshot_raises_on_stale_load(tmp_path):
+    """The actual bug this guards against: a second date's run returns the
+    same fingerprint as an earlier, different date's run -- Active Sky
+    wasn't reloaded."""
+    cache_path = tmp_path / "cache.json"
+    verify._guard_snapshot("abc123", dt.date(2016, 2, 12), 14, cache_path)
+
+    with pytest.raises(RuntimeError, match="2016-02-12 14:00.*wasn't reloaded"):
+        verify._guard_snapshot("abc123", dt.date(2016, 1, 6), 11, cache_path)
+
+
+def test_guard_snapshot_different_weather_does_not_raise(tmp_path):
+    cache_path = tmp_path / "cache.json"
+    verify._guard_snapshot("abc123", dt.date(2016, 2, 12), 14, cache_path)
+    verify._guard_snapshot("def456", dt.date(2016, 1, 6), 11, cache_path)  # no raise
+
+
+def test_mismatch_tas_cost_zero_when_levels_agree():
+    temp_k_grid = np.full(len(TARGET_FL), 220.0)
+    cost = verify._mismatch_tas_cost_kt(3, 3, temp_k_grid, 135.0, 2.00)
+    assert cost == 0.0
+
+
+def test_mismatch_tas_cost_positive_when_levels_differ():
+    isa_t, _ = isa(TARGET_FL * 100.0 * 0.3048)
+    cost = verify._mismatch_tas_cost_kt(0, 5, isa_t, 135.0, 2.00)
+    assert cost > 0.0
+
+
+def test_mismatch_tas_cost_symmetric():
+    isa_t, _ = isa(TARGET_FL * 100.0 * 0.3048)
+    assert verify._mismatch_tas_cost_kt(2, 6, isa_t, 135.0, 2.00) == pytest.approx(
+        verify._mismatch_tas_cost_kt(6, 2, isa_t, 135.0, 2.00)
+    )
+
+
+def test_mismatch_tas_cost_bigger_near_cas_knee_than_above_it():
+    """A mismatch low in the CAS-limited part of the envelope should cost
+    more than one confined to the top of the grid, where cruise_mach alone
+    binds and TAS is close to flat with altitude."""
+    isa_t, _ = isa(TARGET_FL * 100.0 * 0.3048)
+    low_cost = verify._mismatch_tas_cost_kt(0, 2, isa_t, 165.0, 2.00)  # FL450 vs FL470
+    high_cost = verify._mismatch_tas_cost_kt(10, 12, isa_t, 165.0, 2.00)  # FL550 vs FL570
+    assert low_cost > high_cost
+
+
+def _still_air_data(legs):
+    """A minimal era5-shaped dict, ISA+0 and zero wind -- same construction
+    test_perf_table.py's still-air fixture uses, reused here so
+    run_verify's snapshot guard can be exercised end to end without a real
+    .npz."""
+    levels_hpa = np.array([150.0, 125.0, 100.0, 70.0])
+    from concopt.atmos import pressure_to_fl
+    fl_at_level = pressure_to_fl(levels_hpa * 100.0)
+    temp_at_level, _ = isa(fl_at_level * 30.48)
+
+    n_time = 2
+    n_legs_total = len(legs)
+    times = np.array(["2016-01-01T00:00:00", "2026-12-31T00:00:00"], dtype="datetime64[ns]")
+    u = np.zeros((n_time, 4, n_legs_total))
+    v = np.zeros((n_time, 4, n_legs_total))
+    t = np.broadcast_to(temp_at_level[None, :, None], (n_time, 4, n_legs_total)).copy()
+
+    return dict(time=times, level=levels_hpa, u=u, v=v, t=t,
+                cum_nm=np.array([leg.cum_nm for leg in legs]),
+                track_deg=np.array([leg.track_deg for leg in legs]))
+
+
+class _ConstantAtmosphere:
+    """Stand-in for asky.get_atmosphere_np returning the SAME atmosphere
+    regardless of lat/lon -- reproduces the live bug: Active Sky returning
+    an earlier historical load's data because the date wasn't reloaded."""
+    def __call__(self, lat, lon, alts_ft, host_addr="localhost", port=19285):
+        alt_ft = np.asarray(alts_ft, dtype=float)
+        wind_dir_deg = np.full(len(alt_ft), 270.0)
+        wind_speed_kt = np.full(len(alt_ft), 80.0)
+        pressure_hpa = np.full(len(alt_ft), 200.0)
+        temp_c = np.full(len(alt_ft), -55.0)
+        return alt_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c
+
+
+def test_run_verify_snapshot_guard_end_to_end(monkeypatch, tmp_path):
+    """The actual failure mode this feature exists for: Active Sky not
+    reloaded between two verify runs for different dates returns identical
+    weather both times -- the second run must refuse to proceed."""
+    monkeypatch.setattr(verify, "get_atmosphere_np", _ConstantAtmosphere())
+
+    plan = parse_pln(SAMPLE_PLN)
+    legs = build_legs(plan["waypoints"])
+    data = _still_air_data(legs)
+    npz_path = tmp_path / "route_legs.npz"
+    np.savez(npz_path, **data)
+
+    cache_path = tmp_path / "cache.json"
+
+    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+                       n_points=2, tow_t=DEFAULT_TOW_T, snapshot_cache_path=cache_path)
+
+    with pytest.raises(RuntimeError, match="wasn't reloaded"):
+        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 1, 6), 11,
+                           n_points=2, tow_t=DEFAULT_TOW_T, snapshot_cache_path=cache_path)

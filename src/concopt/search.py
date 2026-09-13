@@ -442,6 +442,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     cruise_weight = eff_dist_nm.sum(axis=1)
 
     candidates["supersonic_time_s"] = legs_out["accumulated_s"]
+    candidates["tow_t"] = tow_t
     candidates["climb_time_s"] = climb["time_min"] * 60.0
     candidates["climb_temp_band"] = climb["temp_band"]
     candidates["climb_warm_clamped"] = climb["warm_flag"]
@@ -506,6 +507,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
         "lhr_xwind_gust_kt": candidates["lhr_xwind_gust_kt"].round(1),
         "flags": candidates["flags"],
         "total_time": candidates["total_time_s"].map(_format_hmm),
+        "tow_t": candidates["tow_t"],
     })
 
     print(display.head(10).to_string(index=False))
@@ -576,3 +578,29 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
         print(f"Wrote all {len(candidates)} ranked candidates to {out_all_path}")
 
     return candidates
+
+
+def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX"):
+    """The top `top` rows of a concopt search --out CSV, printed as a
+    ready-to-run `concopt verify` command per day -- so working through a
+    shortlist by hand (load the date in Active Sky, run verify, repeat)
+    doesn't mean re-typing date/hour/tow into the CLI each time. tow_t
+    comes from the CSV's own tow_t column (run_search stamps every row
+    with the --tow it was actually run under), so the generated command
+    always matches -- verify.py's whole comparison depends on that."""
+    df = pd.read_csv(search_csv_path).head(top)
+
+    print(f"Top {len(df)} shortlist from {search_csv_path}, ready to verify by hand:\n")
+    for rank, (_, row) in enumerate(df.iterrows(), start=1):
+        local_date = dt.date.fromisoformat(str(row["date"]))
+        local_hour = int(str(row["local_departure"]).split(":")[0])
+        tow_t = float(row["tow_t"])
+        flags = row["flags"] if pd.notna(row["flags"]) and row["flags"] else "-"
+
+        print(f"{rank:>2}. {local_date} {local_hour:02d}:00  total {row['total_time']}  "
+              f"mean_fl {row['mean_fl']}  wind {row['mean_wind_kt']:+.1f} kt  flags: {flags}")
+        print(f"    concopt verify --pln {pln_path} --npz {npz_path} "
+              f"--date {local_date} --hour {local_hour} --tow {tow_t:.0f} "
+              f"--decel {decel_id}\n")
+
+    return df
