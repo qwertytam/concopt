@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from concopt import limits, runways
+from concopt import fuel, limits, runways
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, pressure_to_fl, speed_of_sound
 from concopt.data.conc_data import CLIMB_BANDS, climb_to, fuel_total_kgh_table
 from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
@@ -175,7 +175,6 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
     # candidates spanned more than one band).
     tow_per_cand = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,))
 
-    mass_t = np.empty(n_cand)
     fuel_used_kg = np.empty(n_cand)
     dist_nm = np.empty(n_cand)
     time_min = np.empty(n_cand)
@@ -183,11 +182,19 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
         band_mask = temp_band == band
         if not band_mask.any():
             continue
-        m, f, d, t = climb_to(TOP_OF_CLIMB_FL, tow_per_cand[band_mask], band)
-        mass_t[band_mask] = m
+        _m, f, d, t = climb_to(TOP_OF_CLIMB_FL, tow_per_cand[band_mask], band)
         fuel_used_kg[band_mask] = f
         dist_nm[band_mask] = d
         time_min[band_mask] = t
+
+    # mass_t derived from fuel burned, not read off the table's own mass_t
+    # column: conc_climb.csv's mass_t and fuel_used_kg are rounded
+    # independently in the source manual and disagree by up to 0.5 t at
+    # FL502 (tests/test_climb.py's own tolerance on this). fuel.py's trip
+    # fuel must telescope exactly to tow - weight_at_touchdown - descent, and
+    # the reserve constrains fuel, not the table's mass column, so fuel is
+    # the one to trust here.
+    mass_t = tow_per_cand - fuel_used_kg / 1000.0
 
     ground_dist_nm = dist_nm + wind_component_kt * time_min / 60.0
 
@@ -406,7 +413,8 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
 
 def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
                 top=50, out_path="results.csv", out_all_path=None,
-                tow_t=DEFAULT_TOW_T,
+                tow_t=None, zfw_t=None,
+                min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 decel_descent_s=DECEL_DESCENT_S,
                 cruise_mach=limits.CRUISE_MACH):
     """Builds legs from pln_path (same max_leg_nm default as
@@ -427,7 +435,20 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     With out_all_path given, also writes the full ranked DataFrame (every
     valid candidate, ~31,000 rows, raw numeric columns rather than --out's
     rounded/formatted display strings) there -- for nb/day-search-results.ipynb,
-    which needs the raw distribution rather than just the top rows."""
+    which needs the raw distribution rather than just the top rows.
+
+    zfw_t (tonnes) drives fuel.fixed_point_fuel_iteration across the WHOLE
+    candidate vector at once, same convention as report.run_report's single-
+    candidate use of the same fixed point: TOW is solved per candidate rather
+    than assumed, so a warm/heavy day's own extra climb fuel feeds back into
+    its own extra weight rather than every candidate being flown at one
+    shared guess. tow_t overrides zfw_t and skips the solve entirely,
+    applying that one weight to every candidate -- for "what if the whole
+    fleet loads X" or for matching an old run. Neither given falls back to
+    the flat DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was
+    wired in. The fixed point's own boundary/convergence flags (fuel.py's
+    tow_above_mtow_*/tow_below_climb_table_*/fuel_not_converged) join the
+    jfk/lhr/climb flags already in the output's flags column."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
@@ -440,8 +461,22 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
-    legs_out, _weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
-                                                     tow_t, cruise_mach)
+    if tow_t is None and zfw_t is None:
+        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
+
+    if tow_t is None:
+        zfw_arr = np.full(n_cand, zfw_t, dtype=float)
+        tow_t, _n_iterations, fuel_flags, legs_out, _weight_per_leg, climb = (
+            fuel.fixed_point_fuel_iteration(
+                cc_legs, cc_idx, data, dep_i8, zfw_arr,
+                min_landing_fuel_t=min_landing_fuel_t,
+                march_legs_fn=march_legs, cruise_mach=cruise_mach,
+            )
+        )
+    else:
+        legs_out, _weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
+                                                         tow_t, cruise_mach)
+        fuel_flags = np.array([""] * n_cand, dtype=object)
     chosen_fl = legs_out["chosen_fl"]
     wind_kt = legs_out["wind_kt"]
     isa_dev_k = legs_out["isa_dev_k"]
@@ -480,10 +515,14 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     candidates["jfk_penalty_s"] = jfk["penalty_s"]
     candidates["lhr_penalty_s"] = lhr["penalty_s"]
     candidates["flags"] = [
-        ",".join(f"{prefix}_{flag}" for prefix, flag in
-                  (("jfk", jfk_flag), ("lhr", lhr_flag), ("climb", "warm_clamped" if warm else ""))
-                  if flag)
-        for jfk_flag, lhr_flag, warm in zip(jfk["flag"], lhr["flag"], climb["warm_flag"])
+        ",".join(part for part in (
+            (f"jfk_{jfk_flag}" if jfk_flag else ""),
+            (f"lhr_{lhr_flag}" if lhr_flag else ""),
+            ("climb_warm_clamped" if warm else ""),
+            fuel_flag,  # already self-describing (fuel.py's own flag strings), no prefix needed
+        ) if part)
+        for jfk_flag, lhr_flag, warm, fuel_flag in
+        zip(jfk["flag"], lhr["flag"], climb["warm_flag"], fuel_flags)
     ]
     candidates["total_time_s"] = (legs_out["accumulated_s"] + decel_descent_s
                                     + jfk["penalty_s"] + lhr["penalty_s"])

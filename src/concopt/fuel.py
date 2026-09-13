@@ -208,4 +208,12 @@ def fixed_point_fuel_iteration(
 
     flags = _boundary_flags(tow_calc)
     flags[flags == ""] = "fuel_not_converged"
-    return tow_t, max_iterations, flags, legs_out, weight_per_leg, climb
+    # tow_next, not tow_t: tow_t was already overwritten by the damped blend
+    # at the bottom of the loop above, computed from the SAME tow_calc/
+    # tow_next as this flag check but never itself flown -- returning it
+    # here would hand back a weight that disagrees with the returned
+    # legs_out/climb (which were marched at the tow_t from BEFORE that
+    # overwrite) by (1 - damping) * residual. tow_next is what the returned
+    # march's own trip fuel actually implies, matching the converged
+    # branch's return above.
+    return tow_next, max_iterations, flags, legs_out, weight_per_leg, climb
