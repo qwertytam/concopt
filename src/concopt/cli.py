@@ -88,7 +88,7 @@ def _cmd_inflight(args):
                  accel_id=args.accel, decel_id=args.decel,
                  host=args.host, port=args.port, cruise_mach=args.cruise_mach,
                  gain_threshold_kt=args.gain_threshold_kt,
-                 simconnect_dll=args.simconnect_dll)
+                 simconnect_dll=args.simconnect_dll, live=not args.no_live)
 
 
 def main(argv=None):
@@ -223,6 +223,9 @@ def main(argv=None):
     inflight_parser.add_argument('--gain-threshold-kt', type=float, default=DEFAULT_GAIN_THRESHOLD_KT,
                                   help='suppress a climb/descend recommendation worth less than this '
                                        f'many kt of ground speed (default: {DEFAULT_GAIN_THRESHOLD_KT:.0f})')
+    inflight_parser.add_argument('--no-live', action='store_true',
+                                  help='fall back to plain scrolling prints instead of the '
+                                       'redraw-in-place rich display (for piping to a log)')
     inflight_parser.add_argument('--simconnect-dll', default=None,
                                   help="path to a SimConnect.dll known to work with the running sim "
                                        "(P3D v5's protocol version doesn't match python-SimConnect's "
