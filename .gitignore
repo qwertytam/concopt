@@ -159,6 +159,11 @@ cython_debug/
 data/era5/
 data/*.csv
 
+# Ad hoc command output (e.g. `concopt verify ... | Tee-Object -FilePath
+# logs/verify_2016-02-12.log`) -- goes in logs/, not the repo root.
+logs/*
+!logs/.gitkeep
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
