@@ -13,7 +13,8 @@ import pytest
 from concopt.atmos import isa, pressure_to_fl
 from concopt.data.conc_data import CLIMB_BANDS, climb_to
 from concopt.fuel import (CLIMB_TOW_MIN_T, MTOW_T, calculate_trip_fuel,
-                           fixed_point_fuel_iteration, fuel_plan)
+                           fixed_point_fuel_iteration, fuel_plan,
+                           trip_fuel_split)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import march_legs
 from tests.test_route import SAMPLE_PLN
@@ -464,3 +465,54 @@ def test_fixed_point_against_real_march_legs_multi_band():
     assert np.allclose(tow_t, zfw_t + trip_fuel + 10.0, atol=0.05)
     # The warm-band candidate needs strictly more fuel than the cold one.
     assert trip_fuel[1] > trip_fuel[0]
+
+
+def test_climb_mass_telescopes_exactly_from_fuel_used():
+    """D2 regression: conc_climb.csv's mass_t and fuel_used_kg columns are
+    rounded independently in the source manual and disagree by up to 0.5 t
+    at FL502 (see tests/test_climb.py's own 0.5 t tolerance on this) --
+    search._climb_profile used to read mass_t straight off the table, which
+    meant climb_fuel_t (from fuel_used_kg) and cruise_fuel_t (measured down
+    from that same disagreeing mass_t) didn't telescope to
+    tow - weight_at_touchdown. Fixed by deriving mass_t from fuel_used_kg
+    instead, so this must now hold exactly (mod float rounding), well inside
+    the fixed point's own 0.05 t convergence tolerance."""
+    cc_legs, cc_idx, data, times = _multi_band_march_legs_data()
+    dep_i8 = times.astype("int64")
+    tow_t = np.array([175.0, 182.0])
+
+    legs_out, _weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=tow_t)
+    climb_fuel_t, cruise_fuel_t, descent_fuel_t = trip_fuel_split(climb, legs_out)
+    weight_at_touchdown = legs_out["weight_at_barix"]
+
+    assert np.allclose(climb_fuel_t + cruise_fuel_t, tow_t - weight_at_touchdown, atol=0.01)
+
+    trip_fuel_t = climb_fuel_t + cruise_fuel_t + descent_fuel_t
+    assert np.allclose(trip_fuel_t - descent_fuel_t, tow_t - weight_at_touchdown, atol=0.01)
+
+
+def test_not_converged_returns_tow_consistent_with_returned_march():
+    """D1 regression: fuel.py:211 used to return tow_t, which the bottom of
+    the loop had already overwritten with the damped blend AFTER legs_out/
+    climb were produced -- so the returned weight and the returned march
+    disagreed by (1 - damping) * residual, silently, with no flag distinguishing
+    it from the converged case's exact agreement. Forcing non-convergence
+    (max_iterations=2) and recomputing trip fuel from the returned march must
+    reproduce the returned TOW exactly (mod clamping), the same invariant
+    fuel_plan documents for the converged path."""
+    n_cand = 5
+    dep_i8 = np.arange(n_cand, dtype="int64")
+    zfw_t = np.full(n_cand, 90.0, dtype=float)
+
+    tow_t, n_iter, flags, legs_out, _, climb = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
+        march_legs_fn=_synthetic_march_legs, max_iterations=2,
+    )
+
+    assert n_iter == 2
+    assert np.any(flags == "fuel_not_converged")
+
+    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    tow_expected = np.clip(zfw_t + trip_fuel + 10.0, CLIMB_TOW_MIN_T, MTOW_T)
+    assert np.allclose(tow_t, tow_expected), \
+        f"returned TOW {tow_t} inconsistent with returned march's own trip fuel {tow_expected}"

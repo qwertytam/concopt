@@ -48,7 +48,8 @@ def _cmd_route(args):
 def _cmd_search(args):
     run_search(args.pln, args.npz, args.surface_npz, decel_id=args.decel,
                top=args.top, out_path=args.out, out_all_path=args.out_all,
-               tow_t=args.tow,
+               tow_t=args.tow, zfw_t=args.zfw,
+               min_landing_fuel_t=args.min_landing_fuel,
                decel_descent_s=args.decel_descent_min * 60.0,
                cruise_mach=args.cruise_mach)
 
@@ -120,9 +121,20 @@ def main(argv=None):
                                 help='also write the full ranked candidate set (raw numeric columns, '
                                      'not just the top rows) to this CSV path -- for '
                                      'nb/day-search-results.ipynb')
-    search_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
-                                help='take-off weight, tonnes -- drives the brake-release-to-'
-                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f})')
+    search_parser.add_argument('--tow', type=float, default=None,
+                                help='take-off weight, tonnes -- overrides --zfw and skips the '
+                                     'fixed point entirely, flying every candidate at this one '
+                                     f'weight (default: None; neither this nor --zfw given falls '
+                                     f'back to a flat {DEFAULT_TOW_T:.0f} t TOW)')
+    search_parser.add_argument('--zfw', type=float, default=None,
+                                help='zero fuel weight, tonnes -- TOW is solved per candidate by '
+                                     'fixed-point iteration (uplift = trip fuel + reserve) across '
+                                     'the whole candidate vector, so a warm/heavy day carries its '
+                                     'own extra fuel rather than every candidate flying --tow\'s '
+                                     'one shared weight')
+    search_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
+                                help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
+                                     f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
     search_parser.add_argument('--decel-descent-min', type=float,
                                 default=DECEL_DESCENT_S / 60.0,
                                 help='minutes from the decel point to touchdown, for estimating '
