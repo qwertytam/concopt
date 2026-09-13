@@ -3,15 +3,22 @@
   "python.testing.pytestArgs": ["tests"],
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": ["src"],
   "files.exclude": {
     "**/__pycache__": true,
-    "**/.pytest_cache": true
+    "**/.pytest_cache": true,
+    "**/*.egg-info": true
   },
   "search.exclude": {
     ".venv": true,
-    "poetry.lock": true
+    "poetry.lock": true,
+    "**/.pytest_cache": true,
+    "**/*.egg-info": true,
+    "data/era5*/": true,
+    "logs/*": true
   },
   "files.watcherExclude": {
-    "**/.venv/**": true
+    "**/.venv/**": true,
+    "**/data/era5*/**": true
   }
 }
