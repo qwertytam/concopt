@@ -25,6 +25,7 @@ dependencies = [
     "pint",
     "pint-pandas",
     "requests",
+    "rich",
     "scipy",
     "SimConnect",
     "xarray"

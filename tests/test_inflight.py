@@ -7,6 +7,7 @@ covered here, same convention as search.run_search/verify.run_verify.
 import numpy as np
 import pandas as pd
 import pytest
+from rich.console import Console, Group
 
 from concopt import inflight
 from concopt.atmos import KT_TO_MS, isa
@@ -190,3 +191,112 @@ def test_compare_to_report_missing_waypoint_is_nan_not_a_crash():
 
     assert table["actual_elapsed_s"].isna().all()
     assert np.isnan(constants["measured_supersonic_s"])
+
+
+# --- A4: the live in-flight display ----------------------------------------
+# rich renderables and _print_advisor's plain output can both be built and
+# inspected without a sim -- run_inflight's own loop (SimConnect + Active
+# Sky) stays out of scope, same convention as the rest of this file.
+
+def _synthetic_state():
+    return dict(lat_deg=40.123, lon_deg=-69.876, alt_ft=53000.0, mach=2.0,
+                tas_kt=1150.0, gs_kt=1200.0, weight_t=135.0, on_ground=False, zulu_s=3600.0)
+
+
+def test_format_hmm_or_na():
+    assert inflight._format_hmm_or_na(None) == "n/a"
+    assert inflight._format_hmm_or_na(3900.0) == "1:05"
+
+
+def test_recommendation_text_hold_is_muted():
+    text = inflight._recommendation_text("HOLD FL500")
+    assert text.style == "dim"
+
+
+@pytest.mark.parametrize("line", [
+    "CLIMB to FL550 (+14 kt, ~48 s over the remaining 100 nm) -- binding: CAS",
+    "DESCEND to FL500 (+30 kt, ~100 s over the remaining 500 nm) -- binding: total_temp",
+])
+def test_recommendation_text_climb_and_descend_are_not_muted(line):
+    text = inflight._recommendation_text(line)
+    assert text.style != "dim"
+
+
+def test_build_level_table_marks_current_and_recommended_rows():
+    temp_k, u_ms, v_ms = _still_air_atmosphere()
+    table, best_idx, current_idx, _binding = inflight._level_table(
+        temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
+
+    rich_table = inflight._build_level_table(table, best_idx, current_idx)
+
+    assert rich_table.row_count == len(TARGET_FL)
+    console = Console(width=120, record=True)
+    console.print(rich_table)
+    text = console.export_text()
+    assert "CURRENT" in text
+    assert "REC" in text
+
+
+def test_render_screen_produces_a_renderable_from_a_synthetic_state():
+    """The live panel's top-level function -- built from a plain dict and
+    plain numbers, no SimConnect/Active Sky/Live instance involved."""
+    temp_k, u_ms, v_ms = _still_air_atmosphere()
+    table, best_idx, current_idx, binding_at_best = inflight._level_table(
+        temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
+    state = _synthetic_state()
+
+    screen = inflight._render_screen(
+        state, table, best_idx, current_idx, binding_at_best, remaining_nm=1200.0,
+        gain_threshold_kt=3.0, next_wp_id="BARIX", dist_to_next_nm=42.0,
+        distance_run_nm=300.0, elapsed_s=1800.0, predicted_remaining_s=3600.0,
+        predicted_total_s=5400.0, preflight_predicted_total_s=5300.0, countdown_s=45,
+        recorder_note="Brake release detected -- recording to out.csv")
+
+    assert isinstance(screen, Group)
+    console = Console(width=120, record=True)
+    console.print(screen)
+    text = console.export_text()
+    assert "FL530" in text
+    assert "BARIX" in text
+    assert "42 nm" in text
+    assert "next update in 45s" in text
+    assert "Brake release detected" in text
+    assert "n/a" not in text  # every timing was supplied in this call
+
+
+def test_render_screen_shows_na_for_unknown_timings():
+    """Before the recorder has started (or with no --compare report), the
+    elapsed/predicted-total/pre-flight fields are None -- the panel should
+    read 'n/a', not blow up or print 'None'."""
+    temp_k, u_ms, v_ms = _still_air_atmosphere()
+    table, best_idx, current_idx, binding_at_best = inflight._level_table(
+        temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
+    state = _synthetic_state()
+
+    screen = inflight._render_screen(
+        state, table, best_idx, current_idx, binding_at_best, remaining_nm=1200.0,
+        gain_threshold_kt=3.0, next_wp_id="BARIX", dist_to_next_nm=42.0,
+        distance_run_nm=300.0, elapsed_s=None, predicted_remaining_s=None,
+        predicted_total_s=None, preflight_predicted_total_s=None, countdown_s=60,
+        recorder_note=None)
+
+    console = Console(width=120, record=True)
+    console.print(screen)
+    text = console.export_text()
+    assert "None" not in text
+    assert text.count("n/a") == 4  # elapsed, remaining, predicted total, pre-flight total
+
+
+def test_print_advisor_still_produces_plain_scrolling_output(capsys):
+    """--no-live's whole job: the original prints, unchanged."""
+    temp_k, u_ms, v_ms = _still_air_atmosphere()
+    table, best_idx, current_idx, binding_at_best = inflight._level_table(
+        temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
+    state = _synthetic_state()
+
+    inflight._print_advisor(state, 40.5, -69.0, 90.0, table, best_idx, current_idx,
+                             binding_at_best, remaining_nm=1200.0, gain_threshold_kt=3.0)
+
+    out = capsys.readouterr().out
+    assert "lookahead point" in out
+    assert "FL530" in out

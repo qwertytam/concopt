@@ -25,6 +25,15 @@ ZULU_TIME -- ZULU_TIME (seconds since midnight GMT) wraps at 86400 and a
 flight can span that wrap; wall-clock elapsed time doesn't have that
 problem and is what the comparison actually needs. ZULU_TIME is still
 logged verbatim per row as the absolute reference.
+
+DISPLAY: by default (--live, the default) the advisor redraws one screen in
+place with rich.live.Live rather than printing a fresh scrolling block every
+tick -- see _render_screen -- since this runs on the sim PC while flying and
+has to stay readable at a glance without scrolling. --no-live falls back to
+the original scrolling prints (_print_advisor et al.), for piping to a log.
+Presentation only: _level_table/_recommendation_line (the advisory logic),
+_read_state (the SimConnect reads) and the recorder state machine in
+run_inflight are the same either way.
 """
 import csv
 import time
@@ -32,6 +41,11 @@ from itertools import groupby
 
 import numpy as np
 import pandas as pd
+from rich import box
+from rich.console import Console, Group
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
 from SimConnect import AircraftRequests, SimConnect
 
 from concopt import limits
@@ -184,6 +198,104 @@ def _print_advisor(state, la_lat, la_lon, track_deg, table, best_idx, current_id
                                 gain_threshold_kt, binding_at_best))
 
 
+def _format_hmm_or_na(seconds):
+    """_format_hmm, but None -> 'n/a' -- the live panel shows this whenever
+    a timing isn't knowable yet (elapsed before the recorder has seen brake
+    release, or a pre-flight total with no --compare report given)."""
+    return "n/a" if seconds is None else _format_hmm(seconds)
+
+
+def _recommendation_text(line):
+    """The plain _recommendation_line string, styled for the live panel --
+    a climb/descend call stands out, a hold is muted, per the layout spec.
+    Reads only the line's own leading "HOLD"/"CLIMB"/"DESCEND" word, so this
+    can't drift out of step with _recommendation_line's actual wording or
+    thresholds -- that function is untouched and still the only place the
+    advisory decision is made."""
+    style = "dim" if line.startswith("HOLD") else "bold white on dark_green"
+    return Text(line, style=style, justify="center")
+
+
+def _build_level_table(table, best_idx, current_idx):
+    """The FL450-600 grid as a rich Table for the live panel -- the same
+    values _print_advisor's plain DataFrame shows for --no-live, current/
+    recommended marked in their own column instead of free-text "note" (no
+    room for prose in a glance-readable table), above-ceiling rows greyed
+    via row style rather than dropped, per the layout spec."""
+    rich_table = Table(box=box.SIMPLE_HEAVY, expand=True, pad_edge=False)
+    for name, justify in [("FL", "right"), ("Wind kt", "right"), ("Temp C", "right"),
+                           ("ISA dev", "right"), ("Mmax", "right"), ("TASmax kt", "right"),
+                           ("GS kt", "right"), ("", "left")]:
+        rich_table.add_column(name, justify=justify)
+
+    for i in range(len(table)):
+        row = table.iloc[i]
+        tags = []
+        if i == current_idx:
+            tags.append("CURRENT")
+        if i == best_idx:
+            tags.append("REC")
+
+        if row["above_ceiling"]:
+            style = "grey50"
+        elif i == best_idx:
+            style = "bold green"
+        elif i == current_idx:
+            style = "bold cyan"
+        else:
+            style = None
+
+        rich_table.add_row(
+            f"FL{row['fl']:.0f}", f"{row['wind_kt']:+.0f}", f"{row['temp_c']:.1f}",
+            f"{row['isa_dev_c']:+.1f}", f"{row['max_mach']:.2f}",
+            f"{row['max_tas_kt']:.0f}", f"{row['gs_kt']:.0f}", " ".join(tags),
+            style=style,
+        )
+    return rich_table
+
+
+def _render_screen(state, table, best_idx, current_idx, binding_at_best, remaining_nm,
+                    gain_threshold_kt, next_wp_id, dist_to_next_nm, distance_run_nm,
+                    elapsed_s, predicted_remaining_s, predicted_total_s,
+                    preflight_predicted_total_s, countdown_s, recorder_note=None):
+    """Everything --live (the default) redraws in place each tick, as one
+    rich renderable -- pure and testable via rich.console.Console(record=
+    True), no terminal or Live instance needed. Layout, top to bottom, is
+    the priority order from the spec: the recommendation first (the only
+    line that matters at a glance), then current state, the level table,
+    progress, and a countdown so a static screen still looks alive rather
+    than hung between ticks."""
+    line = _recommendation_line(table, best_idx, current_idx, remaining_nm,
+                                 gain_threshold_kt, binding_at_best)
+    recommendation = _recommendation_text(line)
+
+    state_text = Text(
+        f"FL{state['alt_ft'] / 100.0:.0f}   M{state['mach']:.2f}   "
+        f"TAS {state['tas_kt']:.0f} kt   GS {state['gs_kt']:.0f} kt   "
+        f"Weight {state['weight_t']:.1f} t\n"
+        f"{state['lat_deg']:.3f}, {state['lon_deg']:.3f}   "
+        f"next: {next_wp_id} ({dist_to_next_nm:.0f} nm)"
+    )
+
+    level_table = _build_level_table(table, best_idx, current_idx)
+
+    progress_text = Text(
+        f"Distance run {distance_run_nm:,.0f} nm / to run {remaining_nm:,.0f} nm   "
+        f"Elapsed {_format_hmm_or_na(elapsed_s)}   "
+        f"Remaining {_format_hmm_or_na(predicted_remaining_s)}   "
+        f"Predicted total {_format_hmm_or_na(predicted_total_s)}   "
+        f"(pre-flight: {_format_hmm_or_na(preflight_predicted_total_s)})"
+    )
+
+    countdown_text = Text(f"next update in {countdown_s:.0f}s", style="dim", justify="right")
+
+    parts = [recommendation, Text(""), state_text, Text(""), level_table, Text(""), progress_text]
+    if recorder_note:
+        parts.append(Text(recorder_note, style="yellow"))
+    parts.append(countdown_text)
+    return Group(*parts)
+
+
 def _waypoint_cum_nm(legs):
     """{waypoint_id: cum_nm}, in route order. Sub-legs of a subdivided
     parent leg all share that parent's from_id/to_id (see route.build_legs),
@@ -300,9 +412,9 @@ def _print_comparison(table, constants):
 def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_LOOKAHEAD_NM,
                   record_path=None, compare_path=None, accel_id="LINND", decel_id="BARIX",
                   host="localhost", port=19285, cruise_mach=limits.CRUISE_MACH,
-                  gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None):
+                  gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True):
     """The live advisor loop, every interval_s: read the sim, project
-    lookahead_nm ahead along the route, query Active Sky there, print the
+    lookahead_nm ahead along the route, query Active Sky there, show the
     level table and recommendation. If record_path is given, also runs the
     flight recorder as a small state machine alongside it (brake release ->
     recording -> touchdown), writing one row per interval once recording
@@ -310,14 +422,31 @@ def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_L
     also given, runs compare_to_report against the finished recording at
     that point and prints the result.
 
+    live (default True) redraws one screen in place with rich.live.Live --
+    see _render_screen. --no-live sets live=False, falling back to the
+    original scrolling _print_advisor/plain-print behaviour, for piping to
+    a log. This is a presentation choice only: the advisory logic
+    (_level_table/_recommendation_line), the SimConnect reads (_read_state)
+    and the recorder state machine below are identical either way.
+
     Not covered by the test suite (needs a live SimConnect + Active Sky) --
-    see compare_to_report and _level_table/_recommendation_line for the
-    pure pieces that are."""
+    see compare_to_report and _level_table/_recommendation_line/
+    _render_screen for the pure pieces that are."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
     ss_legs = [leg for leg, m in zip(legs, mask) if m]
     route_end_cum_nm = ss_legs[-1].cum_nm
+
+    # Read the compare report up front (not just at touchdown) so its total
+    # predicted time can sit in the live panel's progress line throughout
+    # the flight, not just in the post-touchdown comparison.
+    report_df = None
+    preflight_predicted_total_s = None
+    if compare_path is not None:
+        report_df = pd.read_csv(compare_path)
+        preflight_predicted_total_s = (
+            _parse_hmm_seconds(report_df["elapsed"].iloc[-1]) + DECEL_DESCENT_S)
 
     sm, aq = _connect(simconnect_dll)
 
@@ -340,22 +469,50 @@ def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_L
     prev_gs_kt = None
     t0_monotonic = None
     touchdown_elapsed_s = None
+    recorder_note = None  # live panel only -- --no-live prints these as before
 
+    live_display = Live(console=Console()) if live else None
+    if live_display is not None:
+        live_display.start()
+
+    interrupted = False
     try:
         while True:
             state = _read_state(aq)
             lat, lon = state["lat_deg"], state["lon_deg"]
 
             la_lat, la_lon, track_deg = project_along_route(legs, lat, lon, lookahead_nm)
-            current_cum_nm, _leg_idx, _along_nm = current_progress_nm(legs, lat, lon)
+            current_cum_nm, leg_idx, along_nm = current_progress_nm(legs, lat, lon)
             remaining_nm = max(route_end_cum_nm - current_cum_nm, 0.0)
+            next_wp_id = legs[leg_idx].to_id
+            dist_to_next_nm = max(legs[leg_idx].dist_nm - along_nm, 0.0)
 
             temp_k, u_ms, v_ms = _as_atmosphere(la_lat, la_lon, host, port)
             current_fl = state["alt_ft"] / 100.0
             table, best_idx, current_idx, binding_at_best = _level_table(
                 temp_k, u_ms, v_ms, track_deg, state["weight_t"], cruise_mach, current_fl)
-            _print_advisor(state, la_lat, la_lon, track_deg, table, best_idx, current_idx,
-                            binding_at_best, remaining_nm, gain_threshold_kt)
+
+            elapsed_s = (time.monotonic() - t0_monotonic
+                         if phase in ("recording", "done") else None)
+            current_gs_kt = float(table["gs_kt"].iloc[current_idx])
+            predicted_remaining_s = (
+                remaining_nm * NM_TO_M / (current_gs_kt * KT_TO_MS) if current_gs_kt > 0 else None)
+            predicted_total_s = (
+                elapsed_s + predicted_remaining_s
+                if elapsed_s is not None and predicted_remaining_s is not None else None)
+
+            def _screen(countdown_s):
+                return _render_screen(
+                    state, table, best_idx, current_idx, binding_at_best, remaining_nm,
+                    gain_threshold_kt, next_wp_id, dist_to_next_nm, current_cum_nm,
+                    elapsed_s, predicted_remaining_s, predicted_total_s,
+                    preflight_predicted_total_s, countdown_s, recorder_note)
+
+            if live_display is not None:
+                live_display.update(_screen(interval_s))
+            else:
+                _print_advisor(state, la_lat, la_lon, track_deg, table, best_idx, current_idx,
+                                binding_at_best, remaining_nm, gain_threshold_kt)
 
             if recording:
                 gs_kt = state["gs_kt"]
@@ -363,17 +520,21 @@ def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_L
                         and prev_gs_kt < BRAKE_RELEASE_GS_KT <= gs_kt):
                     phase = "recording"
                     t0_monotonic = time.monotonic()
-                    print(f"\nBrake release detected -- recording to {record_path}")
+                    recorder_note = f"Brake release detected -- recording to {record_path}"
+                    if live_display is None:
+                        print(f"\n{recorder_note}")
                 elif phase == "recording" and prev_on_ground is False and state["on_ground"]:
                     phase = "done"
                     touchdown_elapsed_s = time.monotonic() - t0_monotonic
-                    print(f"\nTouchdown detected, elapsed {_format_hmm(touchdown_elapsed_s)} "
-                          "since brake release")
+                    recorder_note = (f"Touchdown detected, elapsed "
+                                      f"{_format_hmm(touchdown_elapsed_s)} since brake release")
+                    if live_display is None:
+                        print(f"\n{recorder_note}")
 
                 if phase in ("recording", "done"):
-                    elapsed_s = time.monotonic() - t0_monotonic
+                    elapsed_row_s = time.monotonic() - t0_monotonic
                     last_wp = _last_waypoint_passed(waypoint_cum_nm, current_cum_nm)
-                    csv_writer.writerow([state["zulu_s"], round(elapsed_s, 1), lat, lon,
+                    csv_writer.writerow([state["zulu_s"], round(elapsed_row_s, 1), lat, lon,
                                           state["alt_ft"], state["mach"], state["tas_kt"],
                                           gs_kt, state["weight_t"], last_wp])
                     csv_file.flush()
@@ -381,7 +542,7 @@ def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_L
                         d = great_circle_nm(lat, lon, wlat, wlon)
                         prev = cpa[wid]
                         if prev is None or d < prev["dist_nm"]:
-                            cpa[wid] = dict(dist_nm=d, elapsed_s=elapsed_s, fl=current_fl,
+                            cpa[wid] = dict(dist_nm=d, elapsed_s=elapsed_row_s, fl=current_fl,
                                              mach=state["mach"], tas_kt=state["tas_kt"], gs_kt=gs_kt)
 
                 prev_on_ground = state["on_ground"]
@@ -390,15 +551,24 @@ def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_L
                 if phase == "done":
                     break
 
-            time.sleep(interval_s)
+            if live_display is not None:
+                for countdown_s in range(int(interval_s), 0, -1):
+                    live_display.update(_screen(countdown_s))
+                    time.sleep(1)
+            else:
+                time.sleep(interval_s)
     except KeyboardInterrupt:
-        print("\nStopped (Ctrl+C).")
+        interrupted = True
     finally:
+        if live_display is not None:
+            live_display.stop()
         if csv_file:
             csv_file.close()
 
+    if interrupted:
+        print("\nStopped (Ctrl+C).")
+
     if recording and phase == "done" and compare_path:
-        report_df = pd.read_csv(compare_path)
         table, constants = compare_to_report(report_df, cpa, touchdown_elapsed_s,
                                               accel_id, decel_id)
         _print_comparison(table, constants)
