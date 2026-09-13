@@ -228,6 +228,10 @@ for its own sake, no defensive error handling.
   in anything that touches the search — it runs over ~31,000 candidate
   departures × ~32 supersonic legs × 4 ERA5 pressure levels.
 - pint is allowed **only** in display code, never in `atmos.py`/`limits.py`.
+- Ad hoc command output captured by hand (e.g. `concopt verify ... |
+  Tee-Object -FilePath logs/verify_2016-02-12.log`) goes in `logs/`, not
+  the repo root -- gitignored, `logs/.gitkeep` keeps the empty folder
+  tracked.
 
 ## Aircraft constants
 - Mmo 2.04 (structural limit, `conc_data.MMO`); cruise is flown at
