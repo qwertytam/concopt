@@ -41,7 +41,12 @@
       "Bash(rm -f A2_IMPLEMENTATION_SUMMARY.md && git status --short)",
       "Bash(git status *)",
       "Bash(git check-ignore *)",
-      "Bash(echo \"exit:$?\")"
+      "Bash(echo \"exit:$?\")",
+      "Bash(python -c \"import rich; print\\(rich.__version__\\)\")",
+      "Bash(poetry --version)",
+      "Bash(poetry install *)",
+      "Bash(poetry lock *)",
+      "Bash(gh pr create --title 'A4: redraw the inflight display in place with rich.live.Live' --body ' *)"
     ],
     "additionalDirectories": [
       "E:\\Repos\\concopt"
