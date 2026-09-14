@@ -76,7 +76,7 @@ _SEGMENT_KEYS = (
 )
 
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
-              "level_mass_outside_envelope")
+              "level_mass_outside_envelope", "wind_fl_clamped")
 
 # Legacy comparison only. The flat (DECEL_DESCENT_S=35 min, DESCENT_FUEL_T=
 # 2.0 t) pair this module replaces -- see flat_arrival, which --decel-
@@ -92,21 +92,33 @@ def _band_is_warm(isa_dev_at_cruise):
 
 
 def _wind_temp(wind_at_fl, level_fl, n_cand):
-    """Pull (wind_kt, temp_k) out of `wind_at_fl`, both as (n_cand,) float.
+    """Pull (wind_kt, temp_k, fl_clamped) out of `wind_at_fl`, all as
+    (n_cand,) arrays.
 
     `level_fl` is always broadcast to (n_cand,) before the call, so the
     callable never has to guess which candidates it is being asked about --
     that ambiguity is what made an earlier band-masked version crash the
-    moment candidates straddled the ISA-10 boundary."""
+    moment candidates straddled the ISA-10 boundary.
+
+    fl_clamped (B6): True where the requested level_fl fell outside
+    wind_at_fl's own source data span and was clamped rather than genuinely
+    read -- search._build_arrival_wind_fn's stitched profile reports this
+    via an optional "fl_clamped" dict key; a wind_at_fl that doesn't
+    (a bare (wind_kt, temp_k) pair, or a dict without the key -- every
+    test mock in tests/test_arrival.py, for instance) is treated as never
+    clamped rather than erroring, so this stays backward compatible."""
     level_fl = np.broadcast_to(np.asarray(level_fl, float), (n_cand,))
     atm = wind_at_fl(level_fl)
     if isinstance(atm, dict):
         wind_kt, temp_k = atm["wind_kt"], atm["temp_k"]
+        fl_clamped = atm.get("fl_clamped", False)
     else:
         wind_kt, temp_k = atm[0], atm[1]
+        fl_clamped = atm[2] if len(atm) > 2 else False
     wind_kt = np.broadcast_to(np.asarray(wind_kt, float), (n_cand,))
     temp_k = np.broadcast_to(np.asarray(temp_k, float), (n_cand,))
-    return wind_kt, temp_k
+    fl_clamped = np.broadcast_to(np.asarray(fl_clamped, bool), (n_cand,))
+    return wind_kt, temp_k, fl_clamped
 
 
 def _table_by_band(fn, level_fl, speed_kt, warm, keys):
@@ -132,7 +144,9 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         conc_data.decel_to_mach1(cruise_fl.flat[0], speed_kt, BAND_WARM)["decel_end_fl"]
     )
 
-    decel_wind, _ = _wind_temp(wind_at_fl, (cruise_fl + decel_end_fl) / 2.0, n_cand)
+    decel_wind, _, decel_wind_clamped = _wind_temp(
+        wind_at_fl, (cruise_fl + decel_end_fl) / 2.0, n_cand
+    )
     decel_nm = conc_data.dist_with_wind(
         decel["dist_zero_wind_nm"], decel["time_min"], decel_wind
     )
@@ -143,7 +157,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         conc_data.descent_to_1500ft, decel_end_fl, speed_kt, warm, cols
     )
     descent_mid_fl = (decel_end_fl + _DESCENT_END_FL) / 2.0
-    descent_wind, _ = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
+    descent_wind, _, descent_wind_clamped = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
     descent_nm = conc_data.dist_with_wind(
         descent["dist_zero_wind_nm"], descent["time_min"], descent_wind
     )
@@ -153,7 +167,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     level_nm_clamped = level_nm_raw < 0.0
     level_nm = np.maximum(level_nm_raw, 0.0)
 
-    level_wind, level_temp_k = _wind_temp(wind_at_fl, decel_end_fl, n_cand)
+    level_wind, level_temp_k, level_wind_clamped = _wind_temp(wind_at_fl, decel_end_fl, n_cand)
     # atmos.py is the single validated speed-of-sound path -- do not add another.
     level_tas_kt = atmos.speed_of_sound(level_temp_k) * LEVEL_MACH / atmos.KT_TO_MS
     level_gs_kt = level_tas_kt + level_wind
@@ -194,6 +208,13 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
             level_nm == 0.0, 0.0, level_nm / specific_range_nm_per_t
         )
 
+    # Any of the three wind_at_fl reads (decel midpoint, descent midpoint,
+    # level segment) landing outside the source data's span means this
+    # schedule's numbers rest on a clamped read somewhere -- OR them
+    # together into one flag rather than three, since the caller cares
+    # whether the *segment* used a clamped wind, not which sub-lookup did.
+    wind_fl_clamped = decel_wind_clamped | descent_wind_clamped | level_wind_clamped
+
     out = {
         "decel_nm": decel_nm,
         "descent_nm": descent_nm,
@@ -209,6 +230,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         "level_nm_clamped": level_nm_clamped,
         "level_gs_nonpositive": level_gs_nonpositive,
         "level_mass_outside_envelope": level_mass_outside_envelope,
+        "wind_fl_clamped": wind_fl_clamped,
     }
     out["time_min"] = (
         out["decel_time_min"] + out["level_time_min"]
@@ -235,9 +257,14 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             from the route -- sum the post-decel legs; do NOT pass a constant,
             since the .pln is a command-line input and can change.
         wind_at_fl: callable taking a (n_cand,) array of flight levels and
-            returning either a dict with "wind_kt"/"temp_k" or a
-            (wind_kt, temp_k) pair, each (n_cand,). Wind is the along-track
-            component in kt, positive for a tailwind; temperature is static, K.
+            returning either a dict with "wind_kt"/"temp_k" (and optionally
+            "fl_clamped", a (n_cand,) bool -- True where the request fell
+            outside the source data's own span and was clamped rather than
+            genuinely read) or a (wind_kt, temp_k) / (wind_kt, temp_k,
+            fl_clamped) tuple. Wind is the along-track component in kt,
+            positive for a tailwind; temperature is static, K. Missing
+            fl_clamped is treated as never-clamped (see search.
+            _build_arrival_wind_fn for the real implementation, B6).
         isa_dev_at_cruise: ISA deviation in the arrival area at cruise level,
             °C. Picks the descent temperature band (two bands, not the climb
             table's three).
@@ -282,9 +309,9 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             decel_fuel_t, level_fuel_t, descent_fuel_t,
             flags (str, "" when clean; names joined by ";")
         plus per-flag booleans level_nm_clamped / cruise_fl_clamped /
-        level_gs_nonpositive / level_mass_outside_envelope, and
-        `by_schedule`: {325: {...}, 350: {...}, 380: {...}}, each the full
-        breakdown for that forced schedule.
+        level_gs_nonpositive / level_mass_outside_envelope /
+        wind_fl_clamped, and `by_schedule`: {325: {...}, 350: {...},
+        380: {...}}, each the full breakdown for that forced schedule.
 
     Flags rather than exceptions:
         level_nm_clamped      descent did not fit the available distance;
@@ -297,6 +324,17 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
                               .csv's published envelope at this level/ISA;
                               level_fuel_t (and so fuel_t) is NaN. Should
                               never fire at real arrival masses.
+        wind_fl_clamped       the decel midpoint, descent midpoint, or
+                              level segment read wind/temp outside
+                              wind_at_fl's own source span and got a
+                              clamped value instead of a genuine one (B6).
+                              A REAL number still comes back -- this flag
+                              is the only thing that says so isn't a
+                              genuine reading; see search.
+                              _build_arrival_wind_fn's stitched FL183-605
+                              profile, which still clamps below FL183 on
+                              the descent segment's own midpoint (as low
+                              as FL163.5 on the 380 kt schedule).
     """
     if speed != "auto" and speed not in SCHEDULES_KT:
         raise ValueError(
@@ -352,7 +390,8 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
         result[key] = picked
 
     flags = {"cruise_fl_clamped": cruise_fl_clamped}
-    for key in ("level_nm_clamped", "level_gs_nonpositive", "level_mass_outside_envelope"):
+    for key in ("level_nm_clamped", "level_gs_nonpositive", "level_mass_outside_envelope",
+                "wind_fl_clamped"):
         picked = by_schedule[SCHEDULES_KT[0]][key]
         for spd in SCHEDULES_KT[1:]:
             picked = np.where(schedule_kt == spd, by_schedule[spd][key], picked)
@@ -412,6 +451,7 @@ def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
         "descent_fuel_t": zeros,
         "level_nm_clamped": falses, "cruise_fl_clamped": falses,
         "level_gs_nonpositive": falses, "level_mass_outside_envelope": falses,
+        "wind_fl_clamped": falses,
         "flags": np.full(n_cand, "", dtype=object).astype(str),
         "by_schedule": {},
     }

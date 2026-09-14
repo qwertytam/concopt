@@ -17,8 +17,16 @@ ARCHIVE_START = dt.date(2014, 8, 1)
 
 # Route bbox + margin (N, W, S, E), JFK-LHR great circle.
 UPPER_AIR_AREA = [53, -76, 38, 2]
-UPPER_AIR_LEVELS = ["70", "100", "125", "150"]
+UPPER_AIR_LEVELS = ["70", "100", "125", "150"]  # FL447-FL605
 UPPER_AIR_GRID = [1.0, 1.0]
+
+# These same netCDFs are reduced TWICE: once onto the cruise legs (the
+# search's own --npz), and again onto the arrival legs (--arrival-upper-npz,
+# B6) to extend arrival.py's decel-segment wind coverage above SUBSONIC_LEVELS'
+# FL414 ceiling -- UPPER_AIR_AREA already covers the arrival region and 150
+# joins 175 hPa (SUBSONIC_LEVELS' top) with no gap, so this needs no new CDS
+# request, just a second era5.reduce_to_legs(nc_paths, arrival_legs, out_npz)
+# call against the already-downloaded era5_upper_*.nc files.
 # Departures are 08:00-14:00 America/New_York -> 12:00-18:00Z under EDT,
 # 13:00-19:00Z under EST, plus ~4h flight time to cover the arrival end.
 # Do not widen this.
@@ -26,6 +34,9 @@ UPPER_AIR_TIMES = [f"{h:02d}:00" for h in range(12, 24)]
 
 # Subsonic cruise segment (last ~300 nm into LHR, arrival-only), FL183-FL414.
 # Seven levels (175-500 hPa) join up with the 150 hPa data already downloaded.
+# B6: this alone does not reach the decel segment's own wind-sampling
+# midpoint from a realistic cruise level (roughly FL446-491) -- see
+# UPPER_AIR_LEVELS above, which stitches on top to FL605.
 SUBSONIC_LEVELS = ["175", "200", "225", "250", "300", "400", "500"]
 SUBSONIC_AREA = [54, -13, 47, 2]  # N, W, S, E — arrival box only
 SUBSONIC_GRID = [1.0, 1.0]

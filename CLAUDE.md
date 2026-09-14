@@ -70,6 +70,31 @@ for its own sake, no defensive error handling.
   groups, every month) and the *post-BARIX* legs (the complement of
   `route.climb_cruise_segment`'s mask) to `reduce_to_legs` to build the
   `--subsonic-npz` `search`/`report`/`verify --zfw` take.
+
+  `UPPER_AIR_LEVELS` (70/100/125/150 hPa) is FL447-FL605, and
+  `UPPER_AIR_AREA` already covers the arrival region — B6: `reduce_to_legs`
+  run a SECOND time against those same already-downloaded `era5_upper_*.nc`
+  files, but onto the *post-BARIX* legs instead of the cruise legs, builds
+  `--arrival-upper-npz`, no new CDS request. 150 and 175 hPa (`SUBSONIC_LEVELS`'
+  own top) are adjacent, so `search._build_arrival_wind_fn` concatenates the
+  two level sets into one continuous ~FL183-FL605 profile — fixing a bug
+  where the decel segment's own wind-sampling midpoint (`(cruise_fl +
+  decel_end_fl) / 2`, roughly FL446-491 from a realistic FL580-600 cruise)
+  fell outside `SUBSONIC_LEVELS` alone and was silently clamped to FL414's
+  wind for the largest single segment of the ~307 nm arrival. Both npz's
+  time axes must match (both built from `UPPER_AIR_TIMES`) — asserted,
+  not assumed, since a silent mismatch there would be this same bug's
+  twin. The clamp still bites at the BOTTOM: the descent segment's own
+  midpoint reaches FL163.5 on the 380 kt schedule (FL182.5 on 350 kt,
+  marginal; FL199 on 325 kt, clear) — faster schedules clamp, not slower
+  ones, the opposite of what an earlier docstring claimed. Accepted, not
+  chased further: that segment is ~60 nm of ~7.7 min and low-level wind is
+  weak (well under 0.3 min of error), so covering it would cost another
+  CDS download for less than `wind_at_fl`'s own `fl_clamped` flag now
+  already tells us — every `wind_at_fl` call reports, per candidate,
+  whether it needed the clamp, and `arrival.py` ORs the decel/descent/level
+  reads into `wind_fl_clamped` (one more `_FLAG_KEYS` entry) so a clamped
+  number is flagged rather than silently plausible.
 - `search.py` — the day/time scan (`concopt search`). Candidates are every
   date from `era5.ARCHIVE_START` to today at 08:00-14:00 America/New_York
   (7/day), built tz-aware with `zoneinfo` and converted to UTC so DST
@@ -147,13 +172,15 @@ for its own sake, no defensive error handling.
   loop, not added after it returns, because the whole point of `arrival.py`
   is that its ~4-8 t (vs the old flat `DESCENT_FUEL_T` 2.0 t placeholder)
   feeds back into TOW and therefore into climb time. `_build_arrival_wind_fn`
-  builds the `wind_at_fl` callable `arrival.arrival()` needs from a
-  *subsonic* ERA5 `.npz` (`--subsonic-npz`, `era5.reduce_to_legs` run
-  against the post-BARIX legs — the complement of
-  `route.climb_cruise_segment`'s mask, i.e. `~mask`) — sampled at a single
-  representative arrival leg and at BARIX clock time, the same coarse
-  single-point-proxy convention `_climb_conditions` uses for the climb, not
-  a per-segment march. `--decel-descent-min` no longer has a default value:
+  builds the `wind_at_fl` callable `arrival.arrival()` needs from TWO ERA5
+  `.npz`s stitched together (B6, see `era5.py` above) — `--subsonic-npz`
+  and `--arrival-upper-npz`, both `era5.reduce_to_legs` run against the
+  post-BARIX legs (the complement of `route.climb_cruise_segment`'s mask,
+  i.e. `~mask`), both required together unless `--decel-descent-min`
+  forces the flat legacy arrival — sampled at a single representative
+  arrival leg and at BARIX clock time, the same coarse single-point-proxy
+  convention `_climb_conditions` uses for the climb, not a per-segment
+  march. `--decel-descent-min` no longer has a default value:
   given, it forces `arrival.flat_arrival` (the exact pre-arrival.py flat
   `DECEL_DESCENT_S`/`DESCENT_FUEL_T` pair) instead of the real per-day
   model, ignoring `--subsonic-npz` entirely — for comparing old vs new
@@ -220,6 +247,14 @@ for its own sake, no defensive error handling.
   there would otherwise `np.clip` to NaN forever (clip does not resolve
   NaN), so a NaN `tow_calc` is nudged to `MTOW_T` before clamping, self-
   correcting once the march lands back inside the table.
+
+  `wind_fl_clamped` (B6): `_wind_temp` reads an optional `fl_clamped`
+  key/tuple-slot out of whatever `wind_at_fl` returns (missing means never
+  clamped, so every pre-B6 test mock stays valid) and `_arrival_for_speed`
+  ORs the decel/descent/level segments' three reads into one flag — see
+  `era5.py`/`search.py` above for what actually sets it
+  (`search._build_arrival_wind_fn`'s stitched FL183-FL605 profile still
+  clamps below FL183 on the descent segment's own midpoint).
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -248,8 +283,9 @@ for its own sake, no defensive error handling.
   model — the API takes an explicit lat/lon/altitude, so one load covers
   every point queried below, no flying required). `--zfw` (tonnes) runs the
   SAME fixed point `search`/`report` use (`search.resolve_tow_and_arrival`,
-  requires `--subsonic-npz` too — arrival fuel needs the same post-decel
-  wind source search used, or the two TOWs won't agree), so the
+  requires `--subsonic-npz` AND `--arrival-upper-npz` too (B6) — arrival
+  fuel needs the same stitched post-decel wind source search used, or the
+  two TOWs won't agree), so the
   verification is flown at the weight that day was actually found under —
   an Active Sky check flown at the wrong weight undercuts the whole
   comparison. `--tow` overrides `--zfw` and skips the fixed point (and

@@ -51,7 +51,8 @@ def _cmd_search(args):
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                decel_descent_min=args.decel_descent_min,
-               cruise_mach=args.cruise_mach)
+               cruise_mach=args.cruise_mach,
+               arrival_upper_npz_path=args.arrival_upper_npz)
 
 
 def _cmd_report(args):
@@ -68,7 +69,8 @@ def _cmd_report(args):
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                decel_descent_min=args.decel_descent_min,
-               cruise_mach=args.cruise_mach)
+               cruise_mach=args.cruise_mach,
+               arrival_upper_npz_path=args.arrival_upper_npz)
 
 
 def _cmd_verify(args):
@@ -79,7 +81,8 @@ def _cmd_verify(args):
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
-               csv_path=args.csv)
+               csv_path=args.csv,
+               arrival_upper_npz_path=args.arrival_upper_npz)
 
 
 def _cmd_shortlist(args):
@@ -143,6 +146,15 @@ def main(argv=None):
                                      'post-decel legs -- drives the real arrival.arrival() model '
                                      '(decel/level/descent/approach); required unless '
                                      '--decel-descent-min forces the flat legacy arrival instead')
+    search_parser.add_argument('--arrival-upper-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'SAME post-decel legs as --subsonic-npz, but from the '
+                                     'UPPER_AIR_LEVELS netCDFs already downloaded for the cruise '
+                                     'legs (no new CDS download) -- stitched onto --subsonic-npz '
+                                     'to reach the decel segment\'s own wind-sampling midpoint '
+                                     '(FL183-FL605 combined span, B6); required alongside '
+                                     '--subsonic-npz unless --decel-descent-min forces the flat '
+                                     'legacy arrival instead')
     search_parser.add_argument('--decel-descent-min', type=float, default=None,
                                 help='minutes from the decel point to touchdown -- forces a FLAT '
                                      'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
@@ -180,6 +192,15 @@ def main(argv=None):
                                      'post-decel legs -- drives the real arrival.arrival() model '
                                      '(decel/level/descent/approach); required unless '
                                      '--decel-descent-min forces the flat legacy arrival instead')
+    report_parser.add_argument('--arrival-upper-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'SAME post-decel legs as --subsonic-npz, but from the '
+                                     'UPPER_AIR_LEVELS netCDFs already downloaded for the cruise '
+                                     'legs (no new CDS download) -- stitched onto --subsonic-npz '
+                                     'to reach the decel segment\'s own wind-sampling midpoint '
+                                     '(FL183-FL605 combined span, B6); required alongside '
+                                     '--subsonic-npz unless --decel-descent-min forces the flat '
+                                     'legacy arrival instead')
     report_parser.add_argument('--decel-descent-min', type=float, default=None,
                                 help='minutes from the decel point to touchdown -- forces a FLAT '
                                      'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
@@ -217,6 +238,14 @@ def main(argv=None):
                                 help='path to the .npz from era5.reduce_to_legs run against the '
                                      'post-decel legs -- required with --zfw, so the fixed point\'s '
                                      'arrival fuel matches the search run being verified')
+    verify_parser.add_argument('--arrival-upper-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'SAME post-decel legs as --subsonic-npz, but from the '
+                                     'UPPER_AIR_LEVELS netCDFs already downloaded for the cruise '
+                                     'legs (no new CDS download) -- stitched onto --subsonic-npz '
+                                     'to reach the decel segment\'s own wind-sampling midpoint '
+                                     '(FL183-FL605 combined span, B6); required alongside '
+                                     '--subsonic-npz whenever --zfw is used')
     verify_parser.add_argument('--tow', type=float, default=None,
                                 help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
                                      'point entirely, for "what if I actually load X" (default: '

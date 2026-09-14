@@ -2,16 +2,22 @@
 printed-commands-out helper behind `concopt shortlist` -- plus, from B3, a
 couple of fast end-to-end acceptance tests for run_search itself (arrival.py
 wired in via resolve_tow_and_arrival), on a monkeypatched two-candidate
-scan rather than the real ~31,000-row one.
+scan rather than the real ~31,000-row one. From B6, tests for
+search._build_arrival_wind_fn's stitched FL183-FL605 wind profile.
 """
 import datetime as dt
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from concopt import search
+from concopt.atmos import pressure_to_fl
+from concopt.era5 import SUBSONIC_LEVELS, UPPER_AIR_LEVELS
+from concopt.route import Leg
 from concopt.search import DEFAULT_TOW_T, run_shortlist
-from tests.test_report import _still_air_npz, _still_air_subsonic_npz
+from tests.test_report import (_still_air_arrival_upper_npz, _still_air_npz,
+                                _still_air_subsonic_npz)
 from tests.test_route import SAMPLE_PLN
 
 
@@ -118,6 +124,7 @@ def test_run_search_end_to_end_with_zfw_and_subsonic_npz(tmp_path, monkeypatch):
     tests exercise for one candidate at a time."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
+    arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     surface_npz_path = _still_air_surface_npz(tmp_path)
     out_path = tmp_path / "results.csv"
 
@@ -126,6 +133,7 @@ def test_run_search_end_to_end_with_zfw_and_subsonic_npz(tmp_path, monkeypatch):
     candidates = search.run_search(
         SAMPLE_PLN, npz_path, surface_npz_path, out_path=out_path,
         zfw_t=92.0, min_landing_fuel_t=10.0, subsonic_npz_path=subsonic_npz_path,
+        arrival_upper_npz_path=arrival_upper_npz_path,
     )
 
     assert len(candidates) == 2
@@ -156,3 +164,98 @@ def test_run_search_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, mo
                 + candidates["jfk_penalty_s"] + candidates["lhr_penalty_s"])
     assert np.allclose(candidates["total_time_s"], expect_s)
     assert np.allclose(candidates["arrival_time_s"], 35.0 * 60.0)
+
+
+def _arrival_wind_data(n_legs=3, n_time=2):
+    """(subsonic_data, arrival_upper_data) dicts shaped like two
+    era5.reduce_to_legs .npz loads against the SAME arrival legs -- one at
+    era5.SUBSONIC_LEVELS (175-500 hPa, FL183-FL414), one at
+    era5.UPPER_AIR_LEVELS (70-150 hPa, FL447-FL605) -- for
+    search._build_arrival_wind_fn directly, no real .npz files needed.
+
+    u is set to the level's own pressure in hPa, constant across time/leg --
+    monotonic in log(pressure), so any two distinct flight levels resolve to
+    distinct interpolated wind, and the exact clamped value at a span edge
+    is easy to predict (it's just that edge level's own hPa figure)."""
+    times = np.array(["2016-01-01T00:00:00", "2026-12-31T00:00:00"], dtype="datetime64[ns]")
+
+    def _fake(levels_hpa):
+        n_lvl = len(levels_hpa)
+        u = np.broadcast_to(
+            levels_hpa[None, :, None], (n_time, n_lvl, n_legs)
+        ).astype(float).copy()
+        v = np.zeros((n_time, n_lvl, n_legs))
+        t = np.full((n_time, n_lvl, n_legs), 220.0)
+        return dict(time=times, level=levels_hpa, u=u, v=v, t=t)
+
+    subsonic_data = _fake(np.array([float(x) for x in SUBSONIC_LEVELS]))
+    arrival_upper_data = _fake(np.array([float(x) for x in UPPER_AIR_LEVELS]))
+    return subsonic_data, arrival_upper_data
+
+
+def _arrival_wind_fn(subsonic_data, arrival_upper_data, n_legs=3, n_cand=1):
+    legs = [
+        Leg(f"A{i}", f"B{i}", 45.0, -30.0 + i, 90.0, 50.0, 50.0 * (i + 1))
+        for i in range(n_legs)
+    ]
+    dep_i8 = np.full(n_cand, subsonic_data["time"][0].astype("int64"))
+    builder = search._build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, legs)
+    return builder(np.zeros(n_cand))
+
+
+class TestArrivalWindStitching:
+    """B6: subsonic_data alone (era5.SUBSONIC_LEVELS, FL183-FL414) doesn't
+    reach the decel segment's own wind-sampling midpoint from a realistic
+    cruise level (roughly FL446-491) -- _build_arrival_wind_fn stitches
+    arrival_upper_data (era5.UPPER_AIR_LEVELS, FL447-FL605) on top."""
+
+    def test_stitched_span_is_about_fl183_to_fl605(self):
+        subsonic_data, arrival_upper_data = _arrival_wind_data()
+        wind_at_fl = _arrival_wind_fn(subsonic_data, arrival_upper_data)
+
+        fl_min = pressure_to_fl(500.0 * 100.0)  # bottom of SUBSONIC_LEVELS
+        fl_max = pressure_to_fl(70.0 * 100.0)   # top of UPPER_AIR_LEVELS
+        assert fl_min == pytest.approx(182.9, abs=0.1)
+        assert fl_max == pytest.approx(605.0, abs=0.1)
+
+        assert not wind_at_fl(np.array([fl_min]))["fl_clamped"][0]
+        assert not wind_at_fl(np.array([fl_max]))["fl_clamped"][0]
+        assert wind_at_fl(np.array([fl_min - 5.0]))["fl_clamped"][0]
+        assert wind_at_fl(np.array([fl_max + 5.0]))["fl_clamped"][0]
+
+    def test_fl480_differs_from_fl414(self):
+        """The pre-fix bug: FL480 (above SUBSONIC_LEVELS' own FL414 top)
+        clamped to FL414's own value, silently, because subsonic_data alone
+        was the whole span. With arrival_upper_data stitched on, FL480 sits
+        genuinely inside the (now wider) unclamped span and must read a
+        different wind than FL414."""
+        subsonic_data, arrival_upper_data = _arrival_wind_data()
+        wind_at_fl = _arrival_wind_fn(subsonic_data, arrival_upper_data)
+
+        at_414 = wind_at_fl(np.array([414.0]))
+        at_480 = wind_at_fl(np.array([480.0]))
+
+        assert not at_414["fl_clamped"][0]
+        assert not at_480["fl_clamped"][0]
+        assert at_480["wind_kt"][0] != pytest.approx(at_414["wind_kt"][0])
+
+    def test_wind_fl_clamped_false_at_fl450_true_at_fl150(self):
+        subsonic_data, arrival_upper_data = _arrival_wind_data()
+        wind_at_fl = _arrival_wind_fn(subsonic_data, arrival_upper_data)
+
+        assert not wind_at_fl(np.array([450.0]))["fl_clamped"][0]
+        assert wind_at_fl(np.array([150.0]))["fl_clamped"][0]
+
+    def test_mismatched_time_axes_raise(self):
+        """A silent time misalignment between the two stitched level sets
+        would be this bug's own twin -- assert, don't assume, they match."""
+        subsonic_data, arrival_upper_data = _arrival_wind_data()
+        arrival_upper_data = dict(arrival_upper_data)
+        arrival_upper_data["time"] = np.array(
+            ["2015-06-01T00:00:00", "2027-06-01T00:00:00"], dtype="datetime64[ns]"
+        )
+        dep_i8 = np.full(1, subsonic_data["time"][0].astype("int64"))
+        legs = [Leg("A", "B", 45.0, -30.0, 90.0, 50.0, 50.0)]
+
+        with pytest.raises(ValueError, match="time"):
+            search._build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, legs)

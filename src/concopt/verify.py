@@ -175,7 +175,8 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
                subsonic_npz_path=None,
                cruise_mach=limits.CRUISE_MACH,
                csv_path=None,
-               snapshot_cache_path=SNAPSHOT_CACHE_PATH):
+               snapshot_cache_path=SNAPSHOT_CACHE_PATH,
+               arrival_upper_npz_path=None):
     """Compare Active Sky's live atmosphere against the ERA5 values the
     search used, at n_points evenly spaced cruise legs (climb-consumed legs
     excluded -- see march_legs' eff_dist_nm) for local_date/local_hour
@@ -185,9 +186,10 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
     report` use (search.resolve_tow_and_arrival) rather than a bare --tow
     guess, so the day is verified at the weight it was actually found under
     -- an Active Sky check flown at the wrong weight undercuts the whole
-    comparison. subsonic_npz_path is required with zfw_t: the fixed point's
-    arrival fuel needs the same post-decel wind source search used, or the
-    two TOWs won't agree. tow_t overrides zfw_t and skips the fixed point
+    comparison. subsonic_npz_path AND arrival_upper_npz_path are both
+    required with zfw_t: the fixed point's arrival fuel needs the same
+    stitched post-decel wind source search used (B6), or the two TOWs
+    won't agree. tow_t overrides zfw_t and skips the fixed point
     entirely (no arrival/subsonic data needed at all, same as a plain
     march_legs call always worked). Neither given falls back to the flat
     DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was wired in.
@@ -222,12 +224,14 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
         # fuel included), so this TOW matches the one that day was found
         # under. A bare march_legs call here would drift from search's TOW
         # by the arrival fuel search now folds into its own fixed point.
-        if subsonic_npz_path is None:
+        if subsonic_npz_path is None or arrival_upper_npz_path is None:
             raise ValueError(
-                "subsonic_npz_path (--subsonic-npz) is required with zfw_t (--zfw), so the "
+                "subsonic_npz_path (--subsonic-npz) AND arrival_upper_npz_path "
+                "(--arrival-upper-npz) are both required with zfw_t (--zfw), so the "
                 "fixed point's arrival fuel matches the search run being verified"
             )
         subsonic_data = load_legs_npz(subsonic_npz_path)
+        arrival_upper_data = load_legs_npz(arrival_upper_npz_path)
         arrival_idx = np.flatnonzero(~mask)
         arrival_legs = [legs[i] for i in arrival_idx]
         arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
@@ -236,6 +240,7 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
             resolve_tow_and_arrival(
                 cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
                 zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t, cruise_mach=cruise_mach,
+                arrival_upper_data=arrival_upper_data,
             )
         )
         tow_t = float(tow_arr[0])
