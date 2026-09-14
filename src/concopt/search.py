@@ -444,7 +444,9 @@ def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_le
     together they form one continuous ~FL183-FL605 profile with no gap.
     Both npz's must share the same time axis (era5.UPPER_AIR_TIMES, since
     both are reduced from requests built from it) -- asserted, not assumed,
-    since a silent misalignment there would be exactly this bug's twin.
+    since a silent misalignment there would be exactly this bug's twin. Both
+    must also have been reduced onto arrival_legs itself, not the cruise
+    legs -- also asserted (B8), via each npz's own stored cum_nm.
 
     Vertical interpolation is still linear in log(pressure), clamped to the
     stitched span (no extrapolation, same convention as every other table
@@ -469,6 +471,32 @@ def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_le
             "era5.UPPER_AIR_TIMES against the SAME arrival_legs, or the two "
             "stitched level sets would silently misalign in time"
         )
+
+    # B8: the time axes above were checked, but the LEG axis never was --
+    # mid_local_idx below is a bare positional index into subsonic_data's/
+    # arrival_upper_data's own "leg" dimension, valid as long as (and only
+    # as long as) each npz was built by era5.reduce_to_legs run against
+    # exactly arrival_legs. Both npz's are cut from the same era5_upper_*.nc
+    # files as the cruise --npz, so passing a cruise-leg npz here (e.g. the
+    # same file already used for --npz) is the natural mistake -- it passes
+    # the time check above (both share UPPER_AIR_TIMES) and then silently
+    # reads mid-Atlantic wind for the arrival segment, since a small index
+    # like 2 is a perfectly valid position on a ~32-leg cruise axis too. An
+    # operator error like this belongs at startup, not as a per-candidate
+    # flag, so raise rather than proceed.
+    expected_cum_nm = np.array([leg.cum_nm for leg in arrival_legs])
+    for name, d in (("subsonic_data", subsonic_data),
+                    ("arrival_upper_data", arrival_upper_data)):
+        leg_cum_nm = np.asarray(d["cum_nm"])
+        if (leg_cum_nm.shape != expected_cum_nm.shape
+                or not np.allclose(leg_cum_nm, expected_cum_nm)):
+            raise ValueError(
+                f"{name} was not reduced onto arrival_legs -- it has "
+                f"{leg_cum_nm.shape[0]} leg(s), but arrival_legs has "
+                f"{len(arrival_legs)}; era5.reduce_to_legs must be run "
+                "against the SAME post-BARIX arrival_legs list used here, "
+                "not the cruise legs (--npz)"
+            )
 
     mid_local_idx = len(arrival_legs) // 2
     mid_leg = arrival_legs[mid_local_idx]
