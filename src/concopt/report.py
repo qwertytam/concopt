@@ -166,8 +166,7 @@ def _fuel_plan_lines(plan):
         )
         lines.append(f"  !! {flag}: {note}")
 
-    lines.append("  * see the Arrival breakdown below -- its level-cruise fuel is a "
-                  "placeholder, no subsonic table exists")
+    lines.append("  * see the Arrival breakdown below for the level-cruise split")
     return lines
 
 
@@ -175,8 +174,7 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     """arrival.arrival()'s (or arrival.flat_arrival's) dict (n_cand=1),
     arrival_nm, and the cruise FL flown into the decel point -> the printed
     Arrival block, as a list of lines. The per-segment split is the point:
-    it is what makes it obvious when the level segment is dominating, and
-    it is where the one unsourced number (SUBSONIC_SR_NM_PER_T) lives."""
+    it is what makes it obvious when the level segment is dominating."""
     a = {k: (float(v[0]) if isinstance(v, np.ndarray) and k != "flags" else v)
          for k, v in arrival_out.items() if k != "by_schedule"}
     a["flags"] = arrival_out["flags"][0]
@@ -210,7 +208,8 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     ]
     if a["flags"]:
         lines.append(f"  !! {a['flags']}")
-    lines.append("  * subsonic cruise fuel is a placeholder -- no subsonic table exists")
+    lines.append("  * level-cruise fuel from conc_subsonic_cruise.csv at the mass "
+                  "actually flown at level-off")
     return lines
 
 
@@ -234,7 +233,8 @@ def run_report(pln_path, npz_path, local_date, local_hour,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, decel_descent_min=None,
-                cruise_mach=limits.CRUISE_MACH):
+                cruise_mach=limits.CRUISE_MACH,
+                arrival_upper_npz_path=None):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
     run_search uses -- for this single candidate, then prints the fuel plan,
@@ -251,9 +251,12 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     the fuel plan existed.
 
     subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs)
-    drives the real arrival.arrival() model; required unless
-    decel_descent_min forces the flat legacy arrival instead, for comparing
-    old and new numbers directly."""
+    and arrival_upper_npz_path (era5.reduce_to_legs run against those SAME
+    legs, from the UPPER_AIR_LEVELS netCDFs already downloaded for the
+    cruise legs -- B6, no new CDS download) together drive the real
+    arrival.arrival() model's stitched FL183-FL605 wind profile; both
+    required unless decel_descent_min forces the flat legacy arrival
+    instead, for comparing old and new numbers directly."""
     parsed_pln = parse_pln(pln_path)
     legs = build_legs(parsed_pln["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
@@ -265,6 +268,9 @@ def run_report(pln_path, npz_path, local_date, local_hour,
 
     data = load_legs_npz(npz_path)
     subsonic_data = load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None
+    arrival_upper_data = (
+        load_legs_npz(arrival_upper_npz_path) if arrival_upper_npz_path is not None else None
+    )
     departure_utc = local_to_departure_utc(local_date, local_hour)
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
@@ -274,6 +280,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
+            arrival_upper_data=arrival_upper_data,
         )
     )
     tow_t = float(tow_arr[0])

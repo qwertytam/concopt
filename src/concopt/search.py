@@ -416,38 +416,82 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
     return legs_out, weight_per_leg, climb
 
 
-def _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs):
+def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_legs):
     """A wind_at_fl_builder for arrival.arrival(): a function of accumulated_s
     (n_cand, seconds since brake release, i.e. march_legs' own elapsed time
     at the decel point) returning the wind_at_fl callable arrival() needs.
 
     Sampled at a single representative arrival leg -- the one nearest the
-    midpoint of the post-BARIX span, positionally indexed (subsonic_data's
-    leg axis is arrival_legs itself, era5.reduce_to_legs run against exactly
-    that list -- see run_search) -- the same single-point proxy convention
-    _climb_conditions uses for the climb, at BARIX clock time
-    (dep_i8 + accumulated_s); arrival.py's own segment times determine how
-    much later touchdown actually is, so this is a coarse snapshot, not a
-    per-segment march, consistent with the climb model's own accuracy.
+    midpoint of the post-BARIX span, positionally indexed (both subsonic_data
+    and arrival_upper_data's leg axes are arrival_legs itself -- era5.
+    reduce_to_legs run against exactly that list, once per level set -- see
+    run_search) -- the same single-point proxy convention _climb_conditions
+    uses for the climb, at BARIX clock time (dep_i8 + accumulated_s);
+    arrival.py's own segment times determine how much later touchdown
+    actually is, so this is a coarse snapshot, not a per-segment march,
+    consistent with the climb model's own accuracy.
 
-    Vertical interpolation is linear in log(pressure) between the 7 stored
-    subsonic levels (175-500 hPa, FL183-FL414 -- era5.SUBSONIC_LEVELS),
-    clamped to that span (no extrapolation, same convention as every other
-    table lookup here): the three decel_end_fl (383/350/312) all fall
-    inside it, but the descent segment's own mid-level can reach down to
-    FL15, so slower schedules' descent-segment wind/temp is clamped to
-    FL183's own value rather than a genuine reading that low."""
+    STITCHED PROFILE (B6): subsonic_data alone (era5.SUBSONIC_LEVELS,
+    175-500 hPa, FL183-FL414) does not reach the decel segment's own
+    midpoint -- (cruise_fl + decel_end_fl) / 2, roughly FL446-491 from a
+    realistic FL580-600 cruise -- so that segment, the largest single piece
+    of the ~307 nm arrival, used to be silently corrected with FL414 wind
+    every time. arrival_upper_data (era5.UPPER_AIR_LEVELS, 70-150 hPa,
+    FL447-FL605 -- the SAME netCDFs already downloaded and reduced onto the
+    cruise legs, just reduced a second time onto arrival_legs; no new CDS
+    download) is concatenated onto subsonic_data's level axis before the
+    log(pressure) interpolation below -- 150 and 175 hPa are adjacent, so
+    together they form one continuous ~FL183-FL605 profile with no gap.
+    Both npz's must share the same time axis (era5.UPPER_AIR_TIMES, since
+    both are reduced from requests built from it) -- asserted, not assumed,
+    since a silent misalignment there would be exactly this bug's twin.
+
+    Vertical interpolation is still linear in log(pressure), clamped to the
+    stitched span (no extrapolation, same convention as every other table
+    lookup here) -- fl_min/fl_max are now about FL183/FL605. The clamp
+    still bites at the BOTTOM: the descent segment's own midpoint,
+    (decel_end_fl + 15) / 2, reaches FL163.5 on the fastest (380 kt)
+    schedule, FL182.5 on 350 kt (marginal), and FL199 on 325 kt (clear) --
+    faster schedules descend from a lower decel_end_fl, so THEY are the
+    ones that clamp, not the slower ones. Accepted, not chased further (see
+    arrival.py's B6 task notes): that segment is ~60 nm of ~7.7 min, and
+    low-level wind is weak, so a clamped read there is worth well under
+    0.3 min -- adding 600/700 hPa would cost another CDS download for less
+    than wind_at_fl's own fl_clamped flag (below) now already tells us.
+    Every wind_at_fl call reports, per candidate, whether ITS OWN request
+    needed that clamp -- arrival.py ORs the three per-segment reads into
+    wind_fl_clamped, so a clamped number is flagged rather than silently
+    plausible, which is the point of this whole task."""
+    if not np.array_equal(subsonic_data["time"], arrival_upper_data["time"]):
+        raise ValueError(
+            "subsonic_data and arrival_upper_data have different time axes -- "
+            "both must come from era5.reduce_to_legs runs built from "
+            "era5.UPPER_AIR_TIMES against the SAME arrival_legs, or the two "
+            "stitched level sets would silently misalign in time"
+        )
+
     mid_local_idx = len(arrival_legs) // 2
     mid_leg = arrival_legs[mid_local_idx]
     track_rad = np.radians(mid_leg.track_deg)
 
     times_i8 = subsonic_data["time"].astype("datetime64[ns]").astype("int64")
 
-    u_col = subsonic_data["u"][:, :, mid_local_idx]  # (n_time, n_level)
-    v_col = subsonic_data["v"][:, :, mid_local_idx]
-    t_col = subsonic_data["t"][:, :, mid_local_idx]
+    u_col = np.concatenate(
+        [subsonic_data["u"][:, :, mid_local_idx], arrival_upper_data["u"][:, :, mid_local_idx]],
+        axis=1,
+    )  # (n_time, n_level)
+    v_col = np.concatenate(
+        [subsonic_data["v"][:, :, mid_local_idx], arrival_upper_data["v"][:, :, mid_local_idx]],
+        axis=1,
+    )
+    t_col = np.concatenate(
+        [subsonic_data["t"][:, :, mid_local_idx], arrival_upper_data["t"][:, :, mid_local_idx]],
+        axis=1,
+    )
 
-    src_p_hpa = subsonic_data["level"].astype(float)
+    src_p_hpa = np.concatenate(
+        [subsonic_data["level"], arrival_upper_data["level"]]
+    ).astype(float)
     order = np.argsort(src_p_hpa)  # ascending pressure -- descending FL
     src_log_p = np.log(src_p_hpa[order] * 100.0)
     fl_min = float(pressure_to_fl(src_p_hpa[order][-1] * 100.0))
@@ -470,7 +514,9 @@ def _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs):
         t_asc = t_at[:, order]
 
         def wind_at_fl(level_fl):
-            level_fl = np.clip(np.asarray(level_fl, dtype=float), fl_min, fl_max)
+            level_fl = np.asarray(level_fl, dtype=float)
+            fl_clamped = (level_fl < fl_min) | (level_fl > fl_max)
+            level_fl = np.clip(level_fl, fl_min, fl_max)
             target_log_p = np.log(fl_to_pressure(level_fl))
 
             v_idx0 = np.searchsorted(src_log_p, target_log_p, side="right") - 1
@@ -484,7 +530,8 @@ def _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs):
                 hi = np.take_along_axis(col, v_idx1[:, None], axis=1).squeeze(1)
                 return lo + v_frac * (hi - lo)
 
-            return {"wind_kt": _at(along_asc) / KT_TO_MS, "temp_k": _at(t_asc)}
+            return {"wind_kt": _at(along_asc) / KT_TO_MS, "temp_k": _at(t_asc),
+                    "fl_clamped": fl_clamped}
 
         return wind_at_fl
 
@@ -495,6 +542,7 @@ def resolve_tow_and_arrival(
     cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
     tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
     decel_descent_min=None, cruise_mach=limits.CRUISE_MACH,
+    arrival_upper_data=None,
 ):
     """Shared by run_search/run_report/verify.run_verify: solves TOW (fixed
     point on zfw_t, or the flat tow_t override) and the arrival segment
@@ -504,9 +552,15 @@ def resolve_tow_and_arrival(
     decel_descent_min given forces arrival.flat_arrival -- the pre-B3 flat
     (DECEL_DESCENT_S, DESCENT_FUEL_T) pair -- instead of the real per-day
     arrival.arrival() model, for comparing old and new numbers; subsonic_data
-    is unused in that case and may be None. decel_descent_min None (the
-    default) requires subsonic_data (era5.reduce_to_legs run against
-    arrival_legs, the post-BARIX legs -- see run_search).
+    and arrival_upper_data are unused in that case and may both be None.
+    decel_descent_min None (the default) requires BOTH subsonic_data (era5.
+    reduce_to_legs run against arrival_legs, the post-BARIX legs -- see
+    run_search) and arrival_upper_data (era5.reduce_to_legs run against the
+    SAME arrival_legs, but from the UPPER_AIR_LEVELS netCDFs already
+    downloaded for the cruise legs -- --arrival-upper-npz) -- B6:
+    subsonic_data alone (FL183-FL414) doesn't reach the decel segment's own
+    wind-sampling midpoint from a realistic cruise level, so both are
+    stitched together in _build_arrival_wind_fn.
 
     Returns (tow_t, n_iterations, fuel_flags, legs_out, weight_per_leg,
     climb, arrival_out) -- n_iterations is None for a plain --tow run, same
@@ -518,13 +572,17 @@ def resolve_tow_and_arrival(
                                         decel_descent_min=decel_descent_min)
         wind_fn_builder = lambda accumulated_s: None  # noqa: E731 -- never called by flat_arrival
     else:
-        if subsonic_data is None:
+        if subsonic_data is None or arrival_upper_data is None:
             raise ValueError(
-                "subsonic_data (--subsonic-npz) is required to compute the real "
-                "arrival model; pass --decel-descent-min to force the flat legacy "
-                "arrival instead"
+                "subsonic_data (--subsonic-npz) AND arrival_upper_data "
+                "(--arrival-upper-npz) are both required to compute the real "
+                "arrival model -- subsonic_data alone doesn't reach the decel "
+                "segment's own wind-sampling midpoint (B6); pass "
+                "--decel-descent-min to force the flat legacy arrival instead"
             )
-        wind_fn_builder = _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs)
+        wind_fn_builder = _build_arrival_wind_fn(
+            subsonic_data, arrival_upper_data, dep_i8, arrival_legs
+        )
         arrival_fn = arrival.arrival
 
     if tow_t is None and zfw_t is None:
@@ -555,7 +613,8 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, decel_descent_min=None,
-                cruise_mach=limits.CRUISE_MACH):
+                cruise_mach=limits.CRUISE_MACH,
+                arrival_upper_npz_path=None):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
     the climb+cruise span (brake release through decel_id -- see
@@ -591,11 +650,14 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     jfk/lhr/climb/arrival flags already in the output's flags column.
 
     subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs,
-    the route's complement of climb_cruise_segment -- see
-    _build_arrival_wind_fn) drives arrival.arrival()'s per-day decel/level/
-    descent model, replacing the old flat DECEL_DESCENT_S/DESCENT_FUEL_T
-    placeholder; required unless decel_descent_min forces the flat legacy
-    arrival instead, for comparing old and new numbers directly."""
+    the route's complement of climb_cruise_segment) and arrival_upper_npz_path
+    (era5.reduce_to_legs run against those SAME legs, but from the
+    UPPER_AIR_LEVELS netCDFs already downloaded for the cruise legs -- B6, no
+    new CDS download) together drive arrival.arrival()'s per-day decel/level/
+    descent model via _build_arrival_wind_fn's stitched FL183-FL605 wind
+    profile, replacing the old flat DESCENT_FUEL_T placeholder; both required
+    unless decel_descent_min forces the flat legacy arrival instead, for
+    comparing old and new numbers directly."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
@@ -608,6 +670,9 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     data = load_legs_npz(npz_path)
     surface_data = load_surface_npz(surface_npz_path)
     subsonic_data = load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None
+    arrival_upper_data = (
+        load_legs_npz(arrival_upper_npz_path) if arrival_upper_npz_path is not None else None
+    )
     candidates = candidate_departures()
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
@@ -617,6 +682,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
+            arrival_upper_data=arrival_upper_data,
         )
     )
     chosen_fl = legs_out["chosen_fl"]

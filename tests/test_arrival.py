@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from concopt import arrival, atmos
+from concopt.data import conc_data
 
 
 def _isa_temp_k(level_fl, isa_dev_c):
@@ -79,12 +80,20 @@ class TestZeroWindReference:
     """Absolute sanity anchors -- these catch a missing whole segment."""
 
     def test_fl600_warm_380kt(self):
-        """~29.1 min and ~6.5 t. ~2 t means the level segment vanished;
-        ~17 min means the decel did."""
+        """~30.6 min and ~4.5 t at 110 t mass at level-off (conc_subsonic_
+        cruise.csv, not the old 24 nm/t placeholder -- see test_subsonic.py
+        for the same reference case checked against the table directly).
+        ~2 t means the level segment vanished; ~17 min means the decel
+        did."""
         w = _still_air(1, isa_dev_c=15.0)
-        r = arrival.arrival(600.0, np.array([ROUTE_NM]), w, np.array([15.0]), speed=380)
-        assert 29.1 * 0.9 < r["time_min"][0] < 29.1 * 1.1
-        assert 6.5 * 0.9 < r["fuel_t"][0] < 6.5 * 1.1
+        decel_fuel_t = conc_data.decel_to_mach1(
+            np.array([600.0]), 380, arrival.BAND_WARM
+        )["fuel_t"][0]
+        mass_at_barix_t = 110.0 + decel_fuel_t  # -> 110 t at level-off
+        r = arrival.arrival(600.0, np.array([ROUTE_NM]), w, np.array([15.0]),
+                            mass_at_barix_t=mass_at_barix_t, speed=380)
+        assert 30.6 * 0.9 < r["time_min"][0] < 30.6 * 1.1
+        assert 4.5 * 0.9 < r["fuel_t"][0] < 4.5 * 1.1
 
     def test_beats_the_placeholder_it_replaces(self):
         """The whole point: the old flat 2.0 t was ~4.8 t light."""
@@ -319,6 +328,74 @@ class TestLevelWindKt:
         r = arrival.arrival(550.0, np.array([ROUTE_NM]),
                             Wind(np.array([40.0]), isa_dev), isa_dev, speed=350)
         assert r["level_wind_kt"][0] == pytest.approx(40.0)
+
+
+class TestSubsonicMass:
+    """MASS IS THE TRAP -- the subsonic cruise table is indexed by the mass
+    actually flying the level segment, mass_at_barix_t minus the decel
+    burn, not TOW and not mass_at_barix_t untouched. B5."""
+
+    def test_arrival_fuel_rises_with_mass_at_barix(self):
+        isa_dev = np.zeros(1)
+        w = _still_air(1)
+        masses = [105.0, 115.0, 125.0, 135.0]
+        fuels = [
+            arrival.arrival(550.0, np.array([ROUTE_NM]), w, isa_dev,
+                            mass_at_barix_t=m, speed=350)["fuel_t"][0]
+            for m in masses
+        ]
+        assert all(np.isfinite(fuels))
+        assert list(fuels) == sorted(fuels)
+
+    def test_level_mass_outside_envelope_flags_rather_than_lies(self):
+        """A mass the aircraft could never hold at FL350 (its own published
+        max there is 160-165 t, well under the table's global 180 t axis
+        bound) must come back flagged NaN, not a wrong-but-plausible number
+        silently clamped to 180 t -- reading the table at the wrong mass
+        is exactly the trap this whole task is about."""
+        isa_dev = np.zeros(1)
+        w = _still_air(1)
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), w, isa_dev,
+                            mass_at_barix_t=170.0, speed=350)  # -> FL350
+        assert r["level_mass_outside_envelope"][0]
+        assert "level_mass_outside_envelope" in r["flags"][0]
+        assert np.isnan(r["fuel_t"][0])
+
+    def test_level_mass_outside_envelope_absent_at_real_arrival_masses(self):
+        """The caller's own promise: at 110-120 t at LEVEL-OFF (i.e. after
+        the schedule's own decel burn is taken off mass_at_barix_t) this
+        should never fire, for every schedule/band combination.
+
+        110, not 105: decel_end_fl for the 380 kt schedule (FL312) falls in
+        conc_subsonic_cruise.csv's FL290-330 band, whose published floor is
+        110 t, not the 100 t floor FL350+ has -- 105 t genuinely is outside
+        that particular corner of the envelope, a real table-shaped edge,
+        not a bug (see test_level_mass_outside_envelope_flags_rather_than_lies
+        and test_subsonic.py for the same floor checked directly)."""
+        for speed in arrival.SCHEDULES_KT:
+            for band in (arrival.BAND_WARM, arrival.BAND_COLD):
+                isa_dev = np.array([0.0]) if band == arrival.BAND_WARM else np.array([-15.0])
+                decel_fuel_t = conc_data.decel_to_mach1(
+                    np.array([550.0]), speed, band
+                )["fuel_t"][0]
+                for level_off_mass in (110.0, 115.0, 120.0):
+                    mass_at_barix_t = level_off_mass + decel_fuel_t
+                    r = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), isa_dev,
+                                        mass_at_barix_t=mass_at_barix_t, speed=speed)
+                    assert not r["level_mass_outside_envelope"][0], (speed, band, level_off_mass)
+                    assert np.isfinite(r["fuel_t"][0]), (speed, band, level_off_mass)
+
+    def test_zero_level_nm_immune_to_envelope_even_if_mass_is_absurd(self):
+        """A short arrival that clamps level_nm to 0 burns no level fuel
+        regardless of whether the table even has an entry for the mass --
+        there's no level segment to price."""
+        isa_dev = np.zeros(1)
+        w = _still_air(1)
+        r = arrival.arrival(550.0, np.array([150.0]), w, isa_dev,
+                            mass_at_barix_t=200.0, speed=325)
+        assert r["level_nm_clamped"][0]
+        assert r["level_fuel_t"][0] == 0.0
+        assert np.isfinite(r["fuel_t"][0])
 
 
 class TestFlatArrival:

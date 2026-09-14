@@ -75,6 +75,39 @@ def _still_air_subsonic_npz(tmp_path):
     return npz_path
 
 
+def _still_air_arrival_upper_npz(tmp_path):
+    """era5.reduce_to_legs-shaped .npz over the post-BARIX (arrival) legs,
+    at the 4 upper-air levels (era5.UPPER_AIR_LEVELS, 70-150 hPa,
+    FL447-FL605), ISA+0 and zero wind everywhere -- B6, the same netCDFs
+    already reduced onto the cruise legs, reduced a second time onto the
+    arrival legs to extend _still_air_subsonic_npz's FL183-FL414 coverage
+    up to FL605. The time axis MUST match _still_air_subsonic_npz's own
+    (both stand in for era5.UPPER_AIR_TIMES-built requests against the
+    same route) -- _build_arrival_wind_fn asserts this rather than
+    assuming it."""
+    plan = parse_pln(SAMPLE_PLN)
+    legs = build_legs(plan["waypoints"])
+    mask = climb_cruise_segment(legs)
+    arrival_legs = [legs[i] for i, m in enumerate(mask) if not m]
+
+    levels_hpa = np.array([70.0, 100.0, 125.0, 150.0])
+    fl_at_level = pressure_to_fl(levels_hpa * 100.0)
+    temp_at_level, _ = isa(fl_at_level * 30.48)
+
+    n_time = 2
+    n_legs = len(arrival_legs)
+    times = np.array(["2016-01-01T00:00:00", "2026-12-31T00:00:00"], dtype="datetime64[ns]")
+    u = np.zeros((n_time, 4, n_legs))
+    v = np.zeros((n_time, 4, n_legs))
+    t = np.broadcast_to(temp_at_level[None, :, None], (n_time, 4, n_legs)).copy()
+
+    npz_path = tmp_path / "route_legs_arrival_upper.npz"
+    np.savez(npz_path, time=times, level=levels_hpa, u=u, v=v, t=t,
+              cum_nm=np.array([leg.cum_nm for leg in arrival_legs]),
+              track_deg=np.array([leg.track_deg for leg in arrival_legs]))
+    return npz_path
+
+
 def test_run_report_with_zfw_prints_fuel_plan_block(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
@@ -103,11 +136,13 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     total row, printed as its own block right after the fuel plan."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
+    arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
                 out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
-                subsonic_npz_path=subsonic_npz_path)
+                subsonic_npz_path=subsonic_npz_path,
+                arrival_upper_npz_path=arrival_upper_npz_path)
 
     printed = capsys.readouterr().out
     arrival_block = printed.split("\n\n")[1]
@@ -119,7 +154,7 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     assert "approach" in arrival_block
     assert "total" in arrival_block
     assert "kt schedule" in arrival_block
-    assert "subsonic cruise fuel is a placeholder" in arrival_block
+    assert "conc_subsonic_cruise.csv" in arrival_block
 
 
 def test_run_report_prints_flat_override_arrival_block(tmp_path, capsys):
@@ -194,11 +229,13 @@ def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
     fixed point."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
+    arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
                 out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
-                subsonic_npz_path=subsonic_npz_path)
+                subsonic_npz_path=subsonic_npz_path,
+                arrival_upper_npz_path=arrival_upper_npz_path)
 
     printed = capsys.readouterr().out
     fuel_block, arrival_block = printed.split("\n\n")[:2]
@@ -217,6 +254,7 @@ def test_arrival_fuel_inside_fixed_point_converges_tow_higher(tmp_path):
     TOW), so the final gap is bigger than the raw arrival-fuel delta alone."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
+    arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
 
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
@@ -229,6 +267,7 @@ def test_arrival_fuel_inside_fixed_point_converges_tow_higher(tmp_path):
 
     data = load_legs_npz(npz_path)
     subsonic_data = load_legs_npz(subsonic_npz_path)
+    arrival_upper_data = load_legs_npz(arrival_upper_npz_path)
     dep_i8 = np.array([1455289200000000000], dtype="int64")  # 2016-02-12 15:00Z
     zfw_t = np.array([92.0])
 
@@ -239,6 +278,7 @@ def test_arrival_fuel_inside_fixed_point_converges_tow_higher(tmp_path):
     tow_real, *_ = resolve_tow_and_arrival(
         cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
         zfw_t=zfw_t, min_landing_fuel_t=10.0,
+        arrival_upper_data=arrival_upper_data,
     )
 
     diff_t = float(tow_real[0] - tow_flat[0])
