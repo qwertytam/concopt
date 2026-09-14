@@ -143,15 +143,28 @@ def _boundary_flags(tow_calc):
 
 def _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn):
     """arrival_fn's output for this march's own end-of-cruise state: FL and
-    ISA deviation at the last cruise leg (arriving at the decel point), and
-    wind sampled at this march's own accumulated_s (arrival_wind_fn binds
-    the position -- see search._build_arrival_wind_fn -- and this call
-    supplies the time). Shared by every branch below so the fixed point and
-    the plain --tow/--decel-descent-min paths build arrival_out identically."""
+    ISA deviation at the last cruise leg (arriving at the decel point), the
+    weight at BARIX (mass_at_barix_t -- MASS IS THE TRAP, see
+    arrival.arrival's docstring: the level segment's fuel table is indexed
+    by the mass actually flying it, not TOW), and wind sampled at this
+    march's own accumulated_s (arrival_wind_fn binds the position -- see
+    search._build_arrival_wind_fn -- and this call supplies the time).
+    Shared by every branch below so the fixed point and the plain --tow/
+    --decel-descent-min paths build arrival_out identically.
+
+    speed="auto", not arrival()'s own 380 kt default: 380's decel_end_fl
+    (FL312) only has subsonic-table coverage down to 110 t, which real
+    TOW/BARIX-mass pairs undercut for a good chunk of the 160-185 t TOW
+    range (see arrival.arrival's speed docstring) -- "auto" disqualifies
+    that NaN-fuel case and falls back to 350/325 kt (100 t floors) rather
+    than handing the fixed point a NaN trip fuel every time a candidate's
+    BARIX mass lands under 110 t."""
     cruise_fl = legs_out["chosen_fl"][:, -1]
     isa_dev_at_cruise = legs_out["isa_dev_k"][:, -1]
+    mass_at_barix_t = legs_out["weight_at_barix"]
     wind_at_fl = arrival_wind_fn(legs_out["accumulated_s"])
-    return arrival_fn(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto")
+    return arrival_fn(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+                       mass_at_barix_t, speed="auto")
 
 
 def fixed_point_fuel_iteration(
@@ -217,6 +230,21 @@ def fixed_point_fuel_iteration(
         )
         arrival_out = _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn)
         tow_calc = zfw_t + calculate_trip_fuel(climb, legs_out, arrival_out) + min_landing_fuel_t
+
+        # A trial TOW light enough to put mass_at_barix_t below
+        # conc_subsonic_cruise.csv's published floor (arrival.arrival's
+        # level_mass_outside_envelope) makes trip_fuel, and so tow_calc,
+        # NaN -- and np.clip does not resolve a NaN, it passes it through.
+        # Left alone that NaN would infect every later iteration (the
+        # damped update is a weighted sum, and 0.5*NaN + 0.5*x is NaN
+        # forever), even though a HEAVIER trial TOW almost always burns
+        # into a heavier, in-envelope mass_at_barix_t. So: nudge a NaN
+        # trial toward MTOW_T instead of letting it stick -- self-
+        # correcting once the march lands back inside the table, and
+        # otherwise settling AT MTOW_T (flagged tow_above_mtow below) rather
+        # than hanging on NaN. INITIAL_TOW_T=150 (light) is exactly the kind
+        # of trial this guards the first iteration against.
+        tow_calc = np.where(np.isnan(tow_calc), MTOW_T, tow_calc)
 
         # Clamped, not extrapolated: conc_climb.csv has no pages outside
         # [CLIMB_TOW_MIN_T, MTOW_T] and above MTOW the aircraft can't go

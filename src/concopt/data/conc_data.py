@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import RegularGridInterpolator
 
+from concopt import atmos
+
 MMO = 2.04                  # max operating Mach, all altitudes
 TOTAL_TEMP_MAX_C = 127.0    # max stagnation temperature, all altitudes
 
@@ -261,3 +263,113 @@ def dist_with_wind(dist_zero_wind_nm, time_min, wind_kt):
     component. wind_kt is positive for tailwind. Verified against all 582
     printed endpoints to within 1 nm."""
     return dist_zero_wind_nm + wind_kt * time_min / 60.0
+
+
+_subsonic_fp = files("concopt").joinpath("data/conc_subsonic_cruise.csv")
+_subsonic_tbl = pd.read_csv(_subsonic_fp, encoding="utf-8-sig")
+_SUBSONIC_LEVEL_FL = np.sort(_subsonic_tbl["level_fl"].unique()).astype(float)
+_SUBSONIC_MASS_T = np.sort(_subsonic_tbl["mass_t"].unique()).astype(float)
+_SUBSONIC_ISA_DEV_C = np.sort(_subsonic_tbl["isa_dev_c"].unique()).astype(float)
+
+
+def _build_subsonic_grid(col):
+    """Dense (level_fl, mass_t, isa_dev_c) grid for one conc_subsonic_cruise.csv
+    column, NaN wherever the CSV has no row. The grid is genuinely ragged --
+    higher levels are only published down to a lower maximum mass (FL410
+    tops out at 125 t, FL290 at 180 t), plus a handful of cells missing at
+    the hot/heavy corner of an otherwise-published row. Gaps are left as
+    NaN, never filled -- _trilinear's job is to return NaN for a query that
+    needs one, not to guess."""
+    grid = np.full(
+        (len(_SUBSONIC_LEVEL_FL), len(_SUBSONIC_MASS_T), len(_SUBSONIC_ISA_DEV_C)),
+        np.nan,
+    )
+    li = {v: i for i, v in enumerate(_SUBSONIC_LEVEL_FL)}
+    mi = {v: i for i, v in enumerate(_SUBSONIC_MASS_T)}
+    ii = {v: i for i, v in enumerate(_SUBSONIC_ISA_DEV_C)}
+    for row in _subsonic_tbl.itertuples(index=False):
+        grid[li[float(row.level_fl)], mi[float(row.mass_t)], ii[float(row.isa_dev_c)]] = (
+            getattr(row, col)
+        )
+    return grid
+
+
+_SUBSONIC_FUEL_TOTAL_KGH_GRID = _build_subsonic_grid("fuel_total_kgh")
+_SUBSONIC_SR_NM_PER_T_GRID = _build_subsonic_grid("specific_range_nm_per_t")
+
+
+def _frac_index(x, grid):
+    """(idx, frac) bracketing x into a 1-D sorted grid: x is clamped to the
+    grid's own bounds first (no extrapolation), idx is the lower bracket
+    index (clipped to len(grid)-2 so idx+1 is always valid), and frac is in
+    [0, 1] -- exactly 0.0 or 1.0, in bit-exact float arithmetic, whenever x
+    lands exactly on a grid value. _trilinear leans on that exactness: a
+    corner reached with exactly zero weight never contributes, even if that
+    corner itself is NaN, so an exact grid hit or an axis-bound clamp can't
+    be poisoned by a ragged neighbour it doesn't actually need."""
+    x = np.clip(np.asarray(x, float), grid[0], grid[-1])
+    idx = np.searchsorted(grid, x, side="right") - 1
+    idx = np.clip(idx, 0, len(grid) - 2)
+    x0, x1 = grid[idx], grid[idx + 1]
+    frac = (x - x0) / (x1 - x0)
+    return idx, frac
+
+
+def _trilinear(grid, level_fl, mass_t, isa_dev_c):
+    """Trilinear interpolation into a dense (level_fl, mass_t, isa_dev_c)
+    grid that may hold NaN gaps (see _build_subsonic_grid). Clamped to the
+    grid's outer bounds on every axis; a query that needs a NaN corner with
+    nonzero weight returns NaN -- outside the published envelope, per
+    subsonic_cruise's contract. Broadcasts level_fl/mass_t/isa_dev_c."""
+    level_fl, mass_t, isa_dev_c = np.broadcast_arrays(
+        np.asarray(level_fl, float), np.asarray(mass_t, float),
+        np.asarray(isa_dev_c, float),
+    )
+    li, lf = _frac_index(level_fl, _SUBSONIC_LEVEL_FL)
+    mi, mf = _frac_index(mass_t, _SUBSONIC_MASS_T)
+    ii, iff = _frac_index(isa_dev_c, _SUBSONIC_ISA_DEV_C)
+
+    total = np.zeros(level_fl.shape)
+    for dl, wl in ((0, 1.0 - lf), (1, lf)):
+        for dm, wm in ((0, 1.0 - mf), (1, mf)):
+            for di, wi in ((0, 1.0 - iff), (1, iff)):
+                w = wl * wm * wi
+                vals = grid[li + dl, mi + dm, ii + di]
+                # w * vals is NaN wherever w==0 and vals is NaN too -- np.where
+                # discards that NaN rather than letting a zero-weight corner
+                # poison a genuine exact hit or boundary clamp.
+                total = total + np.where(w == 0.0, 0.0, w * vals)
+    return total
+
+
+def subsonic_cruise(level_fl, mass_t, isa_dev_c):
+    """dict(tas_kt, fuel_total_kgh, specific_range_nm_per_t) for the subsonic
+    (M0.95) arrival cruise, from conc_subsonic_cruise.csv. Trilinear over
+    (level_fl, mass_t, isa_dev_c), clamped at each axis's own bounds; NaN
+    wherever the query needs a mass the aircraft cannot hold at that
+    level/ISA deviation -- the table is ragged (FL410 is only published up
+    to 125 t, FL290 up to 180 t, plus a few cells missing at the hot/heavy
+    corner of an otherwise-published row) and gaps are never filled.
+    Broadcasts level_fl/mass_t/isa_dev_c against each other.
+
+    mach is a constant 0.95 throughout the table, so it is never
+    interpolated. tas_kt is likewise not read off the (ragged, mass-
+    independent) table column -- it does not actually depend on mass_t at
+    all, and computing it directly from atmos.py matches the transcribed
+    column to within 0.5 kt (all 27 printed values checked) without an
+    envelope NaN that TAS was never subject to in the first place."""
+    level_fl = np.asarray(level_fl, float)
+    isa_dev_c = np.asarray(isa_dev_c, float)
+    level_fl_clamped = np.clip(level_fl, _SUBSONIC_LEVEL_FL[0], _SUBSONIC_LEVEL_FL[-1])
+    isa_dev_c_clamped = np.clip(isa_dev_c, _SUBSONIC_ISA_DEV_C[0], _SUBSONIC_ISA_DEV_C[-1])
+    isa_t_k, _ = atmos.isa(level_fl_clamped * 100.0 * 0.3048)
+    tas_ms = atmos.speed_of_sound(isa_t_k + isa_dev_c_clamped) * 0.95
+    tas_kt, _ = np.broadcast_arrays(tas_ms / atmos.KT_TO_MS, np.asarray(mass_t, float))
+
+    return {
+        "tas_kt": tas_kt,
+        "fuel_total_kgh": _trilinear(_SUBSONIC_FUEL_TOTAL_KGH_GRID, level_fl, mass_t, isa_dev_c),
+        "specific_range_nm_per_t": _trilinear(
+            _SUBSONIC_SR_NM_PER_T_GRID, level_fl, mass_t, isa_dev_c
+        ),
+    }

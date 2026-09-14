@@ -119,7 +119,7 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     assert "approach" in arrival_block
     assert "total" in arrival_block
     assert "kt schedule" in arrival_block
-    assert "subsonic cruise fuel is a placeholder" in arrival_block
+    assert "conc_subsonic_cruise.csv" in arrival_block
 
 
 def test_run_report_prints_flat_override_arrival_block(tmp_path, capsys):

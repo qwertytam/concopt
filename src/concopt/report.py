@@ -166,8 +166,7 @@ def _fuel_plan_lines(plan):
         )
         lines.append(f"  !! {flag}: {note}")
 
-    lines.append("  * see the Arrival breakdown below -- its level-cruise fuel is a "
-                  "placeholder, no subsonic table exists")
+    lines.append("  * see the Arrival breakdown below for the level-cruise split")
     return lines
 
 
@@ -175,8 +174,7 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     """arrival.arrival()'s (or arrival.flat_arrival's) dict (n_cand=1),
     arrival_nm, and the cruise FL flown into the decel point -> the printed
     Arrival block, as a list of lines. The per-segment split is the point:
-    it is what makes it obvious when the level segment is dominating, and
-    it is where the one unsourced number (SUBSONIC_SR_NM_PER_T) lives."""
+    it is what makes it obvious when the level segment is dominating."""
     a = {k: (float(v[0]) if isinstance(v, np.ndarray) and k != "flags" else v)
          for k, v in arrival_out.items() if k != "by_schedule"}
     a["flags"] = arrival_out["flags"][0]
@@ -210,7 +208,8 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     ]
     if a["flags"]:
         lines.append(f"  !! {a['flags']}")
-    lines.append("  * subsonic cruise fuel is a placeholder -- no subsonic table exists")
+    lines.append("  * level-cruise fuel from conc_subsonic_cruise.csv at the mass "
+                  "actually flown at level-off")
     return lines
 
 

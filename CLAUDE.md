@@ -165,30 +165,61 @@ for its own sake, no defensive error handling.
   post-decel leg distance, not a hardcoded constant — search/report compute
   it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
   (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
-  distance is left over, descent to 1,500 ft
-  (`data.conc_data.descent_to_1500ft`), then a fixed approach allowance
-  (`APPROACH_NM`/`APPROACH_MIN`/`APPROACH_FUEL_T`). `descent_direct_from_cruise`
-  is deliberately unused — it reaches 1,500 ft in ~194 nm and this route has
-  ~307, which would leave ~113 nm unaccounted for. All three descent speed
-  schedules (325/350/380 kt) are evaluated as whole-array table lookups;
-  `speed="auto"` (the default) picks the time-minimizing one per candidate,
-  while `by_schedule` exposes the full per-schedule breakdown for a future
-  caller-side re-optimization on *total* time once the fixed-point fuel
-  feedback makes arrival-time-optimal diverge from total-time-optimal (the
-  380 kt schedule buys ~1.6 min for ~1.4 t, which costs climb time
-  differently on a cold day than a warm one). Temperature band selection
-  uses only `conc_descent.csv`'s two bands (`above_isa_minus_10`/
-  `isa_minus_10_and_below` — not the climb table's three), from the ISA
-  deviation at cruise level. Wind/temperature arrive through a caller-
-  supplied `wind_at_fl` callable/dict — this module never reads era5/`.npz`
-  files directly, so the ERA5 wiring stays entirely in `search.py`
-  (`_build_arrival_wind_fn`). `SUBSONIC_SR_NM_PER_T` (24.0, the level
-  segment's specific range) is a flagged placeholder — no subsonic cruise
-  table exists — sizing a ~4 t term to roughly ±0.4 t; the fuel-plan and
-  Arrival-block footnotes in `report.py` say so. `flat_arrival` is the
+  distance is left over (`data.conc_data.subsonic_cruise`, B5 — see below),
+  descent to 1,500 ft (`data.conc_data.descent_to_1500ft`), then a fixed
+  approach allowance (`APPROACH_NM`/`APPROACH_MIN`/`APPROACH_FUEL_T`).
+  `descent_direct_from_cruise` is deliberately unused — it reaches 1,500 ft
+  in ~194 nm and this route has ~307, which would leave ~113 nm
+  unaccounted for. All three descent speed schedules (325/350/380 kt) are
+  evaluated as whole-array table lookups; `speed=380` (the default since
+  B5) forces the fastest schedule — with the real subsonic table it wins
+  on both time AND fuel in every temperature band (buys ~1.6 min for
+  ~0.44 t, not the old placeholder's ~1.4 t), so the old cold/warm climb-
+  time trade-off that used to make `speed="auto"` the default is no longer
+  close. BUT 380 kt's decel_end_fl (FL312) only has subsonic-table coverage
+  down to 110 t, which real BARIX mass undercuts for a good chunk of the
+  160-185 t TOW range — so real callers (`fuel.py`'s
+  `_arrival_from_march`, the only production call site) explicitly request
+  `speed="auto"` instead, which now disqualifies a NaN-fuel schedule before
+  picking by time and so falls back to 350/325 kt (100 t floors) rather
+  than handing back a NaN trip fuel; `by_schedule` still exposes the full
+  per-schedule breakdown for a future caller-side re-optimization on
+  *total* time. Temperature band selection uses only `conc_descent.csv`'s
+  two bands (`above_isa_minus_10`/`isa_minus_10_and_below` — not the climb
+  table's three), from the ISA deviation at cruise level. Wind/temperature
+  arrive through a caller-supplied `wind_at_fl` callable/dict — this module
+  never reads era5/`.npz` files directly, so the ERA5 wiring stays entirely
+  in `search.py` (`_build_arrival_wind_fn`). `flat_arrival` is the
   `--decel-descent-min` legacy override: same call signature as `arrival()`
   so `fuel.py`'s fixed point can hold either interchangeably, but returns
   the flat pre-B3 (time, fuel) pair with `schedule_kt=0` as a sentinel.
+
+  MASS IS THE TRAP (B5): the level segment's fuel now comes from
+  `conc_data.subsonic_cruise` (`conc_subsonic_cruise.csv`, 751 rows,
+  trilinear over level_fl/mass_t/isa_dev_c, ragged — higher levels only
+  published down to a higher minimum mass, FL410 to 125 t, FL290-330 to
+  110 t, FL350+ to 100 t — dense-gridded with NaN in the gaps, never
+  filled; a query needing a NaN corner returns NaN, but a corner reached
+  with exactly zero interpolation weight — an exact grid hit, or an axis
+  clamp — never touches a NaN neighbour it doesn't actually need. tas_kt is
+  computed from `atmos.py` directly rather than read off the table, since
+  it doesn't depend on mass at all and matches the transcribed column to
+  within 0.5 kt). `arrival()` takes `mass_at_barix_t` (the march's
+  `weight_at_barix`, BEFORE the decel burn); `_arrival_for_speed`
+  subtracts that schedule's own `decel_fuel_t` internally to get the mass
+  actually flying the level segment (roughly 105-120 t, not TOW's
+  160-185 t) before indexing the table — reading it at the wrong mass
+  roughly halves the specific range and doubles the level fuel, and the
+  result looks entirely plausible. `level_mass_outside_envelope` flags a
+  NaN level_fuel_t (zero leftover distance costs no fuel regardless); at
+  real arrival masses for the 350/325 kt schedules this essentially never
+  fires, but 380 kt alone genuinely can, for the TOW-range reason above.
+  `fuel.fixed_point_fuel_iteration`'s `INITIAL_TOW_T=150` trial is light
+  enough that even the 350/325 kt floor can be undercut on the very first
+  pass, before the loop has seen any real trip fuel — a NaN trip fuel
+  there would otherwise `np.clip` to NaN forever (clip does not resolve
+  NaN), so a NaN `tow_calc` is nudged to `MTOW_T` before clamping, self-
+  correcting once the march lands back inside the table.
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and

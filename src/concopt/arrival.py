@@ -5,6 +5,8 @@ covering a ground distance fixed by the route:
 
   1. decel    cruise Mach -> M1.0, cruise_fl -> decel_end_fl  (conc_descent.csv)
   2. level    M0.95 at decel_end_fl, for whatever distance is left over
+              (conc_subsonic_cruise.csv, indexed by the mass actually
+              flying it -- mass_at_barix_t minus the decel burn, not TOW)
   3. descent  decel_end_fl -> 1,500 ft                        (conc_descent.csv)
   4. approach 1,500 ft -> touchdown, a fixed allowance
 
@@ -38,13 +40,21 @@ APPROACH_FUEL_T = 0.3
 # --- Level segment at M0.95 --------------------------------------------------
 LEVEL_MACH = 0.95
 
-# PLACEHOLDER -- THE WEAKEST NUMBER IN THIS MODEL.
-# No subsonic cruise table exists. ~23 t/h at 550 kt TAS, mid-range against
-# published Concorde subsonic figures of 21-26 t/h. Sizes a ~4 t term, so the
-# 21-26 t/h spread is worth roughly +/-0.4 t of arrival fuel, which the fuel.py
-# fixed point then amplifies into climb time. Replace with a real table if one
-# ever turns up.
-SUBSONIC_SR_NM_PER_T = 24.0
+# Typical mass at the decel waypoint -- only used as mass_at_barix_t's
+# default, for the many tests below that exercise wind/band/flag behaviour
+# and don't care what the level segment's fuel table lookup lands on. Real
+# callers (search.py, via fuel._arrival_from_march) always pass the march's
+# own weight_at_barix; MASS IS THE TRAP here (see conc_data.subsonic_cruise
+# and _arrival_for_speed below) so nothing downstream of a real call should
+# ever rely on this default firing.
+#
+# 118, not 110: the subsonic table's lowest levels (FL290-330, which cover
+# the 380 kt schedule's FL312 decel_end_fl) are only published down to
+# 110 t, and the ~1-1.5 t decel burn taken off mass_at_barix_t before that
+# lookup would otherwise land BELOW the table's own floor -- a real, table-
+# shaped envelope edge, not a bug, but not what an arbitrary test default
+# should be tripping over.
+DEFAULT_MASS_AT_BARIX_T = 118.0
 
 # conc_descent.csv has TWO temperature bands, not the three in conc_climb.csv.
 BAND_WARM = "above_isa_minus_10"
@@ -65,7 +75,8 @@ _SEGMENT_KEYS = (
     "decel_fuel_t", "level_fuel_t", "descent_fuel_t", "level_wind_kt",
 )
 
-_FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive")
+_FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
+              "level_mass_outside_envelope")
 
 # Legacy comparison only. The flat (DECEL_DESCENT_S=35 min, DESCENT_FUEL_T=
 # 2.0 t) pair this module replaces -- see flat_arrival, which --decel-
@@ -108,7 +119,8 @@ def _table_by_band(fn, level_fl, speed_kt, warm, keys):
     return {k: np.where(warm, hot[k], cold[k]) for k in keys}
 
 
-def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand):
+def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand,
+                        mass_at_barix_t):
     """One descent speed schedule, vectorised over every candidate at once."""
     cols = ("fuel_t", "time_min", "dist_zero_wind_nm")
 
@@ -158,10 +170,29 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     level_time_min = np.where(level_nm == 0.0, 0.0, level_time_min)
     level_gs_nonpositive &= level_nm > 0.0
 
+    # MASS IS THE TRAP: the subsonic table is indexed by aircraft mass, and
+    # the aircraft reaches the level segment at roughly mass_at_barix_t minus
+    # the decel burn (~105-120 t), not TOW (~160-185 t) and not
+    # mass_at_barix_t untouched either -- reading it at the wrong mass here
+    # silently halves the specific range and doubles level_fuel_t.
+    mass_at_level_t = np.broadcast_to(
+        np.asarray(mass_at_barix_t, float), (n_cand,)
+    ) - decel["fuel_t"]
+    isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * 0.3048)
+    isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
+    subsonic = conc_data.subsonic_cruise(decel_end_fl, mass_at_level_t, isa_dev_c_at_level)
+    specific_range_nm_per_t = subsonic["specific_range_nm_per_t"]
+
     # Spec'd as ground distance / specific range. Note this makes level fuel
-    # wind-independent: a headwind lengthens the time aloft without raising the
-    # burn. Immaterial against SUBSONIC_SR_NM_PER_T's own 21-26 t/h spread.
-    level_fuel_t = level_nm / SUBSONIC_SR_NM_PER_T
+    # wind-independent: a headwind lengthens the time aloft without raising
+    # the burn.
+    level_mass_outside_envelope = ~np.isfinite(specific_range_nm_per_t)
+    # Zero leftover distance burns no fuel even where the table has no entry
+    # for this mass/level/ISA -- same convention as level_time_min above.
+    with np.errstate(invalid="ignore"):
+        level_fuel_t = np.where(
+            level_nm == 0.0, 0.0, level_nm / specific_range_nm_per_t
+        )
 
     out = {
         "decel_nm": decel_nm,
@@ -177,6 +208,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         "descent_fuel_t": descent["fuel_t"],
         "level_nm_clamped": level_nm_clamped,
         "level_gs_nonpositive": level_gs_nonpositive,
+        "level_mass_outside_envelope": level_mass_outside_envelope,
     }
     out["time_min"] = (
         out["decel_time_min"] + out["level_time_min"]
@@ -189,7 +221,8 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     return out
 
 
-def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
+def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+            mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=380):
     """Arrival time and fuel from the decel waypoint to touchdown.
 
     Vectorised across candidates throughout: every argument is a (n_cand,)
@@ -208,12 +241,38 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
         isa_dev_at_cruise: ISA deviation in the arrival area at cruise level,
             °C. Picks the descent temperature band (two bands, not the climb
             table's three).
-        speed: "auto" (default) picks, per candidate, the schedule minimising
-            ARRIVAL time. 325/350/380 forces one. Note that the time-optimal
-            schedule is not the total-time-optimal one once fuel feeds back
-            through the climb -- 380 kt buys ~1.6 min here for ~1.4 t, which
-            costs ~0.3 min of climb on a cold day but ~1.9 min on a warm one.
-            Use `by_schedule` to make that choice on total time instead.
+        mass_at_barix_t: aircraft mass (t) AT THE DECEL WAYPOINT, before the
+            decel burn -- search.py's march calls this weight_at_barix.
+            MASS IS THE TRAP: the subsonic cruise table (conc_data.
+            subsonic_cruise) that prices the level segment is indexed by the
+            mass actually flying it, which is mass_at_barix_t minus that
+            schedule's own decel_fuel_t (roughly 105-120 t, not TOW's
+            160-185 t) -- _arrival_for_speed subtracts it internally, per
+            schedule, since decel_fuel_t is schedule-dependent. Defaults to
+            DEFAULT_MASS_AT_BARIX_T for the many tests here that don't care
+            what the level segment's fuel lands on; a real caller always
+            passes the march's own weight_at_barix.
+        speed: 380 (default) forces the 380 kt schedule. With the real
+            subsonic table, 380 kt buys ~1.6 min here for ~0.44 t of extra
+            fuel (not the old placeholder's ~1.4 t) -- worth ~0.1 min of
+            climb time cold and ~0.6 min warm, against the 1.6 min saved, so
+            on TIME AND FUEL ALONE 380 kt wins in every temperature band and
+            the trade-off other callers used to have to make on
+            `by_schedule` is no longer close. BUT 380's decel_end_fl (FL312)
+            sits in conc_subsonic_cruise.csv's FL290-330 band, whose
+            published floor is 110 t -- comfortably inside a warm/light
+            day's mass_at_level_t, but above it for anything under roughly
+            178 t TOW at ISA+0 (see search.py's own worked climb/cruise burn
+            numbers), which is a good deal of the real 160-185 t TOW range.
+            At those masses 380 kt is simply not computable from this table
+            (level_mass_outside_envelope, NaN fuel_t) even though its
+            time_min still looks fastest -- "auto" accounts for this (it
+            disqualifies a NaN-fuel schedule before picking by time) and
+            falls back to 350 or 325 kt (100 t floors, comfortably wider)
+            whenever 380 kt is infeasible, so real callers (search.py, via
+            fuel._arrival_from_march) request "auto", not this default.
+            325/350 force the other two. Use `by_schedule` to re-decide on
+            *total* time instead of arrival time.
 
     Returns:
         dict with (n_cand,) arrays:
@@ -223,14 +282,21 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
             decel_fuel_t, level_fuel_t, descent_fuel_t,
             flags (str, "" when clean; names joined by ";")
         plus per-flag booleans level_nm_clamped / cruise_fl_clamped /
-        level_gs_nonpositive, and `by_schedule`: {325: {...}, 350: {...},
-        380: {...}}, each the full breakdown for that forced schedule.
+        level_gs_nonpositive / level_mass_outside_envelope, and
+        `by_schedule`: {325: {...}, 350: {...}, 380: {...}}, each the full
+        breakdown for that forced schedule.
 
     Flags rather than exceptions:
         level_nm_clamped      descent did not fit the available distance;
                               level_nm clamped to 0
         cruise_fl_clamped     cruise_fl outside the decel table's 470-600
         level_gs_nonpositive  headwind >= M0.95 TAS; level_time_min is inf
+        level_mass_outside_envelope
+                              mass_at_level_t (mass_at_barix_t minus the
+                              decel burn) fell outside conc_subsonic_cruise
+                              .csv's published envelope at this level/ISA;
+                              level_fuel_t (and so fuel_t) is NaN. Should
+                              never fire at real arrival masses.
     """
     if speed != "auto" and speed not in SCHEDULES_KT:
         raise ValueError(
@@ -240,9 +306,10 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
     arrival_nm = np.atleast_1d(np.asarray(arrival_nm, float))
     isa_dev_at_cruise = np.atleast_1d(np.asarray(isa_dev_at_cruise, float))
     cruise_fl = np.atleast_1d(np.asarray(cruise_fl, float))
-    cruise_fl, arrival_nm, isa_dev_at_cruise = (
+    mass_at_barix_t = np.atleast_1d(np.asarray(mass_at_barix_t, float))
+    cruise_fl, arrival_nm, isa_dev_at_cruise, mass_at_barix_t = (
         np.array(a) for a in
-        np.broadcast_arrays(cruise_fl, arrival_nm, isa_dev_at_cruise)
+        np.broadcast_arrays(cruise_fl, arrival_nm, isa_dev_at_cruise, mass_at_barix_t)
     )
     n_cand = arrival_nm.shape[0]
 
@@ -254,13 +321,23 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
 
     by_schedule = {
         spd: _arrival_for_speed(
-            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand
+            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t
         )
         for spd in SCHEDULES_KT
     }
 
     if speed == "auto":
         times = np.stack([by_schedule[s]["time_min"] for s in SCHEDULES_KT], axis=-1)
+        fuels = np.stack([by_schedule[s]["fuel_t"] for s in SCHEDULES_KT], axis=-1)
+        # level_time_min never touches the subsonic table (it's TAS + wind
+        # only), so a schedule with a NaN fuel_t (mass_at_level_t outside
+        # conc_subsonic_cruise.csv's envelope -- 380 kt's low decel_end_fl,
+        # FL312, is only published down to 110 t, well inside the real
+        # 160-185 t TOW range) can still show the smallest time_min. argmin
+        # doesn't know that "fastest" is meaningless without a fuel number,
+        # so disqualify it here rather than silently picking an infeasible
+        # schedule ahead of a feasible slower one.
+        times = np.where(np.isfinite(fuels), times, np.inf)
         schedule_kt = np.asarray(SCHEDULES_KT)[np.argmin(times, axis=-1)]
     else:
         schedule_kt = np.full(n_cand, speed)
@@ -275,7 +352,7 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
         result[key] = picked
 
     flags = {"cruise_fl_clamped": cruise_fl_clamped}
-    for key in ("level_nm_clamped", "level_gs_nonpositive"):
+    for key in ("level_nm_clamped", "level_gs_nonpositive", "level_mass_outside_envelope"):
         picked = by_schedule[SCHEDULES_KT[0]][key]
         for spd in SCHEDULES_KT[1:]:
             picked = np.where(schedule_kt == spd, by_schedule[spd][key], picked)
@@ -297,15 +374,16 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto"):
     return result
 
 
-def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto",
+def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+                  mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed="auto",
                   *, decel_descent_min):
     """Drop-in replacement for arrival() with the SAME call signature (so
     callers -- fuel.fixed_point_fuel_iteration in particular -- don't need
     to know which one they're holding), but returning the flat legacy pair
     this module replaces: decel_descent_min minutes at LEGACY_FLAT_FUEL_T
-    tonnes, everything else zeroed. wind_at_fl and speed are accepted and
-    ignored -- --decel-descent-min forces this instead of the real model,
-    for comparing old and new numbers on equal terms.
+    tonnes, everything else zeroed. wind_at_fl, mass_at_barix_t and speed are
+    accepted and ignored -- --decel-descent-min forces this instead of the
+    real model, for comparing old and new numbers on equal terms.
 
     n_cand is read off cruise_fl/arrival_nm/isa_dev_at_cruise the same way
     arrival() itself does, so scalars broadcast to one candidate."""
@@ -333,7 +411,7 @@ def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="au
         "level_fuel_t": np.full(n_cand, LEGACY_FLAT_FUEL_T),
         "descent_fuel_t": zeros,
         "level_nm_clamped": falses, "cruise_fl_clamped": falses,
-        "level_gs_nonpositive": falses,
+        "level_gs_nonpositive": falses, "level_mass_outside_envelope": falses,
         "flags": np.full(n_cand, "", dtype=object).astype(str),
         "by_schedule": {},
     }
