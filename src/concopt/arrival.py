@@ -195,25 +195,43 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * 0.3048)
     isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
     subsonic = conc_data.subsonic_cruise(decel_end_fl, mass_at_level_t, isa_dev_c_at_level)
-    specific_range_nm_per_t = subsonic["specific_range_nm_per_t"]
+    fuel_total_kgh = subsonic["fuel_total_kgh"]
 
-    # Spec'd as ground distance / specific range. Note this makes level fuel
-    # wind-independent: a headwind lengthens the time aloft without raising
-    # the burn.
-    level_mass_outside_envelope = ~np.isfinite(specific_range_nm_per_t)
-    # Zero leftover distance burns no fuel even where the table has no entry
-    # for this mass/level/ISA -- same convention as level_time_min above.
+    # B8: level_fuel_t is flow x time, NOT ground_nm / specific_range_nm_per_t
+    # -- specific_range_nm_per_t is TAS-based (still-air) nm/t, so dividing a
+    # GROUND distance by it silently dropped the wind term (the level segment
+    # came out burning the same fuel regardless of wind, which is wrong: a
+    # headwind lengthens the time spent at a fixed fuel flow and so must burn
+    # MORE, not the same). level_time_min already carries the wind (it's
+    # level_nm / level_gs_kt), so multiplying flow by time is wind-correct
+    # for free. Mirror level_time_min's own conventions exactly so time and
+    # fuel never disagree about what happened to a candidate:
+    #   level_nm == 0          -> time is already 0 -> fuel 0 too
+    #   level_gs_nonpositive   -> time is already inf -> fuel inf too
     with np.errstate(invalid="ignore"):
-        level_fuel_t = np.where(
-            level_nm == 0.0, 0.0, level_nm / specific_range_nm_per_t
-        )
+        level_fuel_t = fuel_total_kgh / 1000.0 * level_time_min / 60.0
+    level_fuel_t = np.where(level_nm == 0.0, 0.0, level_fuel_t)
+    level_fuel_t = np.where(level_gs_nonpositive, np.inf, level_fuel_t)
 
-    # Any of the three wind_at_fl reads (decel midpoint, descent midpoint,
-    # level segment) landing outside the source data's span means this
-    # schedule's numbers rest on a clamped read somewhere -- OR them
-    # together into one flag rather than three, since the caller cares
-    # whether the *segment* used a clamped wind, not which sub-lookup did.
-    wind_fl_clamped = decel_wind_clamped | descent_wind_clamped | level_wind_clamped
+    # Envelope flag off fuel_total_kgh (not specific_range_nm_per_t) -- both
+    # are NaN in exactly the same table cells, but fuel_total_kgh is what
+    # level_fuel_t is now actually built from. Zero leftover distance burns
+    # no fuel even where the table has no entry for this mass/level/ISA --
+    # same convention as level_time_min/level_gs_nonpositive above (B7 found
+    # this flag firing on a genuinely-zero-fuel candidate; guarded here).
+    level_mass_outside_envelope = ~np.isfinite(fuel_total_kgh) & (level_nm > 0.0)
+
+    # The decel midpoint and the level segment itself are the two reads B6
+    # was actually written to extend coverage for (up to ~FL491). The
+    # descent segment's own midpoint clamps at the BOTTOM on nearly every
+    # candidate (as low as FL163.5 on the 380 kt schedule, against the
+    # stitched profile's ~FL183 floor -- see search._build_arrival_wind_fn)
+    # and is accepted there as immaterial (~60 nm, well under 0.3 min); OR-ing
+    # it in here saturated wind_fl_clamped to true on nearly every row, so it
+    # reads as "which schedule was picked" rather than "this rests on a
+    # clamped read". Kept as its own key (descent_wind_clamped) so it stays
+    # inspectable, but out of the flag that reaches the search CSV.
+    wind_fl_clamped = decel_wind_clamped | level_wind_clamped
 
     out = {
         "decel_nm": decel_nm,
@@ -231,6 +249,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         "level_gs_nonpositive": level_gs_nonpositive,
         "level_mass_outside_envelope": level_mass_outside_envelope,
         "wind_fl_clamped": wind_fl_clamped,
+        "descent_wind_clamped": descent_wind_clamped,
     }
     out["time_min"] = (
         out["decel_time_min"] + out["level_time_min"]
@@ -310,31 +329,58 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             flags (str, "" when clean; names joined by ";")
         plus per-flag booleans level_nm_clamped / cruise_fl_clamped /
         level_gs_nonpositive / level_mass_outside_envelope /
-        wind_fl_clamped, and `by_schedule`: {325: {...}, 350: {...},
-        380: {...}}, each the full breakdown for that forced schedule.
+        wind_fl_clamped / descent_wind_clamped, and `by_schedule`:
+        {325: {...}, 350: {...}, 380: {...}}, each the full breakdown for
+        that forced schedule.
 
     Flags rather than exceptions:
         level_nm_clamped      descent did not fit the available distance;
                               level_nm clamped to 0
         cruise_fl_clamped     cruise_fl outside the decel table's 470-600
-        level_gs_nonpositive  headwind >= M0.95 TAS; level_time_min is inf
+        level_gs_nonpositive  headwind >= M0.95 TAS; level_time_min AND
+                              level_fuel_t (so fuel_t) are inf (B8 -- fuel
+                              used to stay finite here even though time
+                              didn't, since the old formula never divided
+                              by ground speed at all; see mass docstring
+                              above). A trip fuel of inf reaches fuel.py's
+                              fixed point exactly like the NaN case below --
+                              np.clip resolves it to MTOW_T same as inf
+                              always clips, and it is flagged
+                              tow_above_mtow_185 there, not silently
+                              accepted as a real number.
         level_mass_outside_envelope
                               mass_at_level_t (mass_at_barix_t minus the
                               decel burn) fell outside conc_subsonic_cruise
-                              .csv's published envelope at this level/ISA;
-                              level_fuel_t (and so fuel_t) is NaN. Should
-                              never fire at real arrival masses.
-        wind_fl_clamped       the decel midpoint, descent midpoint, or
-                              level segment read wind/temp outside
-                              wind_at_fl's own source span and got a
-                              clamped value instead of a genuine one (B6).
-                              A REAL number still comes back -- this flag
-                              is the only thing that says so isn't a
-                              genuine reading; see search.
+                              .csv's published envelope at this level/ISA
+                              AND the level segment actually had distance to
+                              fly (level_nm > 0 -- B7 found this flag firing
+                              on a zero-distance leftover that burns no fuel
+                              regardless of the table); level_fuel_t (and so
+                              fuel_t) is NaN. Should never fire at real
+                              arrival masses.
+        wind_fl_clamped       the decel midpoint or the level segment read
+                              wind/temp outside wind_at_fl's own source span
+                              and got a clamped value instead of a genuine
+                              one (B6). A REAL number still comes back --
+                              this flag is the only thing that says so isn't
+                              a genuine reading; see search.
                               _build_arrival_wind_fn's stitched FL183-605
-                              profile, which still clamps below FL183 on
-                              the descent segment's own midpoint (as low
-                              as FL163.5 on the 380 kt schedule).
+                              profile. The descent segment's own midpoint
+                              clamps at the bottom on nearly every candidate
+                              (down to FL163.5 on the 380 kt schedule) and
+                              is deliberately NOT included here (B8) -- see
+                              descent_wind_clamped.
+        descent_wind_clamped  the descent segment's own midpoint clamped
+                              below the stitched profile's ~FL183 floor.
+                              Kept separate from wind_fl_clamped (B8) since
+                              it fires on nearly every candidate and would
+                              otherwise saturate that flag into meaning
+                              "which schedule was picked" rather than
+                              "rests on a clamped read"; accepted as
+                              immaterial (~60 nm, well under 0.3 min -- see
+                              search._build_arrival_wind_fn). NOT joined
+                              into the `flags` string that reaches the
+                              search CSV -- inspect this key directly.
     """
     if speed != "auto" and speed not in SCHEDULES_KT:
         raise ValueError(
@@ -391,7 +437,7 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
 
     flags = {"cruise_fl_clamped": cruise_fl_clamped}
     for key in ("level_nm_clamped", "level_gs_nonpositive", "level_mass_outside_envelope",
-                "wind_fl_clamped"):
+                "wind_fl_clamped", "descent_wind_clamped"):
         picked = by_schedule[SCHEDULES_KT[0]][key]
         for spd in SCHEDULES_KT[1:]:
             picked = np.where(schedule_kt == spd, by_schedule[spd][key], picked)
@@ -451,7 +497,7 @@ def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
         "descent_fuel_t": zeros,
         "level_nm_clamped": falses, "cruise_fl_clamped": falses,
         "level_gs_nonpositive": falses, "level_mass_outside_envelope": falses,
-        "wind_fl_clamped": falses,
+        "wind_fl_clamped": falses, "descent_wind_clamped": falses,
         "flags": np.full(n_cand, "", dtype=object).astype(str),
         "by_schedule": {},
     }

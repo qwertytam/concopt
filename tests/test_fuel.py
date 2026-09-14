@@ -331,6 +331,38 @@ def test_zfw_boundary_high_clamp():
         f"Expected some tow_above_mtow flags, got {np.unique(flags)}"
 
 
+def _arrival_fn_always_infeasible(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+                                   mass_at_barix_t=None, speed="auto"):
+    """A stand-in for arrival.arrival() that always reports a
+    level_gs_nonpositive-style inf trip fuel (B8: level_fuel_t can now be
+    inf, not just level_time_min), regardless of TOW -- for exercising
+    fixed_point_fuel_iteration's non-finite-trial nudge without needing a
+    genuinely unflyable headwind through the real table."""
+    n = np.atleast_1d(np.asarray(cruise_fl, dtype=float)).shape[0]
+    return {"time_min": np.full(n, np.inf), "fuel_t": np.full(n, np.inf)}
+
+
+def test_inf_trip_fuel_converges_to_mtow_and_is_flagged():
+    """B8: an inf trip fuel (arrival's level_gs_nonpositive) must not hang
+    the loop or silently settle at exactly MTOW_T unflagged -- np.clip
+    resolves inf to MTOW_T on its own (unlike NaN), so _boundary_flags'
+    strict tow_calc > MTOW_T check alone would stay silent (B7's finding,
+    extended from NaN to inf in B8)."""
+    n_cand = 5
+    dep_i8 = np.arange(n_cand, dtype="int64")
+    zfw_t = np.full(n_cand, 90.0, dtype=float)
+
+    tow_t, n_iter, flags, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs,
+        arrival_fn=_arrival_fn_always_infeasible,
+    )
+
+    assert np.all(np.isfinite(tow_t))
+    assert np.allclose(tow_t, MTOW_T)
+    assert np.all(flags == "tow_from_nan_trip_fuel")
+
+
 def test_zfw_90_95_converges_in_range():
     """ZFW 90 and 95 t should converge in a reasonable range."""
     n_cand = 50

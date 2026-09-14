@@ -272,6 +272,18 @@ class TestFlags:
         assert "level_gs_nonpositive" in r["flags"][0]
         assert np.isinf(r["time_min"][0])
 
+    def test_headwind_beyond_tas_makes_fuel_inf_too(self):
+        """B8: level_fuel_t is now flow x time, so a level_gs_nonpositive
+        candidate's inf level_time_min carries straight through to an inf
+        level_fuel_t (and so fuel_t) -- before B8, fuel stayed finite here
+        even though time didn't, since the old ground_nm/specific_range
+        formula never divided by ground speed at all."""
+        isa_dev = np.zeros(1)
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]),
+                            Wind(np.array([-700.0]), isa_dev), isa_dev, speed=350)
+        assert np.isinf(r["level_fuel_t"][0])
+        assert np.isinf(r["fuel_t"][0])
+
     def test_flags_can_combine(self):
         r = arrival.arrival(650.0, np.array([150.0]), _still_air(1),
                             np.zeros(1), speed=325)
@@ -396,6 +408,113 @@ class TestSubsonicMass:
         assert r["level_nm_clamped"][0]
         assert r["level_fuel_t"][0] == 0.0
         assert np.isfinite(r["fuel_t"][0])
+
+    def test_zero_level_nm_does_not_flag_envelope(self):
+        """B7/B8: level_mass_outside_envelope must not fire just because
+        mass_at_barix_t (200 t -- an absurd mass, clamped hard against the
+        table's own axis and landing on a NaN cell) is outside the table's
+        envelope, when there is no level segment left to price at all
+        (level_nm == 0). Before B8 this flag fired regardless of level_nm,
+        contradicting level_fuel_t's own already-zeroed value."""
+        isa_dev = np.zeros(1)
+        w = _still_air(1)
+        r = arrival.arrival(550.0, np.array([150.0]), w, isa_dev,
+                            mass_at_barix_t=200.0, speed=325)
+        assert r["level_nm"][0] == 0.0
+        assert not r["level_mass_outside_envelope"][0]
+        assert "level_mass_outside_envelope" not in r["flags"][0]
+
+
+class _StitchedSpanWind:
+    """A minimal wind_at_fl reporting fl_clamped exactly like search.
+    _build_arrival_wind_fn's real stitched profile (~FL183-FL605), for
+    testing wind_fl_clamped/descent_wind_clamped directly against arrival()
+    without building real .npz-shaped data."""
+
+    def __init__(self, wind_kt, fl_lo=183.0, fl_hi=605.0):
+        self.wind_kt = wind_kt
+        self.fl_lo = fl_lo
+        self.fl_hi = fl_hi
+
+    def __call__(self, level_fl):
+        level_fl = np.asarray(level_fl, float)
+        fl_clamped = (level_fl < self.fl_lo) | (level_fl > self.fl_hi)
+        return {"wind_kt": np.full(level_fl.shape, self.wind_kt),
+                "temp_k": np.full(level_fl.shape, 220.0),
+                "fl_clamped": fl_clamped}
+
+
+class TestLevelFuelWindDependence:
+    """B8: level_fuel_t must be flow x time, not ground_nm / specific_range
+    -- the old formula silently dropped the wind term, so a headwind cost no
+    extra fuel at all despite lengthening the time spent aloft at a fixed
+    fuel flow."""
+
+    def test_level_fuel_ordering_headwind_worse_than_tailwind(self):
+        """This is exactly the ordering the old (wind-independent) formula
+        would have failed -- assert it directly rather than a point value,
+        since the magnitude depends on the table."""
+        isa_dev = np.zeros(3)
+        r = arrival.arrival(
+            550.0, np.full(3, ROUTE_NM),
+            Wind(np.array([-60.0, 0.0, 60.0]), isa_dev), isa_dev,
+            mass_at_barix_t=115.0, speed=350,
+        )
+        headwind, still, tailwind = r["level_fuel_t"]
+        assert headwind > still > tailwind
+
+    def test_level_fuel_matches_flow_times_time(self):
+        """level_fuel_t / level_time_min == fuel_total_kgh/1000/60 exactly,
+        wherever there is a real level segment (level_nm > 0) flown at a
+        positive ground speed -- time and fuel must never disagree about
+        what happened to a candidate."""
+        isa_dev = np.array([10.0, 0.0, -20.0])
+        winds = np.array([-60.0, 0.0, 60.0])
+        mass_at_barix_t = np.array([115.0, 118.0, 120.0])
+        r = arrival.arrival(
+            np.full(3, 580.0), np.full(3, ROUTE_NM), Wind(winds, isa_dev),
+            isa_dev, mass_at_barix_t=mass_at_barix_t, speed=350,
+        )
+        assert np.all(r["level_nm"] > 0.0)
+        assert not np.any(r["level_gs_nonpositive"])
+
+        # Wind's own temp convention makes isa_dev_c_at_level equal isa_dev
+        # exactly (see _isa_temp_k): temp_k = isa_t_k(queried_fl) + isa_dev,
+        # so subtracting isa_t_k(decel_end_fl) back out (as _arrival_for_
+        # speed does) returns isa_dev unchanged, at any level.
+        mass_at_level_t = mass_at_barix_t - r["decel_fuel_t"]
+        expected_fuel_total_kgh = conc_data.subsonic_cruise(
+            r["level_fl"], mass_at_level_t, isa_dev
+        )["fuel_total_kgh"]
+        expected_level_fuel_t = expected_fuel_total_kgh / 1000.0 * r["level_time_min"] / 60.0
+        assert np.allclose(r["level_fuel_t"], expected_level_fuel_t, atol=1e-9, rtol=1e-9)
+
+
+class TestWindFlClampedSaturation:
+    """B8: wind_fl_clamped ORed in the descent segment's own midpoint too,
+    which clamps below the stitched profile's ~FL183 floor on nearly every
+    candidate (down to FL163.5 at 380 kt) -- saturating the flag to true on
+    nearly every row. The descent read is now its own key
+    (descent_wind_clamped), out of wind_fl_clamped and out of the joined
+    flags string."""
+
+    def test_wind_fl_clamped_false_on_normal_fl580_candidate_380kt(self):
+        r = arrival.arrival(
+            580.0, np.array([ROUTE_NM]), _StitchedSpanWind(0.0), np.zeros(1),
+            mass_at_barix_t=115.0, speed=380,
+        )
+        assert not r["wind_fl_clamped"][0]
+        assert "wind_fl_clamped" not in r["flags"][0]
+
+    def test_descent_wind_clamped_still_tracked_separately(self):
+        """The descent segment's own midpoint at 380 kt (FL163.5) is below
+        the stitched span's ~FL183 floor -- still visible via its own key,
+        just not folded into wind_fl_clamped/flags any more."""
+        r = arrival.arrival(
+            580.0, np.array([ROUTE_NM]), _StitchedSpanWind(0.0), np.zeros(1),
+            mass_at_barix_t=115.0, speed=380,
+        )
+        assert r["descent_wind_clamped"][0]
 
 
 class TestFlatArrival:

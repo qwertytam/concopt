@@ -207,7 +207,11 @@ def fixed_point_fuel_iteration(
     Returns (tow_t, n_iterations, flags, legs_out, weight_per_leg, climb,
     arrival_out), the last four being the final march's own output at the
     converged weight. flags is (n_cand,) of "" / tow_above_mtow_185 /
-    tow_below_climb_table_130 / fuel_not_converged."""
+    tow_below_climb_table_130 / tow_from_nan_trip_fuel / fuel_not_converged
+    (tow_from_nan_trip_fuel: the final trial's trip fuel was NaN or inf and
+    got nudged to MTOW_T -- B8 -- flagged explicitly since a nudged trial
+    lands at exactly MTOW_T, which _boundary_flags' own strict > MTOW_T
+    test can't see)."""
     if march_legs_fn is None:
         from concopt.search import march_legs as march_legs_fn
     if arrival_fn is None:
@@ -235,16 +239,24 @@ def fixed_point_fuel_iteration(
         # conc_subsonic_cruise.csv's published floor (arrival.arrival's
         # level_mass_outside_envelope) makes trip_fuel, and so tow_calc,
         # NaN -- and np.clip does not resolve a NaN, it passes it through.
-        # Left alone that NaN would infect every later iteration (the
-        # damped update is a weighted sum, and 0.5*NaN + 0.5*x is NaN
-        # forever), even though a HEAVIER trial TOW almost always burns
-        # into a heavier, in-envelope mass_at_barix_t. So: nudge a NaN
-        # trial toward MTOW_T instead of letting it stick -- self-
-        # correcting once the march lands back inside the table, and
-        # otherwise settling AT MTOW_T (flagged tow_above_mtow below) rather
-        # than hanging on NaN. INITIAL_TOW_T=150 (light) is exactly the kind
-        # of trial this guards the first iteration against.
-        tow_calc = np.where(np.isnan(tow_calc), MTOW_T, tow_calc)
+        # B8: a trial can also make trip_fuel inf now, not just NaN --
+        # arrival.arrival's level_gs_nonpositive (headwind at the level
+        # segment meeting or exceeding M0.95 TAS) makes level_fuel_t inf too,
+        # where it used to stay finite even though level_time_min didn't
+        # (see arrival.py's B8 notes). np.clip DOES resolve inf on its own
+        # (np.clip(inf, lo, hi) == hi), so an inf trial would reach tow_next
+        # as exactly MTOW_T without ever passing through here -- but then
+        # _boundary_flags's tow_calc > MTOW_T test is strict and sees
+        # MTOW_T, not something greater than it, and stays silent, handing
+        # back an unflagged 185 t exactly like a NaN trial used to (B7).
+        # Treat both the same way: nudge a non-finite trial toward MTOW_T
+        # instead of letting it stick -- self-correcting once the march
+        # lands back inside the table, and otherwise settling AT MTOW_T,
+        # flagged explicitly below since the boundary check alone can't see
+        # it. INITIAL_TOW_T=150 (light) is exactly the kind of trial this
+        # guards the first iteration against.
+        nonfinite_trial = ~np.isfinite(tow_calc)
+        tow_calc = np.where(nonfinite_trial, MTOW_T, tow_calc)
 
         # Clamped, not extrapolated: conc_climb.csv has no pages outside
         # [CLIMB_TOW_MIN_T, MTOW_T] and above MTOW the aircraft can't go
@@ -254,12 +266,15 @@ def fixed_point_fuel_iteration(
         tow_next = np.clip(tow_calc, CLIMB_TOW_MIN_T, MTOW_T)
 
         if np.abs(tow_next - tow_t).max() < tolerance_t:
-            return (tow_next, iteration, _boundary_flags(tow_calc),
+            flags = _boundary_flags(tow_calc)
+            flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
+            return (tow_next, iteration, flags,
                     legs_out, weight_per_leg, climb, arrival_out)
 
         tow_t = damping * tow_next + (1.0 - damping) * tow_t
 
     flags = _boundary_flags(tow_calc)
+    flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
     flags[flags == ""] = "fuel_not_converged"
     # tow_next, not tow_t: tow_t was already overwritten by the damped blend
     # at the bottom of the loop above, computed from the SAME tow_calc/
