@@ -25,13 +25,6 @@ import numpy as np
 
 from concopt.data.conc_data import CLIMB_TOW_MAX_T, CLIMB_TOW_MIN_T
 
-# PLACEHOLDER -- Phase B replaces this. Descent burn from the decel point to
-# touchdown, in tonnes. data/conc_descent.csv tabulates the real per-level
-# decel+descent fuel/time/distance but nothing imports it yet; until it does,
-# every trip-fuel figure carries this flat allowance, and anything that
-# displays a fuel plan must say so rather than passing it off as computed.
-DESCENT_FUEL_T = 2.0
-
 # Structural max take-off weight. Coincides with the top of conc_climb.csv's
 # TOW axis (CLIMB_TOW_MAX_T), but it is a different kind of limit: above this
 # the candidate is infeasible, not merely off the end of a table.
@@ -51,8 +44,8 @@ DEFAULT_MAX_ITERATIONS = 30
 INITIAL_TOW_T = 150.0
 
 
-def trip_fuel_split(climb, legs_out):
-    """(climb_fuel_t, cruise_fuel_t, descent_fuel_t), each (n_cand,) tonnes.
+def trip_fuel_split(climb, legs_out, arrival_out):
+    """(climb_fuel_t, cruise_fuel_t, arrival_fuel_t), each (n_cand,) tonnes.
 
     The split, not just the total, because it is what makes it visible when
     the climb is eating the flight -- at 185 t on a warm day the climb alone
@@ -62,27 +55,31 @@ def trip_fuel_split(climb, legs_out):
     top of climb, straight off conc_climb.csv at that TOW and band; mass_t is
     the top-of-climb mass). legs_out is search.march_legs' dict, whose
     weight_at_barix is the weight after the last cruise leg's burn -- so the
-    cruise burn is just the drop between those two. Descent is the flat
-    DESCENT_FUEL_T placeholder."""
+    cruise burn is just the drop between those two. arrival_out is
+    arrival.arrival()'s (or arrival.flat_arrival's) return dict -- this
+    REPLACES the old flat DESCENT_FUEL_T placeholder entirely; the whole
+    point of wiring arrival.py in is that its fuel varies day to day and
+    feeds back into TOW, so there is no fallback constant here any more."""
     climb_fuel_t = np.asarray(climb["fuel_used_kg"], dtype=float) / 1000.0
     cruise_fuel_t = (np.asarray(climb["mass_t"], dtype=float)
                      - np.asarray(legs_out["weight_at_barix"], dtype=float))
-    descent_fuel_t = np.full_like(climb_fuel_t, DESCENT_FUEL_T)
-    return climb_fuel_t, cruise_fuel_t, descent_fuel_t
+    arrival_fuel_t = np.asarray(arrival_out["fuel_t"], dtype=float)
+    return climb_fuel_t, cruise_fuel_t, arrival_fuel_t
 
 
-def calculate_trip_fuel(climb, legs_out):
-    """Total trip fuel (n_cand,) in tonnes -- climb + cruise + descent, the
+def calculate_trip_fuel(climb, legs_out, arrival_out):
+    """Total trip fuel (n_cand,) in tonnes -- climb + cruise + arrival, the
     sum of trip_fuel_split."""
-    return sum(trip_fuel_split(climb, legs_out))
+    return sum(trip_fuel_split(climb, legs_out, arrival_out))
 
 
-def fuel_plan(climb, legs_out, zfw_t=None, min_landing_fuel_t=MIN_LANDING_FUEL_T,
+def fuel_plan(climb, legs_out, arrival_out, zfw_t=None,
+              min_landing_fuel_t=MIN_LANDING_FUEL_T,
               tow_t=None, n_iterations=None, flags=None):
     """The whole fuel plan for one march, as a dict of (n_cand,) arrays --
     what `concopt report` prints and what the fixed point is solving for.
 
-    Keys: climb_fuel_t, cruise_fuel_t, descent_fuel_t, trip_fuel_t, uplift_t,
+    Keys: climb_fuel_t, cruise_fuel_t, arrival_fuel_t, trip_fuel_t, uplift_t,
     zfw_t, tow_t, tow_required_t, landing_weight_t, min_landing_fuel_t,
     n_iterations, flags.
 
@@ -97,8 +94,8 @@ def fuel_plan(climb, legs_out, zfw_t=None, min_landing_fuel_t=MIN_LANDING_FUEL_T
     - zfw_t None (a plain --tow run, no fixed point): TOW is the given, so
       ZFW is what falls out the other end, ZFW = TOW - uplift. Nothing was
       iterated, so n_iterations stays None."""
-    climb_fuel_t, cruise_fuel_t, descent_fuel_t = trip_fuel_split(climb, legs_out)
-    trip_fuel_t = climb_fuel_t + cruise_fuel_t + descent_fuel_t
+    climb_fuel_t, cruise_fuel_t, arrival_fuel_t = trip_fuel_split(climb, legs_out, arrival_out)
+    trip_fuel_t = climb_fuel_t + cruise_fuel_t + arrival_fuel_t
     uplift_t = trip_fuel_t + min_landing_fuel_t
 
     def _as_vector(value):
@@ -121,7 +118,7 @@ def fuel_plan(climb, legs_out, zfw_t=None, min_landing_fuel_t=MIN_LANDING_FUEL_T
 
     return dict(
         climb_fuel_t=climb_fuel_t, cruise_fuel_t=cruise_fuel_t,
-        descent_fuel_t=descent_fuel_t, trip_fuel_t=trip_fuel_t,
+        arrival_fuel_t=arrival_fuel_t, trip_fuel_t=trip_fuel_t,
         uplift_t=uplift_t, zfw_t=zfw_out, tow_t=tow_out,
         tow_required_t=tow_required_t,
         landing_weight_t=zfw_out + min_landing_fuel_t,
@@ -144,9 +141,22 @@ def _boundary_flags(tow_calc):
     return flags
 
 
+def _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn):
+    """arrival_fn's output for this march's own end-of-cruise state: FL and
+    ISA deviation at the last cruise leg (arriving at the decel point), and
+    wind sampled at this march's own accumulated_s (arrival_wind_fn binds
+    the position -- see search._build_arrival_wind_fn -- and this call
+    supplies the time). Shared by every branch below so the fixed point and
+    the plain --tow/--decel-descent-min paths build arrival_out identically."""
+    cruise_fl = legs_out["chosen_fl"][:, -1]
+    isa_dev_at_cruise = legs_out["isa_dev_k"][:, -1]
+    wind_at_fl = arrival_wind_fn(legs_out["accumulated_s"])
+    return arrival_fn(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto")
+
+
 def fixed_point_fuel_iteration(
-    cc_legs, cc_idx, data, dep_i8, zfw_t,
-    min_landing_fuel_t=MIN_LANDING_FUEL_T, march_legs_fn=None,
+    cc_legs, cc_idx, data, dep_i8, zfw_t, arrival_nm, arrival_wind_fn,
+    min_landing_fuel_t=MIN_LANDING_FUEL_T, march_legs_fn=None, arrival_fn=None,
     cruise_mach=None, damping=DEFAULT_DAMPING,
     tolerance_t=DEFAULT_TOLERANCE_T, max_iterations=DEFAULT_MAX_ITERATIONS,
 ):
@@ -156,6 +166,18 @@ def fixed_point_fuel_iteration(
     span and the candidate departure timestamps); zfw_t is (n_cand,) tonnes.
     march_legs_fn defaults to search.march_legs and exists to be substituted
     in tests. cruise_mach None means limits.CRUISE_MACH.
+
+    arrival_nm is the post-decel-point ground distance (from the route, a
+    scalar or (n_cand,) array -- NOT the old fixed DECEL_DESCENT_NM
+    constant); arrival_wind_fn(accumulated_s) -> wind_at_fl, built once by
+    the caller (search._build_arrival_wind_fn) and re-evaluated at each
+    pass's own end-of-cruise clock time, since accumulated_s shifts slightly
+    as TOW moves. arrival_fn defaults to arrival.arrival and exists to be
+    substituted (arrival.flat_arrival, or a synthetic stub in tests) the
+    same way march_legs_fn does -- arrival fuel MUST be computed inside this
+    loop, not added after it returns, because the whole point of wiring
+    arrival.py in is that its ~4-7 t feeds back into TOW and therefore into
+    climb time.
 
     Each pass marches every candidate at the current TOW vector, reads the
     trip fuel back out, and steps
@@ -169,12 +191,14 @@ def fixed_point_fuel_iteration(
     side, so TOW == ZFW + uplift holds exactly for the march that is returned
     alongside it (that march having been flown within tolerance_t of it).
 
-    Returns (tow_t, n_iterations, flags, legs_out, weight_per_leg, climb),
-    the last three being the final march's own output at the converged
-    weight. flags is (n_cand,) of "" / tow_above_mtow_185 /
+    Returns (tow_t, n_iterations, flags, legs_out, weight_per_leg, climb,
+    arrival_out), the last four being the final march's own output at the
+    converged weight. flags is (n_cand,) of "" / tow_above_mtow_185 /
     tow_below_climb_table_130 / fuel_not_converged."""
     if march_legs_fn is None:
         from concopt.search import march_legs as march_legs_fn
+    if arrival_fn is None:
+        from concopt.arrival import arrival as arrival_fn
     if cruise_mach is None:
         from concopt.limits import CRUISE_MACH as cruise_mach
 
@@ -191,7 +215,8 @@ def fixed_point_fuel_iteration(
         legs_out, weight_per_leg, climb = march_legs_fn(
             cc_legs, cc_idx, data, dep_i8, tow_t=tow_t, cruise_mach=cruise_mach
         )
-        tow_calc = zfw_t + calculate_trip_fuel(climb, legs_out) + min_landing_fuel_t
+        arrival_out = _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn)
+        tow_calc = zfw_t + calculate_trip_fuel(climb, legs_out, arrival_out) + min_landing_fuel_t
 
         # Clamped, not extrapolated: conc_climb.csv has no pages outside
         # [CLIMB_TOW_MIN_T, MTOW_T] and above MTOW the aircraft can't go
@@ -202,7 +227,7 @@ def fixed_point_fuel_iteration(
 
         if np.abs(tow_next - tow_t).max() < tolerance_t:
             return (tow_next, iteration, _boundary_flags(tow_calc),
-                    legs_out, weight_per_leg, climb)
+                    legs_out, weight_per_leg, climb, arrival_out)
 
         tow_t = damping * tow_next + (1.0 - damping) * tow_t
 
@@ -216,4 +241,4 @@ def fixed_point_fuel_iteration(
     # overwrite) by (1 - damping) * residual. tow_next is what the returned
     # march's own trip fuel actually implies, matching the converged
     # branch's return above.
-    return tow_next, max_iterations, flags, legs_out, weight_per_leg, climb
+    return tow_next, max_iterations, flags, legs_out, weight_per_leg, climb, arrival_out

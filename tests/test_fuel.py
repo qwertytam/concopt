@@ -4,12 +4,20 @@ Fixed-point iteration to find TOW from ZFW, where TOW = ZFW + uplift and
 uplift = trip_fuel + min_landing_fuel. Vectorised across all candidates.
 
 Tests use a synthetic march_legs mock to avoid dependency on real ERA5 .npz files.
+
+B3 wires arrival.py's real per-day model into this fixed point (replacing
+the old flat DESCENT_FUEL_T), so every march_legs mock here now also
+produces chosen_fl/isa_dev_k (what arrival() reads for cruise_fl/temp band),
+and every fixed_point_fuel_iteration call passes a still-air arrival_wind_fn
+alongside a fixed arrival_nm -- the arrival MODEL itself is exercised by
+tests/test_arrival.py; these tests only need it to run, not to be realistic.
 """
 
 import time
 import numpy as np
 import pytest
 
+from concopt import arrival
 from concopt.atmos import isa, pressure_to_fl
 from concopt.data.conc_data import CLIMB_BANDS, climb_to
 from concopt.fuel import (CLIMB_TOW_MIN_T, MTOW_T, calculate_trip_fuel,
@@ -18,6 +26,34 @@ from concopt.fuel import (CLIMB_TOW_MIN_T, MTOW_T, calculate_trip_fuel,
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import march_legs
 from tests.test_route import SAMPLE_PLN
+
+# A fixed post-decel distance for every test here -- the exact value doesn't
+# matter (nothing asserts a specific arrival number), only that arrival()
+# has something to compute against.
+_ARRIVAL_NM = 307.0
+
+
+def _still_air_wind_fn(accumulated_s):
+    """A minimal arrival_wind_fn: still air, ISA+0-ish, for every candidate
+    and every queried level -- fixed_point_fuel_iteration needs SOME
+    wind_at_fl to pass to arrival(), and these tests don't care what it
+    says, only that arrival's own fuel/time (not the old flat placeholder)
+    is what feeds the fixed point."""
+    def wind_at_fl(level_fl):
+        level_fl = np.asarray(level_fl, dtype=float)
+        return {"wind_kt": np.zeros_like(level_fl), "temp_k": np.full_like(level_fl, 220.0)}
+    return wind_at_fl
+
+
+def _arrival_out_for(legs_out, arrival_nm=_ARRIVAL_NM):
+    """arrival.arrival()'s own output for a march's end-of-cruise state --
+    the same call fuel._arrival_from_march makes, spelled out here so tests
+    that call calculate_trip_fuel/trip_fuel_split directly (outside the
+    fixed point) can build a matching arrival_out."""
+    cruise_fl = legs_out["chosen_fl"][:, -1]
+    isa_dev_at_cruise = legs_out["isa_dev_k"][:, -1]
+    wind_at_fl = _still_air_wind_fn(legs_out["accumulated_s"])
+    return arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise, speed="auto")
 
 
 def _synthetic_march_legs(
@@ -31,8 +67,9 @@ def _synthetic_march_legs(
     Fuel burn model:
     - Climb: ~33 t at TOW 165, ~35 t at TOW 185, scales sublinearly with TOW
     - Cruise: scales with TOW but with decreasing marginal rate
-    - Total trip fuel: climb + cruise + descent (2 t fixed)
-    - Typical trip fuel for TOW 160-185 t: 55-65 t
+    - Total trip fuel: climb + cruise + arrival (arrival.arrival(), see
+      _still_air_wind_fn above)
+    - Typical trip fuel for TOW 160-185 t: 55-65 t plus arrival's own few t
     """
     tow_t = np.atleast_1d(np.asarray(tow_t, dtype=float))
     n_cand = len(tow_t)
@@ -75,9 +112,18 @@ def _synthetic_march_legs(
         "warm_flag": isa_dev_variation > 10.0,
     }
 
+    # arrival() reads the LAST leg's chosen_fl/isa_dev_k as cruise_fl/
+    # isa_dev_at_cruise -- a representative mid-envelope cruise level, and
+    # the same isa_dev_variation the climb band uses (so warm candidates
+    # also land arrival's warm band).
+    chosen_fl = np.full((n_cand, n_legs), 550.0)
+    isa_dev_k = np.tile(isa_dev_variation[:, None], (1, n_legs))
+
     legs_out = {
         "weight_at_barix": weight_at_barix,
         "accumulated_s": np.full(n_cand, 25200.0),  # ~7 hours in seconds
+        "chosen_fl": chosen_fl,
+        "isa_dev_k": isa_dev_k,
     }
 
     # weight_per_leg: (n_cand, n_legs), weight at start of each leg
@@ -94,23 +140,25 @@ def test_calculate_trip_fuel_dimensions():
     tow_t = np.full(n_cand, 165.0)
 
     legs_out, _, climb = _synthetic_march_legs(None, None, None, tow_t, tow_t=tow_t)
-    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    arrival_out = _arrival_out_for(legs_out)
+    trip_fuel = calculate_trip_fuel(climb, legs_out, arrival_out)
 
     assert trip_fuel.shape == (n_cand,)
     assert np.all(trip_fuel > 0)
 
 
 def test_trip_fuel_plausible_range():
-    """Trip fuel should be plausible for a Concorde flight (40-70 t)."""
+    """Trip fuel should be plausible for a Concorde flight (40-80 t, arrival
+    fuel included)."""
     n_cand = 50
     tow_t = np.full(n_cand, 165.0)
 
     legs_out, _, climb = _synthetic_march_legs(None, None, None, tow_t, tow_t=tow_t)
-    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    arrival_out = _arrival_out_for(legs_out)
+    trip_fuel = calculate_trip_fuel(climb, legs_out, arrival_out)
 
-    # Trip fuel should be roughly 55-60 t for typical conditions
     assert np.all(trip_fuel >= 30.0), f"Some trip_fuel too low: {trip_fuel.min()}"
-    assert np.all(trip_fuel <= 80.0), f"Some trip_fuel too high: {trip_fuel.max()}"
+    assert np.all(trip_fuel <= 85.0), f"Some trip_fuel too high: {trip_fuel.max()}"
 
 
 def test_fixed_point_converges():
@@ -119,9 +167,9 @@ def test_fixed_point_converges():
     dep_i8 = np.arange(n_cand, dtype="int64")
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
-    tow_t, n_iter, flags, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, n_iter, flags, _, _, _, _arrival_out = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
 
     # Should converge in fewer than 30 iterations
@@ -143,9 +191,9 @@ def test_tow_above_zfw():
         dep_i8 = np.arange(n_cand, dtype="int64")
         zfw_t = np.full(n_cand, zfw, dtype=float)
 
-        tow_t, _, flags, _, _, _ = fixed_point_fuel_iteration(
-            None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-            march_legs_fn=_synthetic_march_legs
+        tow_t, _, flags, _, _, _, _ = fixed_point_fuel_iteration(
+            None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+            min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
         )
 
         assert np.all(tow_t > zfw), f"TOW not > ZFW for ZFW={zfw}"
@@ -158,9 +206,9 @@ def test_landing_weight_identity():
     zfw_t = np.full(n_cand, 90.0, dtype=float)
     min_landing_fuel_t = 10.0
 
-    tow_t, _, _, legs_out, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=min_landing_fuel_t,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, _, _, legs_out, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=min_landing_fuel_t, march_legs_fn=_synthetic_march_legs
     )
 
     landing_weight = zfw_t + min_landing_fuel_t
@@ -178,9 +226,9 @@ def test_higher_zfw_gives_higher_tow():
     for zfw in [85.0, 90.0, 95.0]:
         zfw_t = np.full(n_cand, zfw, dtype=float)
 
-        tow_t, _, _, _, _, _ = fixed_point_fuel_iteration(
-            None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-            march_legs_fn=_synthetic_march_legs
+        tow_t, _, _, _, _, _, _ = fixed_point_fuel_iteration(
+            None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+            min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
         )
 
         results.append((zfw, tow_t.mean()))
@@ -199,9 +247,9 @@ def test_warmer_conditions_need_more_fuel():
     dep_i8 = np.arange(n_cand, dtype="int64")
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
-    tow_t, _, _, _, _, climb = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, _, _, _, _, climb, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
 
     # Separate by simulated temp band (which correlates with our isa_dev_variation)
@@ -225,13 +273,14 @@ def test_convergence_tolerance_respected():
     zfw_t = np.full(n_cand, 90.0, dtype=float)
     tolerance_t = 0.05
 
-    tow_t, n_iter, _, legs_out, _, climb = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs, tolerance_t=tolerance_t
+    tow_t, n_iter, _, legs_out, _, climb, arrival_out = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs,
+        tolerance_t=tolerance_t
     )
 
     # Verify by doing one more march and checking change
-    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    trip_fuel = calculate_trip_fuel(climb, legs_out, arrival_out)
     tow_calc = zfw_t + trip_fuel + 10.0
     tow_clamped = np.clip(tow_calc, CLIMB_TOW_MIN_T, MTOW_T)
 
@@ -248,9 +297,9 @@ def test_zfw_boundary_low_clamp():
     # ZFW 70 t is very low; with typical fuel burn, TOW would be below 130 t
     zfw_t = np.full(n_cand, 70.0, dtype=float)
 
-    tow_t, _, flags, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, _, flags, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
 
     # TOW should be clamped to 130 t minimum
@@ -269,9 +318,9 @@ def test_zfw_boundary_high_clamp():
     # ZFW 175 t is high; with typical fuel burn, TOW would exceed 185 t
     zfw_t = np.full(n_cand, 175.0, dtype=float)
 
-    tow_t, _, flags, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, _, flags, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
 
     # TOW should be clamped to 185 t maximum
@@ -290,9 +339,9 @@ def test_zfw_90_95_converges_in_range():
     for zfw in [90.0, 95.0]:
         zfw_t = np.full(n_cand, zfw, dtype=float)
 
-        tow_t, _, flags, _, _, _ = fixed_point_fuel_iteration(
-            None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-            march_legs_fn=_synthetic_march_legs
+        tow_t, _, flags, _, _, _, _ = fixed_point_fuel_iteration(
+            None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+            min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
         )
 
         # All should fall within reasonable bounds (130-185 t)
@@ -307,9 +356,9 @@ def test_vectorisation_performance():
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
     start = time.time()
-    tow_t, n_iter, _, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, n_iter, _, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
     elapsed = time.time() - start
 
@@ -326,18 +375,18 @@ def test_vectorisation_matches_scalar_implementation():
 
     # Vectorised
     zfw_t = np.array(zfw_values, dtype=float)
-    tow_vec, _, _, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8_values, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_vec, _, _, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8_values, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
 
     # Scalar: manually for each candidate
     tow_scalar = []
     for i, (zfw, dep) in enumerate(zip(zfw_values, dep_i8_values)):
-        tow_single, _, _, _, _, _ = fixed_point_fuel_iteration(
+        tow_single, _, _, _, _, _, _ = fixed_point_fuel_iteration(
             None, None, None, np.array([dep], dtype="int64"),
-            np.array([zfw], dtype=float), min_landing_fuel_t=10.0,
-            march_legs_fn=_synthetic_march_legs
+            np.array([zfw], dtype=float), _ARRIVAL_NM, _still_air_wind_fn,
+            min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
         )
         tow_scalar.append(tow_single[0])
 
@@ -359,9 +408,10 @@ def test_not_converged_flag():
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
     # Impossible tolerance (smaller than floating-point precision)
-    tow_t, n_iter, flags, _, _, _ = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs, tolerance_t=1e-10, max_iterations=5
+    tow_t, n_iter, flags, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs,
+        tolerance_t=1e-10, max_iterations=5
     )
 
     # Should hit max iterations
@@ -379,17 +429,17 @@ def test_fuel_plan_identity_from_zfw():
     dep_i8 = np.arange(n_cand, dtype="int64")
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
-    tow_t, n_iter, flags, legs_out, _, climb = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs
+    tow_t, n_iter, flags, legs_out, _, climb, arrival_out = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs
     )
-    plan = fuel_plan(climb, legs_out, zfw_t=zfw_t, min_landing_fuel_t=10.0,
+    plan = fuel_plan(climb, legs_out, arrival_out, zfw_t=zfw_t, min_landing_fuel_t=10.0,
                       tow_t=tow_t, n_iterations=n_iter, flags=flags)
 
     assert np.allclose(plan["tow_t"], zfw_t + plan["uplift_t"])
     assert np.allclose(plan["landing_weight_t"], zfw_t + 10.0)
     assert np.allclose(plan["trip_fuel_t"],
-                        plan["climb_fuel_t"] + plan["cruise_fuel_t"] + plan["descent_fuel_t"])
+                        plan["climb_fuel_t"] + plan["cruise_fuel_t"] + plan["arrival_fuel_t"])
     assert plan["n_iterations"] == n_iter
 
 
@@ -401,7 +451,9 @@ def test_fuel_plan_identity_from_tow_override():
     tow_t = np.full(n_cand, 165.0, dtype=float)
 
     legs_out, _, climb = _synthetic_march_legs(None, None, None, tow_t, tow_t=tow_t)
-    plan = fuel_plan(climb, legs_out, zfw_t=None, min_landing_fuel_t=10.0, tow_t=tow_t)
+    arrival_out = _arrival_out_for(legs_out)
+    plan = fuel_plan(climb, legs_out, arrival_out, zfw_t=None,
+                      min_landing_fuel_t=10.0, tow_t=tow_t)
 
     assert np.allclose(plan["zfw_t"], tow_t - plan["uplift_t"])
     assert np.allclose(plan["tow_t"], tow_t)
@@ -454,14 +506,14 @@ def test_fixed_point_against_real_march_legs_multi_band():
     dep_i8 = times.astype("int64")  # one candidate per band, see helper above
     zfw_t = np.full(2, 90.0, dtype=float)
 
-    tow_t, n_iter, flags, legs_out, _, climb = fixed_point_fuel_iteration(
-        cc_legs, cc_idx, data, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=march_legs,
+    tow_t, n_iter, flags, legs_out, _, climb, arrival_out = fixed_point_fuel_iteration(
+        cc_legs, cc_idx, data, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=march_legs,
     )
 
     assert list(climb["temp_band"]) == ["isa_minus_20_to_minus_10", "isa_to_isa_plus_10"]
     assert n_iter < 30
-    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    trip_fuel = calculate_trip_fuel(climb, legs_out, arrival_out)
     assert np.allclose(tow_t, zfw_t + trip_fuel + 10.0, atol=0.05)
     # The warm-band candidate needs strictly more fuel than the cold one.
     assert trip_fuel[1] > trip_fuel[0]
@@ -476,19 +528,22 @@ def test_climb_mass_telescopes_exactly_from_fuel_used():
     from that same disagreeing mass_t) didn't telescope to
     tow - weight_at_touchdown. Fixed by deriving mass_t from fuel_used_kg
     instead, so this must now hold exactly (mod float rounding), well inside
-    the fixed point's own 0.05 t convergence tolerance."""
+    the fixed point's own 0.05 t convergence tolerance. arrival_fuel_t (any
+    value works here -- a zero stand-in) is excluded the same way
+    DESCENT_FUEL_T used to be, since it plays no part in this identity."""
     cc_legs, cc_idx, data, times = _multi_band_march_legs_data()
     dep_i8 = times.astype("int64")
     tow_t = np.array([175.0, 182.0])
 
     legs_out, _weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=tow_t)
-    climb_fuel_t, cruise_fuel_t, descent_fuel_t = trip_fuel_split(climb, legs_out)
+    arrival_out = {"fuel_t": np.zeros(2)}
+    climb_fuel_t, cruise_fuel_t, arrival_fuel_t = trip_fuel_split(climb, legs_out, arrival_out)
     weight_at_touchdown = legs_out["weight_at_barix"]
 
     assert np.allclose(climb_fuel_t + cruise_fuel_t, tow_t - weight_at_touchdown, atol=0.01)
 
-    trip_fuel_t = climb_fuel_t + cruise_fuel_t + descent_fuel_t
-    assert np.allclose(trip_fuel_t - descent_fuel_t, tow_t - weight_at_touchdown, atol=0.01)
+    trip_fuel_t = climb_fuel_t + cruise_fuel_t + arrival_fuel_t
+    assert np.allclose(trip_fuel_t - arrival_fuel_t, tow_t - weight_at_touchdown, atol=0.01)
 
 
 def test_not_converged_returns_tow_consistent_with_returned_march():
@@ -504,15 +559,15 @@ def test_not_converged_returns_tow_consistent_with_returned_march():
     dep_i8 = np.arange(n_cand, dtype="int64")
     zfw_t = np.full(n_cand, 90.0, dtype=float)
 
-    tow_t, n_iter, flags, legs_out, _, climb = fixed_point_fuel_iteration(
-        None, None, None, dep_i8, zfw_t, min_landing_fuel_t=10.0,
-        march_legs_fn=_synthetic_march_legs, max_iterations=2,
+    tow_t, n_iter, flags, legs_out, _, climb, arrival_out = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs, max_iterations=2,
     )
 
     assert n_iter == 2
     assert np.any(flags == "fuel_not_converged")
 
-    trip_fuel = calculate_trip_fuel(climb, legs_out)
+    trip_fuel = calculate_trip_fuel(climb, legs_out, arrival_out)
     tow_expected = np.clip(zfw_t + trip_fuel + 10.0, CLIMB_TOW_MIN_T, MTOW_T)
     assert np.allclose(tow_t, tow_expected), \
         f"returned TOW {tow_t} inconsistent with returned march's own trip fuel {tow_expected}"
