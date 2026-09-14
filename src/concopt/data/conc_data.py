@@ -140,17 +140,124 @@ def climb_to(level_fl, tow_t, temp_band):
     )
 
 
-_desc_fp = files("concopt").joinpath("data/conc_desc_time.csv")
-_desc_tbl = pd.read_csv(_desc_fp, encoding="utf-8-sig")
-# Table is FL600 (60,000 ft) down to 3,000 ft; reversed to ascending altitude
-# for np.interp, which needs increasing x.
-_DESC_ALT_FT = _desc_tbl["altitude"].to_numpy(float)[::-1]
-_DESC_MIN = _desc_tbl["mins"].to_numpy(float)[::-1]
+_descent_fp = files("concopt").joinpath("data/conc_descent.csv")
+_descent_tbl = pd.read_csv(_descent_fp, encoding="utf-8-sig")
 
 
-def desc_time_min(alt_ft):
-    """Descent time (minutes) from altitude (ft) to landing, linear
-    interpolation on conc_desc_time.csv (60,000 ft -> 17.1 min). Clamped to
-    the table's bounds (3,000-60,000 ft); broadcasts over alt_ft."""
-    alt = np.clip(np.asarray(alt_ft, float), _DESC_ALT_FT[0], _DESC_ALT_FT[-1])
-    return np.interp(alt, _DESC_ALT_FT, _DESC_MIN)
+def _build_descent_interps():
+    """{(table, from_supersonic_cruise, speed_kt, temp_band):
+        {col: RegularGridInterpolator, "decel_end_fl": scalar, "level_correction_nm_per_2000ft": scalar,
+         "level_fl_min": scalar, "level_fl_max": scalar}}
+    one interpolator per (level_fl,) grid per group. Each group stores its own level bounds for clamping."""
+    interps = {}
+
+    for table in _descent_tbl["table"].unique():
+        for from_super in _descent_tbl["from_supersonic_cruise"].unique():
+            for speed_kt in _descent_tbl["descent_speed_kt"].unique():
+                for temp_band in _descent_tbl["temp_band"].unique():
+                    mask = (
+                        (_descent_tbl["table"] == table) &
+                        (_descent_tbl["from_supersonic_cruise"] == from_super) &
+                        (_descent_tbl["descent_speed_kt"] == speed_kt) &
+                        (_descent_tbl["temp_band"] == temp_band)
+                    )
+                    if not mask.any():
+                        continue
+
+                    row_data = _descent_tbl[mask].sort_values("level_fl")
+                    levels = row_data["level_fl"].to_numpy(float)
+
+                    key = (table, from_super, speed_kt, temp_band)
+                    interps[key] = {
+                        "decel_end_fl": float(row_data["decel_end_fl"].iloc[0]),
+                        "level_correction_nm_per_2000ft": float(row_data["level_correction_nm_per_2000ft"].iloc[0]),
+                        "level_fl_min": float(levels[0]),
+                        "level_fl_max": float(levels[-1]),
+                    }
+
+                    for col in ("fuel_t", "time_min", "dist_zero_wind_nm"):
+                        vals = row_data[col].to_numpy(float)
+                        interps[key][col] = RegularGridInterpolator(
+                            (levels,), vals, bounds_error=False, fill_value=None
+                        )
+    return interps
+
+
+_DESCENT_INTERPS = _build_descent_interps()
+_DESCENT_LEVEL_FL = np.sort(_descent_tbl["level_fl"].unique())
+
+
+def decel_to_mach1(level_fl, speed_kt, temp_band):
+    """(fuel_t, time_min, dist_zero_wind_nm, decel_end_fl, level_correction_nm_per_2000ft)
+    from conc_descent.csv, linear interpolation over level_fl for the given
+    speed_kt and temp_band (one of "above_isa_minus_10" or "isa_minus_10_and_below").
+    Valid level_fl 470-600. decel_end_fl and level_correction_nm_per_2000ft are
+    scalar constants within each speed schedule (not interpolated).
+    Clamped to the table's level_fl bounds, no extrapolation; broadcasts over level_fl."""
+    key = ("decel_to_mach1", True, float(speed_kt), temp_band)
+    if key not in _DESCENT_INTERPS:
+        raise ValueError(f"decel_to_mach1: no data for speed_kt={speed_kt}, temp_band={temp_band}")
+
+    group = _DESCENT_INTERPS[key]
+    level_fl = np.clip(np.asarray(level_fl, float), group["level_fl_min"], group["level_fl_max"])
+    original_shape = level_fl.shape
+    level_fl_flat = level_fl.ravel()
+
+    result = {}
+    for col in ("fuel_t", "time_min", "dist_zero_wind_nm"):
+        result[col] = group[col](level_fl_flat).reshape(original_shape)
+    result["decel_end_fl"] = group["decel_end_fl"]
+    result["level_correction_nm_per_2000ft"] = group["level_correction_nm_per_2000ft"]
+    return result
+
+
+def descent_to_1500ft(level_fl, speed_kt, temp_band):
+    """(fuel_t, time_min, dist_zero_wind_nm) from conc_descent.csv for subsonic
+    descent from a level-off altitude (from_supersonic_cruise=False), linear
+    interpolation over level_fl for the given speed_kt and temp_band (one of
+    "above_isa_minus_10" or "isa_minus_10_and_below"). Valid level_fl 30-550.
+    Clamped to the table's level_fl bounds, no extrapolation; broadcasts over level_fl."""
+    key = ("descent_to_1500ft", False, float(speed_kt), temp_band)
+    if key not in _DESCENT_INTERPS:
+        raise ValueError(f"descent_to_1500ft: no data for speed_kt={speed_kt}, temp_band={temp_band}")
+
+    group = _DESCENT_INTERPS[key]
+    level_fl = np.clip(np.asarray(level_fl, float), group["level_fl_min"], group["level_fl_max"])
+    original_shape = level_fl.shape
+    level_fl_flat = level_fl.ravel()
+
+    result = {}
+    for col in ("fuel_t", "time_min", "dist_zero_wind_nm"):
+        result[col] = group[col](level_fl_flat).reshape(original_shape)
+    return result
+
+
+def descent_direct_from_cruise(level_fl, speed_kt, temp_band):
+    """(fuel_t, time_min, dist_zero_wind_nm) from conc_descent.csv for combined
+    decel-AND-descent directly from cruise (from_supersonic_cruise=True), linear
+    interpolation over level_fl for the given speed_kt and temp_band (one of
+    "above_isa_minus_10" or "isa_minus_10_and_below"). Valid level_fl 470-600.
+    Only 8 rows per group.
+
+    WARNING: This is an ALTERNATIVE to decel_to_mach1 + descent_to_1500ft,
+    never a sequential addition -- summing them double-counts the deceleration."""
+    key = ("descent_to_1500ft", True, float(speed_kt), temp_band)
+    if key not in _DESCENT_INTERPS:
+        raise ValueError(f"descent_direct_from_cruise: no data for speed_kt={speed_kt}, temp_band={temp_band}")
+
+    group = _DESCENT_INTERPS[key]
+    level_fl = np.clip(np.asarray(level_fl, float), group["level_fl_min"], group["level_fl_max"])
+    original_shape = level_fl.shape
+    level_fl_flat = level_fl.ravel()
+
+    result = {}
+    for col in ("fuel_t", "time_min", "dist_zero_wind_nm"):
+        result[col] = group[col](level_fl_flat).reshape(original_shape)
+    return result
+
+
+def dist_with_wind(dist_zero_wind_nm, time_min, wind_kt):
+    """Ground distance (nm) from zero-wind distance, time, and along-track wind
+    component. wind_kt is positive for tailwind. Verified against all 582
+    printed endpoints to within 1 nm."""
+    return dist_zero_wind_nm + wind_kt * time_min / 60.0

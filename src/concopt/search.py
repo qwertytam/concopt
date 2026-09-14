@@ -9,13 +9,14 @@ candidates at once and collapses the result to means, report.run_report
 calls it for a single candidate and keeps every per-leg quantity.
 """
 import datetime as dt
+import functools
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
-from concopt import fuel, limits, runways
+from concopt import arrival, fuel, limits, runways
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, pressure_to_fl, speed_of_sound
 from concopt.data.conc_data import CLIMB_BANDS, climb_to, fuel_total_kgh_table
 from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
@@ -53,11 +54,15 @@ CLIMB_BAND_SAMPLE_NM = 300.0
 # every target is bracketed -- see the assert in march_legs.
 TARGET_FL = np.arange(450.0, 601.0, 10.0)
 
-# Deceleration+descent time from the decel point (BARIX) to touchdown. Used
-# here to estimate touchdown clock time, for sampling EGLL's arrival surface
-# wind (runways.py); report.py imports this same constant for its
-# brakes-release-to-touchdown profile totals, so `concopt search` and
-# `concopt report` agree on this segment. CLI flag: --decel-descent-min.
+# LEGACY -- no longer this module's own default. arrival.arrival() (below)
+# replaced this flat 35-minute placeholder for search.py/report.py's own
+# brakes-release-to-touchdown estimate; the constant is kept only because
+# inflight.py's flight recorder still compares a measured decel-to-touchdown
+# time against it (compare_to_report) and that wiring is a separate, later
+# task. --decel-descent-min still exists on the CLI, but now as an explicit
+# override that forces arrival.flat_arrival's flat (time, fuel) pair instead
+# of the real per-day model, for comparing old and new numbers -- it is no
+# longer given a default value, see cli.py.
 DECEL_DESCENT_S = 35.0 * 60.0
 
 
@@ -411,11 +416,145 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
     return legs_out, weight_per_leg, climb
 
 
+def _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs):
+    """A wind_at_fl_builder for arrival.arrival(): a function of accumulated_s
+    (n_cand, seconds since brake release, i.e. march_legs' own elapsed time
+    at the decel point) returning the wind_at_fl callable arrival() needs.
+
+    Sampled at a single representative arrival leg -- the one nearest the
+    midpoint of the post-BARIX span, positionally indexed (subsonic_data's
+    leg axis is arrival_legs itself, era5.reduce_to_legs run against exactly
+    that list -- see run_search) -- the same single-point proxy convention
+    _climb_conditions uses for the climb, at BARIX clock time
+    (dep_i8 + accumulated_s); arrival.py's own segment times determine how
+    much later touchdown actually is, so this is a coarse snapshot, not a
+    per-segment march, consistent with the climb model's own accuracy.
+
+    Vertical interpolation is linear in log(pressure) between the 7 stored
+    subsonic levels (175-500 hPa, FL183-FL414 -- era5.SUBSONIC_LEVELS),
+    clamped to that span (no extrapolation, same convention as every other
+    table lookup here): the three decel_end_fl (383/350/312) all fall
+    inside it, but the descent segment's own mid-level can reach down to
+    FL15, so slower schedules' descent-segment wind/temp is clamped to
+    FL183's own value rather than a genuine reading that low."""
+    mid_local_idx = len(arrival_legs) // 2
+    mid_leg = arrival_legs[mid_local_idx]
+    track_rad = np.radians(mid_leg.track_deg)
+
+    times_i8 = subsonic_data["time"].astype("datetime64[ns]").astype("int64")
+
+    u_col = subsonic_data["u"][:, :, mid_local_idx]  # (n_time, n_level)
+    v_col = subsonic_data["v"][:, :, mid_local_idx]
+    t_col = subsonic_data["t"][:, :, mid_local_idx]
+
+    src_p_hpa = subsonic_data["level"].astype(float)
+    order = np.argsort(src_p_hpa)  # ascending pressure -- descending FL
+    src_log_p = np.log(src_p_hpa[order] * 100.0)
+    fl_min = float(pressure_to_fl(src_p_hpa[order][-1] * 100.0))
+    fl_max = float(pressure_to_fl(src_p_hpa[order][0] * 100.0))
+
+    def wind_at_fl_builder(accumulated_s):
+        at_i8 = dep_i8 + (np.asarray(accumulated_s, dtype=float) * 1e9).astype("int64")
+
+        idx1 = np.searchsorted(times_i8, at_i8, side="right") - 1
+        idx1 = np.clip(idx1, 0, len(times_i8) - 2)
+        idx2 = idx1 + 1
+        t0, t1 = times_i8[idx1], times_i8[idx2]
+        frac = np.clip((at_i8 - t0) / (t1 - t0), 0.0, 1.0)[:, None]
+
+        u_at = u_col[idx1] + frac * (u_col[idx2] - u_col[idx1])  # (n_cand, n_level)
+        v_at = v_col[idx1] + frac * (v_col[idx2] - v_col[idx1])
+        t_at = t_col[idx1] + frac * (t_col[idx2] - t_col[idx1])
+
+        along_asc = (u_at * np.sin(track_rad) + v_at * np.cos(track_rad))[:, order]
+        t_asc = t_at[:, order]
+
+        def wind_at_fl(level_fl):
+            level_fl = np.clip(np.asarray(level_fl, dtype=float), fl_min, fl_max)
+            target_log_p = np.log(fl_to_pressure(level_fl))
+
+            v_idx0 = np.searchsorted(src_log_p, target_log_p, side="right") - 1
+            v_idx0 = np.clip(v_idx0, 0, len(src_log_p) - 2)
+            v_idx1 = v_idx0 + 1
+            v_frac = ((target_log_p - src_log_p[v_idx0])
+                      / (src_log_p[v_idx1] - src_log_p[v_idx0]))
+
+            def _at(col):
+                lo = np.take_along_axis(col, v_idx0[:, None], axis=1).squeeze(1)
+                hi = np.take_along_axis(col, v_idx1[:, None], axis=1).squeeze(1)
+                return lo + v_frac * (hi - lo)
+
+            return {"wind_kt": _at(along_asc) / KT_TO_MS, "temp_k": _at(t_asc)}
+
+        return wind_at_fl
+
+    return wind_at_fl_builder
+
+
+def resolve_tow_and_arrival(
+    cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
+    tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
+    decel_descent_min=None, cruise_mach=limits.CRUISE_MACH,
+):
+    """Shared by run_search/run_report/verify.run_verify: solves TOW (fixed
+    point on zfw_t, or the flat tow_t override) and the arrival segment
+    together -- arrival fuel has to be inside the fixed point (see fuel.py),
+    so the two can't be solved separately.
+
+    decel_descent_min given forces arrival.flat_arrival -- the pre-B3 flat
+    (DECEL_DESCENT_S, DESCENT_FUEL_T) pair -- instead of the real per-day
+    arrival.arrival() model, for comparing old and new numbers; subsonic_data
+    is unused in that case and may be None. decel_descent_min None (the
+    default) requires subsonic_data (era5.reduce_to_legs run against
+    arrival_legs, the post-BARIX legs -- see run_search).
+
+    Returns (tow_t, n_iterations, fuel_flags, legs_out, weight_per_leg,
+    climb, arrival_out) -- n_iterations is None for a plain --tow run, same
+    convention as fuel.fuel_plan."""
+    n_cand = len(dep_i8)
+
+    if decel_descent_min is not None:
+        arrival_fn = functools.partial(arrival.flat_arrival,
+                                        decel_descent_min=decel_descent_min)
+        wind_fn_builder = lambda accumulated_s: None  # noqa: E731 -- never called by flat_arrival
+    else:
+        if subsonic_data is None:
+            raise ValueError(
+                "subsonic_data (--subsonic-npz) is required to compute the real "
+                "arrival model; pass --decel-descent-min to force the flat legacy "
+                "arrival instead"
+            )
+        wind_fn_builder = _build_arrival_wind_fn(subsonic_data, dep_i8, arrival_legs)
+        arrival_fn = arrival.arrival
+
+    if tow_t is None and zfw_t is None:
+        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
+
+    if tow_t is None:
+        zfw_arr = np.full(n_cand, zfw_t, dtype=float)
+        tow_out, n_iterations, fuel_flags, legs_out, weight_per_leg, climb, arrival_out = (
+            fuel.fixed_point_fuel_iteration(
+                cc_legs, cc_idx, data, dep_i8, zfw_arr, arrival_nm, wind_fn_builder,
+                min_landing_fuel_t=min_landing_fuel_t,
+                march_legs_fn=march_legs, arrival_fn=arrival_fn, cruise_mach=cruise_mach,
+            )
+        )
+    else:
+        legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
+                                                        tow_t, cruise_mach)
+        arrival_out = fuel._arrival_from_march(legs_out, arrival_nm, wind_fn_builder, arrival_fn)
+        tow_out = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,)).copy()
+        n_iterations = None
+        fuel_flags = np.array([""] * n_cand, dtype=object)
+
+    return tow_out, n_iterations, fuel_flags, legs_out, weight_per_leg, climb, arrival_out
+
+
 def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
                 top=50, out_path="results.csv", out_all_path=None,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-                decel_descent_s=DECEL_DESCENT_S,
+                subsonic_npz_path=None, decel_descent_min=None,
                 cruise_mach=limits.CRUISE_MACH):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
@@ -437,46 +576,49 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     rounded/formatted display strings) there -- for nb/day-search-results.ipynb,
     which needs the raw distribution rather than just the top rows.
 
-    zfw_t (tonnes) drives fuel.fixed_point_fuel_iteration across the WHOLE
-    candidate vector at once, same convention as report.run_report's single-
-    candidate use of the same fixed point: TOW is solved per candidate rather
-    than assumed, so a warm/heavy day's own extra climb fuel feeds back into
-    its own extra weight rather than every candidate being flown at one
-    shared guess. tow_t overrides zfw_t and skips the solve entirely,
-    applying that one weight to every candidate -- for "what if the whole
-    fleet loads X" or for matching an old run. Neither given falls back to
-    the flat DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was
-    wired in. The fixed point's own boundary/convergence flags (fuel.py's
+    zfw_t (tonnes) drives fuel.fixed_point_fuel_iteration (via
+    resolve_tow_and_arrival) across the WHOLE candidate vector at once, same
+    convention as report.run_report's single-candidate use of the same
+    fixed point: TOW is solved per candidate rather than assumed, so a
+    warm/heavy day's own extra climb AND arrival fuel feeds back into its
+    own extra weight rather than every candidate being flown at one shared
+    guess. tow_t overrides zfw_t and skips the solve entirely, applying that
+    one weight to every candidate -- for "what if the whole fleet loads X"
+    or for matching an old run. Neither given falls back to the flat
+    DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was wired in.
+    The fixed point's own boundary/convergence flags (fuel.py's
     tow_above_mtow_*/tow_below_climb_table_*/fuel_not_converged) join the
-    jfk/lhr/climb flags already in the output's flags column."""
+    jfk/lhr/climb/arrival flags already in the output's flags column.
+
+    subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs,
+    the route's complement of climb_cruise_segment -- see
+    _build_arrival_wind_fn) drives arrival.arrival()'s per-day decel/level/
+    descent model, replacing the old flat DECEL_DESCENT_S/DESCENT_FUEL_T
+    placeholder; required unless decel_descent_min forces the flat legacy
+    arrival instead, for comparing old and new numbers directly."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
     cc_idx = np.flatnonzero(mask)
     cc_legs = [legs[i] for i in cc_idx]
+    arrival_idx = np.flatnonzero(~mask)
+    arrival_legs = [legs[i] for i in arrival_idx]
+    arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
 
     data = load_legs_npz(npz_path)
     surface_data = load_surface_npz(surface_npz_path)
+    subsonic_data = load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None
     candidates = candidate_departures()
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
-    if tow_t is None and zfw_t is None:
-        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
-
-    if tow_t is None:
-        zfw_arr = np.full(n_cand, zfw_t, dtype=float)
-        tow_t, _n_iterations, fuel_flags, legs_out, _weight_per_leg, climb = (
-            fuel.fixed_point_fuel_iteration(
-                cc_legs, cc_idx, data, dep_i8, zfw_arr,
-                min_landing_fuel_t=min_landing_fuel_t,
-                march_legs_fn=march_legs, cruise_mach=cruise_mach,
-            )
+    tow_t, _n_iterations, fuel_flags, legs_out, _weight_per_leg, climb, arrival_out = (
+        resolve_tow_and_arrival(
+            cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
+            tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
+            decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
         )
-    else:
-        legs_out, _weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
-                                                         tow_t, cruise_mach)
-        fuel_flags = np.array([""] * n_cand, dtype=object)
+    )
     chosen_fl = legs_out["chosen_fl"]
     wind_kt = legs_out["wind_kt"]
     isa_dev_k = legs_out["isa_dev_k"]
@@ -493,14 +635,18 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     candidates["mean_wind_kt"] = (wind_kt * eff_dist_nm).sum(axis=1) / cruise_weight
     candidates["mean_isa_dev_k"] = (isa_dev_k * eff_dist_nm).sum(axis=1) / cruise_weight
     candidates["weight_at_barix_t"] = legs_out["weight_at_barix"]
+    candidates["arrival_time_s"] = arrival_out["time_min"] * 60.0
+    candidates["arrival_fuel_t"] = arrival_out["fuel_t"]
 
     # Touchdown clock time = departure + accumulated_s (already climb +
-    # cruise, see march_legs) + decel_descent_s. NaN accumulated_s (a
-    # candidate the march couldn't complete) produces a garbage
-    # touchdown_i8 here -- harmless, since that row is dropped by the
-    # dropna below same as everywhere else.
+    # cruise, see march_legs) + arrival_time_s (arrival.arrival()'s own
+    # per-candidate decel+level+descent+approach time, or the flat
+    # decel_descent_min override -- see resolve_tow_and_arrival). NaN
+    # accumulated_s (a candidate the march couldn't complete) produces a
+    # garbage touchdown_i8 here -- harmless, since that row is dropped by
+    # the dropna below same as everywhere else.
     touchdown_i8 = dep_i8 + (
-        (legs_out["accumulated_s"] + decel_descent_s) * 1e9
+        (legs_out["accumulated_s"] + candidates["arrival_time_s"].to_numpy()) * 1e9
     ).astype("int64")
 
     jfk = runways.runway_screen(surface_data, "KJFK", dep_i8)
@@ -520,11 +666,12 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
             (f"lhr_{lhr_flag}" if lhr_flag else ""),
             ("climb_warm_clamped" if warm else ""),
             fuel_flag,  # already self-describing (fuel.py's own flag strings), no prefix needed
+            arrival_flag,  # already self-describing (arrival.py's own flag strings)
         ) if part)
-        for jfk_flag, lhr_flag, warm, fuel_flag in
-        zip(jfk["flag"], lhr["flag"], climb["warm_flag"], fuel_flags)
+        for jfk_flag, lhr_flag, warm, fuel_flag, arrival_flag in
+        zip(jfk["flag"], lhr["flag"], climb["warm_flag"], fuel_flags, arrival_out["flags"])
     ]
-    candidates["total_time_s"] = (legs_out["accumulated_s"] + decel_descent_s
+    candidates["total_time_s"] = (legs_out["accumulated_s"] + candidates["arrival_time_s"]
                                     + jfk["penalty_s"] + lhr["penalty_s"])
 
     # Same filter the output table gets, captured here so the sanity checks
@@ -606,14 +753,16 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     best_ss_row = candidates.loc[best_ss_idx]
     same_day = bool(best_total_idx == best_ss_idx)
     penalty_min = (best_total_row["jfk_penalty_s"] + best_total_row["lhr_penalty_s"]) / 60.0
-    expect_min = decel_descent_s / 60.0 + penalty_min
+    arrival_min = best_total_row["arrival_time_s"] / 60.0
+    expect_min = arrival_min + penalty_min
     diff_min = (best_total_row["total_time_s"] - best_ss_row["supersonic_time_s"]) / 60.0
     print(f"8. Best total time {_format_hmm(best_total_row['total_time_s'])} vs best "
           f"supersonic time {_format_hmm(best_ss_row['supersonic_time_s'])} "
           f"({'same day' if same_day else 'DIFFERENT day -- penalty reshuffled the ranking'}): "
-          f"diff {diff_min:.1f} min (expect decel {decel_descent_s / 60.0:.0f} + penalties "
+          f"diff {diff_min:.1f} min (expect arrival {arrival_min:.1f} + penalties "
           f"{penalty_min:.0f} = {expect_min:.1f} min when same day -- supersonic_time_s is "
-          f"brake-release-to-{decel_id}, climb included, so no separate accel term here any more)")
+          f"brake-release-to-{decel_id}, climb included, so no separate accel term here any more; "
+          f"arrival is now this candidate's own model output, not a flat constant)")
 
     out_path = Path(out_path)
     display.head(top).to_csv(out_path, index=False)

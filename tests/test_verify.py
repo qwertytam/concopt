@@ -11,8 +11,11 @@ import pytest
 
 from concopt import verify
 from concopt.atmos import isa
+from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import DEFAULT_TOW_T, TARGET_FL
+from concopt.search import (DEFAULT_TOW_T, TARGET_FL, local_to_departure_utc,
+                             resolve_tow_and_arrival)
+from tests.test_report import _still_air_npz, _still_air_subsonic_npz
 from tests.test_route import SAMPLE_PLN
 
 
@@ -254,3 +257,71 @@ def test_run_verify_snapshot_guard_end_to_end(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="wasn't reloaded"):
         verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 1, 6), 11,
                            n_points=2, tow_t=DEFAULT_TOW_T, snapshot_cache_path=cache_path)
+
+
+def test_run_verify_zfw_without_subsonic_npz_raises(monkeypatch, tmp_path):
+    """--zfw needs the SAME fixed point search --zfw uses, which needs
+    subsonic wind data -- a clear failure, not a silently-wrong TOW."""
+    monkeypatch.setattr(verify, "get_atmosphere_np", _ConstantAtmosphere())
+
+    npz_path = _still_air_npz(tmp_path)
+    cache_path = tmp_path / "cache.json"
+
+    with pytest.raises(ValueError, match="subsonic_npz_path"):
+        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+                           n_points=2, zfw_t=92.0, snapshot_cache_path=cache_path)
+
+
+def test_verify_zfw_produces_same_tow_as_search_zfw(monkeypatch, tmp_path):
+    """verify --zfw must run the SAME fixed point search --zfw does (via
+    the shared search.resolve_tow_and_arrival), so an Active Sky check is
+    flown at the weight that day was actually found under -- the whole
+    point of B3's part 4. Spies on verify's own call to
+    resolve_tow_and_arrival to read the TOW it actually used internally,
+    then reproduces search's own call independently and checks they agree."""
+    real_resolve = verify.resolve_tow_and_arrival
+    captured = {}
+
+    def _spy(*args, **kwargs):
+        result = real_resolve(*args, **kwargs)
+        captured["tow_t"] = result[0]
+        return result
+
+    monkeypatch.setattr(verify, "resolve_tow_and_arrival", _spy)
+    monkeypatch.setattr(verify, "get_atmosphere_np", _ConstantAtmosphere())
+
+    npz_path = _still_air_npz(tmp_path)
+    subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
+    cache_path = tmp_path / "cache.json"
+
+    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+                       n_points=2, zfw_t=92.0, min_landing_fuel_t=10.0,
+                       subsonic_npz_path=subsonic_npz_path,
+                       snapshot_cache_path=cache_path)
+
+    verify_tow = captured["tow_t"]
+    assert verify_tow is not None
+
+    # Independently reproduce search's own fixed point for the same day/data
+    # (not read back from verify's spy -- a fresh call, same construction
+    # run_search itself does).
+    plan = parse_pln(SAMPLE_PLN)
+    legs = build_legs(plan["waypoints"])
+    mask = climb_cruise_segment(legs)
+    cc_idx = np.flatnonzero(mask)
+    cc_legs = [legs[i] for i in cc_idx]
+    arrival_idx = np.flatnonzero(~mask)
+    arrival_legs = [legs[i] for i in arrival_idx]
+    arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
+
+    data = load_legs_npz(npz_path)
+    subsonic_data = load_legs_npz(subsonic_npz_path)
+    departure_utc = local_to_departure_utc(dt.date(2016, 2, 12), 14)
+    dep_i8 = np.array([pd.Timestamp(departure_utc).value], dtype="int64")
+
+    search_tow, *_ = resolve_tow_and_arrival(
+        cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
+        zfw_t=92.0, min_landing_fuel_t=10.0,
+    )
+
+    assert np.allclose(verify_tow, search_tow)

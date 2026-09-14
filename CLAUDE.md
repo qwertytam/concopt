@@ -55,6 +55,21 @@ for its own sake, no defensive error handling.
   single grid cell inside either ~1°×1° box) `u10`/`v10`/`i10fg` time
   series per airport, keyed `<airport>_time`/`_u10`/`_v10`/`_i10fg`. Feeds
   `runways.py`.
+
+  `download_subsonic`/`download_all_subsonic` fetch the arrival-only
+  subsonic cruise segment (FL183-FL414, `SUBSONIC_LEVELS`, 175-500 hPa)
+  that `arrival.py`'s wind lookup needs, two files per month
+  (`era5_subsonic_YYYYMM_0.nc`/`_1.nc`, `SUBSONIC_LEVEL_GROUPS`) since CDS
+  caps this dataset at 4 pressure levels per request regardless of area or
+  month count (confirmed by live bisection, 2026-09 — see the comment on
+  `SUBSONIC_LEVEL_GROUPS`). `reduce_to_legs` needs no changes to consume
+  these — confirmed by live trial, 2026-09, against synthetic files shaped
+  like a multi-month × 2-group download: `open_mfdataset(combine="by_coords")`
+  merges cleanly along BOTH the time and pressure_level axes into one
+  dataset, no NaNs, no error. Pass every `era5_subsonic_*.nc` path (both
+  groups, every month) and the *post-BARIX* legs (the complement of
+  `route.climb_cruise_segment`'s mask) to `reduce_to_legs` to build the
+  `--subsonic-npz` `search`/`report`/`verify --zfw` take.
 - `search.py` — the day/time scan (`concopt search`). Candidates are every
   date from `era5.ARCHIVE_START` to today at 08:00-14:00 America/New_York
   (7/day), built tz-aware with `zoneinfo` and converted to UTC so DST
@@ -124,6 +139,56 @@ for its own sake, no defensive error handling.
   hour/tow filled in from that row) — for working through a shortlist by
   hand (load the date in Active Sky, paste the command, repeat) without
   re-typing date/hour/tow each time.
+
+  `resolve_tow_and_arrival` (shared by `run_search`, `report.run_report`,
+  and `verify.run_verify` — see those below) is the one place TOW-solving
+  and the arrival segment (BARIX → touchdown, `arrival.py`) are wired
+  together: arrival fuel has to be *inside* `fuel.fixed_point_fuel_iteration`'s
+  loop, not added after it returns, because the whole point of `arrival.py`
+  is that its ~4-8 t (vs the old flat `DESCENT_FUEL_T` 2.0 t placeholder)
+  feeds back into TOW and therefore into climb time. `_build_arrival_wind_fn`
+  builds the `wind_at_fl` callable `arrival.arrival()` needs from a
+  *subsonic* ERA5 `.npz` (`--subsonic-npz`, `era5.reduce_to_legs` run
+  against the post-BARIX legs — the complement of
+  `route.climb_cruise_segment`'s mask, i.e. `~mask`) — sampled at a single
+  representative arrival leg and at BARIX clock time, the same coarse
+  single-point-proxy convention `_climb_conditions` uses for the climb, not
+  a per-segment march. `--decel-descent-min` no longer has a default value:
+  given, it forces `arrival.flat_arrival` (the exact pre-arrival.py flat
+  `DECEL_DESCENT_S`/`DESCENT_FUEL_T` pair) instead of the real per-day
+  model, ignoring `--subsonic-npz` entirely — for comparing old vs new
+  numbers directly. Neither given (the default) requires `--subsonic-npz`;
+  omitting both raises rather than silently falling back to something flat.
+- `arrival.py` — the arrival segment, BARIX → touchdown, replacing the old
+  flat `DECEL_DESCENT_S`/`DESCENT_FUEL_T` placeholder search/report used to
+  carry. Four segments over a *route-provided* `arrival_nm` (summed
+  post-decel leg distance, not a hardcoded constant — search/report compute
+  it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
+  (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
+  distance is left over, descent to 1,500 ft
+  (`data.conc_data.descent_to_1500ft`), then a fixed approach allowance
+  (`APPROACH_NM`/`APPROACH_MIN`/`APPROACH_FUEL_T`). `descent_direct_from_cruise`
+  is deliberately unused — it reaches 1,500 ft in ~194 nm and this route has
+  ~307, which would leave ~113 nm unaccounted for. All three descent speed
+  schedules (325/350/380 kt) are evaluated as whole-array table lookups;
+  `speed="auto"` (the default) picks the time-minimizing one per candidate,
+  while `by_schedule` exposes the full per-schedule breakdown for a future
+  caller-side re-optimization on *total* time once the fixed-point fuel
+  feedback makes arrival-time-optimal diverge from total-time-optimal (the
+  380 kt schedule buys ~1.6 min for ~1.4 t, which costs climb time
+  differently on a cold day than a warm one). Temperature band selection
+  uses only `conc_descent.csv`'s two bands (`above_isa_minus_10`/
+  `isa_minus_10_and_below` — not the climb table's three), from the ISA
+  deviation at cruise level. Wind/temperature arrive through a caller-
+  supplied `wind_at_fl` callable/dict — this module never reads era5/`.npz`
+  files directly, so the ERA5 wiring stays entirely in `search.py`
+  (`_build_arrival_wind_fn`). `SUBSONIC_SR_NM_PER_T` (24.0, the level
+  segment's specific range) is a flagged placeholder — no subsonic cruise
+  table exists — sizing a ~4 t term to roughly ±0.4 t; the fuel-plan and
+  Arrival-block footnotes in `report.py` say so. `flat_arrival` is the
+  `--decel-descent-min` legacy override: same call signature as `arrival()`
+  so `fuel.py`'s fixed point can hold either interchangeably, but returns
+  the flat pre-B3 (time, fuel) pair with `schedule_kt=0` as a sentinel.
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -141,18 +206,26 @@ for its own sake, no defensive error handling.
   buffer. Picks the greatest-headwind runway among those that pass; if
   none pass, the day is flagged `unflyable` at that airport but still
   reports the greatest-headwind runway and a computed time — never
-  dropped. `search.DECEL_DESCENT_S` (35 min default; `report.py` imports
-  the same constant, so the two CLIs agree on this segment) is only used
-  here, to estimate touchdown clock time for sampling EGLL's arrival wind.
+  dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
+  each candidate's own `arrival.arrival()` output (`arrival_time_s`,
+  `search.run_search`), not a flat constant any more — `search.DECEL_DESCENT_S`
+  (35 min) survives only as the legacy value `--decel-descent-min` forces
+  and the constant `inflight.py`'s flight recorder still compares measured
+  time against (that wiring is a separate, later task).
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers
-  every point queried below, no flying required). `--tow` should match the
-  `--tow` the day was shortlisted under in `concopt search`, so the same
-  climb model (`search._climb_profile`) puts both sources on the same
-  top-of-climb weight/time; legs still inside the climb are excluded from
-  the comparison (Active Sky's FL450-FL600 `TARGET_FL` grid doesn't apply
-  to climb altitude). Takes `--points` (default 12) evenly spaced cruise
+  every point queried below, no flying required). `--zfw` (tonnes) runs the
+  SAME fixed point `search`/`report` use (`search.resolve_tow_and_arrival`,
+  requires `--subsonic-npz` too — arrival fuel needs the same post-decel
+  wind source search used, or the two TOWs won't agree), so the
+  verification is flown at the weight that day was actually found under —
+  an Active Sky check flown at the wrong weight undercuts the whole
+  comparison. `--tow` overrides `--zfw` and skips the fixed point (and
+  arrival/subsonic data) entirely, same "what if I actually load X" escape
+  hatch `search`/`report` have; legs still inside the climb are excluded
+  from the comparison (Active Sky's FL450-FL600 `TARGET_FL` grid doesn't
+  apply to climb altitude). Takes `--points` (default 12) evenly spaced cruise
   legs, including the first and last; at each one queries Active Sky live
   for the FL450-FL600 `TARGET_FL` grid and compares against the ERA5 values
   `search.march_legs` would have used at that same point and clock time
@@ -223,7 +296,9 @@ for its own sake, no defensive error handling.
   -> accel point vs that report's own predicted elapsed time there
   (`search.py`'s TOW-based climb model makes this vary by day/TOW, so it's
   read back from the report rather than a fixed constant), measured decel
-  point -> touchdown vs `DECEL_DESCENT_S` (35 min), and measured vs
+  point -> touchdown vs `DECEL_DESCENT_S` (35 min — still a flat constant
+  here specifically; wiring this comparison to `report`'s own per-day
+  `arrival.arrival()` output is a separate, later task), and measured vs
   predicted supersonic segment time. `_level_table`/`_recommendation_line`/
   `compare_to_report` are pure and unit-tested; `run_inflight` itself needs
   a live sim and isn't (same convention as `search.run_search`/
@@ -298,12 +373,19 @@ for its own sake, no defensive error handling.
   `search.py`'s `_climb_profile` applies the wind correction. Top of climb
   ranges 210-1047 nm depending on TOW/temperature — see `search.py`'s
   climb-model paragraph above.
-
-## Data present but not yet wired in
-- `src/concopt/data/conc_descent.csv` — decel-to-Mach1 + descent-to-1500ft
-  performance table (speed/temp-band/level -> fuel, time, distance), for a
-  proper per-leg decel/descent model. Phase 4b, never built; nothing
-  imports this file yet.
+- Descent/arrival table: `data/conc_descent.csv` (`conc_data.decel_to_mach1`/
+  `descent_to_1500ft`/`descent_direct_from_cruise`/`dist_with_wind`),
+  wired into `arrival.py` (see above) — speed schedule (325/350/380 kt) ×
+  temp band (2 discrete bands, `above_isa_minus_10`/`isa_minus_10_and_below`
+  — NOT the climb table's three) × level_fl, linearly interpolated within
+  each `(table, from_supersonic_cruise, speed_kt, temp_band)` group — 291
+  rows, clamped to each group's own level_fl bounds (never a shared global
+  bound — an early bug clamped to the wrong group's range). `decel_end_fl`/
+  `level_correction_nm_per_2000ft` are scalar constants per group, not
+  interpolated. `dist_with_wind` applies the same
+  `ground_nm = zero_wind_nm + wind_kt * time_min / 60` relation the climb
+  table's wind correction uses, verified against all 582 printed table
+  endpoints to within 1 nm.
 
 ## Known non-problems — do not "fix" these
 - The CSVs have a UTF-8 BOM. Current pandas and numpy strip it. Leave it.

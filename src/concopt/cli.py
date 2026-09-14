@@ -10,8 +10,7 @@ from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
 from concopt.limits import CRUISE_MACH
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import (DECEL_DESCENT_S, DEFAULT_TOW_T, run_search,
-                             run_shortlist)
+from concopt.search import DEFAULT_TOW_T, run_search, run_shortlist
 from concopt.verify import DEFAULT_N_POINTS, run_verify
 
 
@@ -50,7 +49,8 @@ def _cmd_search(args):
                top=args.top, out_path=args.out, out_all_path=args.out_all,
                tow_t=args.tow, zfw_t=args.zfw,
                min_landing_fuel_t=args.min_landing_fuel,
-               decel_descent_s=args.decel_descent_min * 60.0,
+               subsonic_npz_path=args.subsonic_npz,
+               decel_descent_min=args.decel_descent_min,
                cruise_mach=args.cruise_mach)
 
 
@@ -66,7 +66,8 @@ def _cmd_report(args):
                decel_id=args.decel, out_path=args.out,
                tow_t=args.tow, zfw_t=args.zfw,
                min_landing_fuel_t=args.min_landing_fuel,
-               decel_descent_s=args.decel_descent_min * 60.0,
+               subsonic_npz_path=args.subsonic_npz,
+               decel_descent_min=args.decel_descent_min,
                cruise_mach=args.cruise_mach)
 
 
@@ -74,7 +75,9 @@ def _cmd_verify(args):
     run_verify(args.pln, args.npz, dt.date.fromisoformat(args.date), args.hour,
                decel_id=args.decel, n_points=args.points,
                host=args.host, port=args.port,
-               tow_t=args.tow,
+               tow_t=args.tow, zfw_t=args.zfw,
+               min_landing_fuel_t=args.min_landing_fuel,
+               subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
                csv_path=args.csv)
 
@@ -135,10 +138,17 @@ def main(argv=None):
     search_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
                                 help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
                                      f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
-    search_parser.add_argument('--decel-descent-min', type=float,
-                                default=DECEL_DESCENT_S / 60.0,
-                                help='minutes from the decel point to touchdown, for estimating '
-                                     f'EGLL arrival wind time (default: {DECEL_DESCENT_S / 60.0:.0f})')
+    search_parser.add_argument('--subsonic-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'post-decel legs -- drives the real arrival.arrival() model '
+                                     '(decel/level/descent/approach); required unless '
+                                     '--decel-descent-min forces the flat legacy arrival instead')
+    search_parser.add_argument('--decel-descent-min', type=float, default=None,
+                                help='minutes from the decel point to touchdown -- forces a FLAT '
+                                     'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
+                                     '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
+                                     'new numbers (default: None, meaning compute the real per-day '
+                                     'arrival model)')
     search_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
@@ -165,10 +175,17 @@ def main(argv=None):
     report_parser.add_argument('--tow', type=float, default=None,
                                 help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
                                      'point entirely, for "what if I actually load X"')
-    report_parser.add_argument('--decel-descent-min', type=float,
-                                default=DECEL_DESCENT_S / 60.0,
-                                help='minutes from the decel point to touchdown, decel + descent '
-                                     f'(default: {DECEL_DESCENT_S / 60.0:.0f})')
+    report_parser.add_argument('--subsonic-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'post-decel legs -- drives the real arrival.arrival() model '
+                                     '(decel/level/descent/approach); required unless '
+                                     '--decel-descent-min forces the flat legacy arrival instead')
+    report_parser.add_argument('--decel-descent-min', type=float, default=None,
+                                help='minutes from the decel point to touchdown -- forces a FLAT '
+                                     'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
+                                     '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
+                                     'new numbers (default: None, meaning compute the real per-day '
+                                     'arrival model)')
     report_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
@@ -187,10 +204,24 @@ def main(argv=None):
                                      f'Active Sky at (default: {DEFAULT_N_POINTS})')
     verify_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
     verify_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
-    verify_parser.add_argument('--tow', type=float, default=DEFAULT_TOW_T,
-                                help='take-off weight, tonnes -- drives the brake-release-to-'
-                                     f'top-of-climb model (default: {DEFAULT_TOW_T:.0f}); should '
-                                     'match the search --tow of the day under test')
+    verify_parser.add_argument('--zfw', type=float, default=None,
+                                help='zero fuel weight, tonnes -- TOW is solved by the SAME fixed-'
+                                     'point iteration `concopt search`/`concopt report` use, so the '
+                                     'verification is flown at the weight that day was actually '
+                                     'found under; neither this nor --tow given falls back to a '
+                                     f'flat {DEFAULT_TOW_T:.0f} t TOW')
+    verify_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
+                                help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
+                                     f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
+    verify_parser.add_argument('--subsonic-npz', default=None,
+                                help='path to the .npz from era5.reduce_to_legs run against the '
+                                     'post-decel legs -- required with --zfw, so the fixed point\'s '
+                                     'arrival fuel matches the search run being verified')
+    verify_parser.add_argument('--tow', type=float, default=None,
+                                help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
+                                     'point entirely, for "what if I actually load X" (default: '
+                                     'None; neither this nor --zfw given falls back to a flat '
+                                     f'{DEFAULT_TOW_T:.0f} t TOW)')
     verify_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

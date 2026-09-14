@@ -42,13 +42,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from concopt import limits
+from concopt import fuel, limits
 from concopt.asky import get_atmosphere_np
 from concopt.atmos import KT_TO_MS
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import (DEFAULT_TOW_T, NM_TO_M, TARGET_FL, _format_hmm,
-                             local_to_departure_utc, march_legs)
+                             local_to_departure_utc, march_legs,
+                             resolve_tow_and_arrival)
 
 DEFAULT_N_POINTS = 12
 
@@ -169,16 +170,27 @@ def _mismatch_tas_cost_kt(as_idx, era5_idx, temp_k_as_grid, weight_t, cruise_mac
 
 def run_verify(pln_path, npz_path, local_date, local_hour,
                decel_id="BARIX", n_points=DEFAULT_N_POINTS, host="localhost", port=19285,
-               tow_t=DEFAULT_TOW_T,
+               tow_t=None, zfw_t=None,
+               min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
+               subsonic_npz_path=None,
                cruise_mach=limits.CRUISE_MACH,
                csv_path=None,
                snapshot_cache_path=SNAPSHOT_CACHE_PATH):
     """Compare Active Sky's live atmosphere against the ERA5 values the
     search used, at n_points evenly spaced cruise legs (climb-consumed legs
     excluded -- see march_legs' eff_dist_nm) for local_date/local_hour
-    (America/New_York). tow_t should match the --tow the day was found
-    under in `concopt search`, so the comparison uses the same top-of-climb
-    weight/time search did.
+    (America/New_York).
+
+    zfw_t (tonnes) runs the SAME fixed point `concopt search`/`concopt
+    report` use (search.resolve_tow_and_arrival) rather than a bare --tow
+    guess, so the day is verified at the weight it was actually found under
+    -- an Active Sky check flown at the wrong weight undercuts the whole
+    comparison. subsonic_npz_path is required with zfw_t: the fixed point's
+    arrival fuel needs the same post-decel wind source search used, or the
+    two TOWs won't agree. tow_t overrides zfw_t and skips the fixed point
+    entirely (no arrival/subsonic data needed at all, same as a plain
+    march_legs call always worked). Neither given falls back to the flat
+    DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was wired in.
 
     Every point is queried before anything is printed; the whole run is
     then fingerprinted and checked against snapshot_cache_path
@@ -202,8 +214,34 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
-    legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
-                                                   tow_t, cruise_mach)
+    if tow_t is None and zfw_t is None:
+        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
+
+    if tow_t is None:
+        # zfw_t given -- reproduce search's own fixed point exactly (arrival
+        # fuel included), so this TOW matches the one that day was found
+        # under. A bare march_legs call here would drift from search's TOW
+        # by the arrival fuel search now folds into its own fixed point.
+        if subsonic_npz_path is None:
+            raise ValueError(
+                "subsonic_npz_path (--subsonic-npz) is required with zfw_t (--zfw), so the "
+                "fixed point's arrival fuel matches the search run being verified"
+            )
+        subsonic_data = load_legs_npz(subsonic_npz_path)
+        arrival_idx = np.flatnonzero(~mask)
+        arrival_legs = [legs[i] for i in arrival_idx]
+        arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
+
+        tow_arr, _n_iterations, _fuel_flags, legs_out, weight_per_leg, climb, _arrival_out = (
+            resolve_tow_and_arrival(
+                cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
+                zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t, cruise_mach=cruise_mach,
+            )
+        )
+        tow_t = float(tow_arr[0])
+    else:
+        legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
+                                                       tow_t, cruise_mach)
 
     # Restrict to legs entirely past top of climb -- verify.py compares
     # against Active Sky's FL450-FL600 TARGET_FL grid, which doesn't apply

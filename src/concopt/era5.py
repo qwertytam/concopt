@@ -43,6 +43,14 @@ SUBSONIC_TIMES = UPPER_AIR_TIMES
 # the level cap -- the two are independent limits. SUBSONIC_LEVELS is
 # therefore split into two <=4-level groups, one CDS request per (month,
 # group) -- see download_subsonic.
+#
+# reduce_to_legs (below) needs no changes to consume these: confirmed by
+# live trial, 2026-09, against synthetic files shaped like a 2-month x
+# 2-group download (4 files, disjoint level sets, disjoint time ranges) --
+# xr.open_mfdataset(paths, combine="by_coords") merges cleanly along BOTH
+# the time and pressure_level axes into one (n_time, 7, lat, lon) dataset,
+# no NaNs, no error. Pass every era5_subsonic_*.nc path (both groups, every
+# month) to reduce_to_legs at once, same as the upper-air files.
 SUBSONIC_LEVEL_GROUPS = [SUBSONIC_LEVELS[:4], SUBSONIC_LEVELS[4:]]
 
 # Phase 4 (runways.py's crosswind/tailwind screen, and later the in-flight
