@@ -9,6 +9,8 @@ contract.
 """
 from unittest.mock import patch
 
+import pandas as pd
+
 from concopt.cli import main as cli_main
 
 
@@ -49,3 +51,38 @@ def test_verify_passes_zfw_and_subsonic_npz_through():
 
     assert mock_verify.call_args.kwargs["zfw_t"] == 92.0
     assert mock_verify.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
+
+
+def test_inflight_replay_speed_reaches_both_replay_sources_and_run_inflight(tmp_path):
+    """C3 regression: --replay-speed has to reach BOTH replay_sources (the
+    recording's own wall-clock -> flight-time mapping) AND run_inflight
+    (its elapsed-time/sleep scaling) with the SAME value -- passing it to
+    only one leaves the other at its default (1.0, real time), and the
+    mismatch doesn't raise, it just makes the loop run far longer than the
+    recording's own span and never reach touchdown (found live via this
+    file's own CLI smoke test, where exactly that mismatch happened)."""
+    recording_path = tmp_path / "recording.csv"
+    pd.DataFrame({"elapsed_s": [0.0, 10.0]}).to_csv(recording_path, index=False)
+
+    with patch("concopt.cli.replay_sources") as mock_replay_sources, \
+         patch("concopt.cli.run_inflight") as mock_run_inflight:
+        mock_replay_sources.return_value = ("state_source", "weather_source")
+        cli_main(["inflight", "--pln", "x.pln", "--replay", str(recording_path),
+                  "--replay-speed", "250"])
+
+    assert mock_replay_sources.call_args.kwargs["replay_speed"] == 250.0
+    assert mock_run_inflight.call_args.kwargs["replay_speed"] == 250.0
+    assert mock_run_inflight.call_args.kwargs["state_source"] == "state_source"
+    assert mock_run_inflight.call_args.kwargs["weather_source"] == "weather_source"
+
+
+def test_inflight_without_replay_leaves_sources_none():
+    """No --replay -> a real flight: state_source/weather_source must stay
+    None so run_inflight connects to SimConnect/Active Sky for real (see
+    run_inflight's own THE SEAM docstring)."""
+    with patch("concopt.cli.run_inflight") as mock_run_inflight:
+        cli_main(["inflight", "--pln", "x.pln"])
+
+    assert mock_run_inflight.call_args.kwargs["state_source"] is None
+    assert mock_run_inflight.call_args.kwargs["weather_source"] is None
+    assert mock_run_inflight.call_args.kwargs["replay_speed"] == 1.0

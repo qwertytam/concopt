@@ -4,10 +4,13 @@ phase 5, `inflight` is phase 6."""
 import argparse
 import datetime as dt
 
+import pandas as pd
+
 from concopt.fuel import MIN_LANDING_FUEL_T
 from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                                DEFAULT_LOOKAHEAD_NM, run_inflight)
 from concopt.limits import CRUISE_MACH
+from concopt.replay import replay_sources
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import DEFAULT_TOW_T, run_search, run_shortlist
@@ -90,12 +93,31 @@ def _cmd_shortlist(args):
 
 
 def _cmd_inflight(args):
+    # replay_speed MUST match the one passed to run_inflight below --
+    # replay_sources' own wall-clock -> flight-time mapping and
+    # run_inflight's elapsed-time/sleep scaling are two separate places
+    # doing the same scaling (see run_inflight's docstring); passing them
+    # different factors leaves the recording's replayed clock running at
+    # its default (real time) while run_inflight's own bookkeeping races
+    # ahead at args.replay_speed -- the mismatch never naturally resolves
+    # (the replayed "current row" barely advances while run_inflight keeps
+    # ticking), so the loop runs far longer than the recording's own span
+    # and never reaches touchdown. Found live via the C3 replay harness's
+    # own CLI smoke test (the exact bug: this call was missing
+    # replay_speed=args.replay_speed) -- in the air this would only bite a
+    # --replay session, never a real flight (replay_speed defaults to 1.0
+    # either way there), so it could not have caused a lost real recording.
+    state_source, weather_source = (
+        replay_sources(pd.read_csv(args.replay), replay_speed=args.replay_speed)
+        if args.replay is not None else (None, None))
     run_inflight(args.pln, interval_s=args.interval, lookahead_nm=args.lookahead_nm,
                  record_path=args.record, compare_path=args.compare,
                  accel_id=args.accel, decel_id=args.decel,
                  host=args.host, port=args.port, cruise_mach=args.cruise_mach,
                  gain_threshold_kt=args.gain_threshold_kt,
-                 simconnect_dll=args.simconnect_dll, live=not args.no_live)
+                 simconnect_dll=args.simconnect_dll, live=not args.no_live,
+                 state_source=state_source, weather_source=weather_source,
+                 replay_speed=args.replay_speed)
 
 
 def main(argv=None):
@@ -303,6 +325,13 @@ def main(argv=None):
                                        "(P3D v5's protocol version doesn't match python-SimConnect's "
                                        "bundled dll -- see inflight.py's docstring; a P3D add-on that "
                                        "talks SimConnect, e.g. FSLabs or Little Navmap, ships one)")
+    inflight_parser.add_argument('--replay', default=None,
+                                  help='replay a previously recorded flight (a --record CSV, the C2 '
+                                       'schema) instead of connecting to SimConnect/Active Sky -- turns '
+                                       'one real flight into a regression fixture; see concopt.replay')
+    inflight_parser.add_argument('--replay-speed', type=float, default=1.0,
+                                  help='with --replay, run faster than real time by this factor '
+                                       '(default: 1.0, real time; only meaningful with --replay)')
     inflight_parser.set_defaults(func=_cmd_inflight)
 
     args = parser.parse_args(argv)
