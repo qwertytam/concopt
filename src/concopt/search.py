@@ -781,6 +781,9 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     candidates = candidates.dropna(subset=["supersonic_time_s", "mean_fl"])
     candidates = candidates.sort_values("total_time_s", ascending=True).reset_index(drop=True)
 
+    # Add zfw_t to candidates so run_shortlist can read it from the CSV output
+    candidates["zfw_t"] = zfw_t if zfw_t is not None else None
+
     display = pd.DataFrame({
         "date": candidates["local_date"],
         "local_departure": candidates["local_hour"].map(lambda h: f"{h:02d}:00"),
@@ -796,6 +799,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
         "flags": candidates["flags"],
         "total_time": candidates["total_time_s"].map(_format_hmm),
         "tow_t": candidates["tow_t"],
+        "zfw_t": candidates["zfw_t"],
     })
 
     print(display.head(10).to_string(index=False))
@@ -870,14 +874,17 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     return candidates
 
 
-def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX"):
+def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX",
+                  subsonic_npz_path=None, arrival_upper_npz_path=None):
     """The top `top` rows of a concopt search --out CSV, printed as a
     ready-to-run `concopt verify` command per day -- so working through a
     shortlist by hand (load the date in Active Sky, run verify, repeat)
-    doesn't mean re-typing date/hour/tow into the CLI each time. tow_t
-    comes from the CSV's own tow_t column (run_search stamps every row
-    with the --tow it was actually run under), so the generated command
-    always matches -- verify.py's whole comparison depends on that."""
+    doesn't mean re-typing date/hour/zfw into the CLI each time. zfw_t
+    comes from the CSV's own zfw_t column (run_search stamps every row
+    with the --zfw it was actually run under), so the generated command
+    uses the same fixed-point fuel model search did -- verify.py's whole
+    comparison depends on that. tow_t in the summary is for reference
+    (the per-candidate converged take-off weight), not used for verify."""
     df = pd.read_csv(search_csv_path).head(top)
 
     print(f"Top {len(df)} shortlist from {search_csv_path}, ready to verify by hand:\n")
@@ -885,12 +892,29 @@ def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX")
         local_date = dt.date.fromisoformat(str(row["date"]))
         local_hour = int(str(row["local_departure"]).split(":")[0])
         tow_t = float(row["tow_t"])
+        zfw_t = float(row["zfw_t"]) if pd.notna(row.get("zfw_t")) else None
         flags = row["flags"] if pd.notna(row["flags"]) and row["flags"] else "-"
 
-        print(f"{rank:>2}. {local_date} {local_hour:02d}:00  total {row['total_time']}  "
-              f"mean_fl {row['mean_fl']}  wind {row['mean_wind_kt']:+.1f} kt  flags: {flags}")
-        print(f"    concopt verify --pln {pln_path} --npz {npz_path} "
-              f"--date {local_date} --hour {local_hour} --tow {tow_t:.0f} "
-              f"--decel {decel_id}\n")
+        print(
+            f"{rank:>2}. {local_date} {local_hour:02d}:00  total {row['total_time']}  "
+            f"mean_fl {row['mean_fl']}  wind {row['mean_wind_kt']:+.1f} kt  "
+            f"tow {tow_t:.0f} t  flags: {flags}")
+
+        if zfw_t is not None:
+            cmd_parts = [
+                f"concopt verify --pln {pln_path} --npz {npz_path}",
+            ]
+            if subsonic_npz_path is not None:
+                cmd_parts.append(f"--subsonic-npz {subsonic_npz_path}")
+            if arrival_upper_npz_path is not None:
+                cmd_parts.append(f"--arrival-upper-npz {arrival_upper_npz_path}")
+            cmd_parts.extend([
+                f"--date {local_date} --hour {local_hour} --zfw {zfw_t:.1f}",
+                f"--decel {decel_id}",
+            ])
+            print(f"    {' '.join(cmd_parts)}\n")
+        else:
+            # Fallback for CSV without zfw_t column (shouldn't happen with current search.py)
+            print(f"    # WARNING: zfw_t missing from CSV, cannot generate verify command\n")
 
     return df

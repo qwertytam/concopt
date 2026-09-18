@@ -89,7 +89,8 @@ def _cmd_verify(args):
 
 
 def _cmd_shortlist(args):
-    run_shortlist(args.search_csv, args.pln, args.npz, top=args.top, decel_id=args.decel)
+    run_shortlist(args.search_csv, args.pln, args.npz, top=args.top, decel_id=args.decel,
+                  subsonic_npz_path=args.subsonic_npz, arrival_upper_npz_path=args.arrival_upper_npz)
 
 
 def _cmd_inflight(args):
@@ -290,6 +291,15 @@ def main(argv=None):
                                    help='concopt search --out CSV to read from (default: results.csv)')
     shortlist_parser.add_argument('--top', type=int, default=10,
                                    help='number of days to list (default: 10)')
+    shortlist_parser.add_argument('--subsonic-npz', default=None,
+                                   help='path to the .npz from era5.reduce_to_legs run against the '
+                                        'post-decel legs -- required to generate verify commands that '
+                                        'reproduce the search\'s fixed-point arrival model')
+    shortlist_parser.add_argument('--arrival-upper-npz', default=None,
+                                   help='path to the .npz from era5.reduce_to_legs run against the '
+                                        'SAME post-decel legs as --subsonic-npz, but from the '
+                                        'UPPER_AIR_LEVELS netCDFs -- required alongside '
+                                        '--subsonic-npz to generate verify commands')
     shortlist_parser.set_defaults(func=_cmd_shortlist)
 
     inflight_parser = subparsers.add_parser(

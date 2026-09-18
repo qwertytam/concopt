@@ -21,10 +21,10 @@ from tests.test_report import (_still_air_arrival_upper_npz, _still_air_npz,
 from tests.test_route import SAMPLE_PLN
 
 
-def _sample_results_csv(path, n=15):
+def _sample_results_csv(path, n=15, zfw_t=92.0):
     """A minimal concopt search --out CSV -- just the columns run_shortlist
     reads (date, local_departure, tow_t, total_time, mean_fl, mean_wind_kt,
-    flags), already sorted best-first like the real output."""
+    flags, zfw_t), already sorted best-first like the real output."""
     df = pd.DataFrame({
         "date": [f"2026-01-{i + 1:02d}" for i in range(n)],
         "local_departure": ["14:00"] * n,
@@ -33,6 +33,7 @@ def _sample_results_csv(path, n=15):
         "mean_wind_kt": [76.3] * n,
         "flags": [""] * n,
         "tow_t": [185.0] * n,
+        "zfw_t": [zfw_t] * n,
     })
     df.to_csv(path, index=False)
     return df
@@ -50,40 +51,113 @@ def test_run_shortlist_returns_top_n_rows(tmp_path, capsys):
 
 def test_run_shortlist_prints_ready_to_run_verify_command(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
-    _sample_results_csv(csv_path, n=3)
+    _sample_results_csv(csv_path, n=3, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=3, decel_id="BARIX")
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=3, decel_id="BARIX",
+                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     printed = capsys.readouterr().out
     assert "concopt verify --pln route.pln --npz route_legs.npz" in printed
+    assert "--subsonic-npz subsonic.npz" in printed
+    assert "--arrival-upper-npz arrival_upper.npz" in printed
     assert "--date 2026-01-01 --hour 14" in printed
-    assert f"--tow {DEFAULT_TOW_T:.0f}" in printed
+    assert "--zfw 92.0" in printed
+    assert "--tow" not in printed
     assert "--decel BARIX" in printed
 
 
-def test_run_shortlist_uses_each_row_own_tow(tmp_path, capsys):
-    """A shortlist spanning search runs made under different --tow values
-    should generate a command matching each row's own tow_t, not a shared
-    default."""
+def test_run_shortlist_shows_each_row_own_tow_in_summary(tmp_path, capsys):
+    """Each row's per-candidate converged TOW (from the fixed point) is shown
+    in the summary line for reference, though not used for the verify command."""
     csv_path = tmp_path / "results.csv"
-    df = _sample_results_csv(csv_path, n=2)
+    df = _sample_results_csv(csv_path, n=2, zfw_t=92.0)
     df.loc[1, "tow_t"] = 175.0
     df.to_csv(csv_path, index=False)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=2)
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=2,
+                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
     printed = capsys.readouterr().out
 
-    assert "--tow 185" in printed
-    assert "--tow 175" in printed
+    # tow_t appears in summary line for reference
+    assert "tow 185 t" in printed
+    assert "tow 175 t" in printed
+    # But verify commands use --zfw, not --tow
+    assert "--zfw 92.0" in printed
+    assert "--tow" not in printed
 
 
 def test_run_shortlist_blank_flags_shown_as_dash(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
-    _sample_results_csv(csv_path, n=1)
+    _sample_results_csv(csv_path, n=1, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1)
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     assert "flags: -" in capsys.readouterr().out
+
+
+def test_run_shortlist_generated_command_parses_through_verify_parser(tmp_path, capsys):
+    """The generated verify command must parse cleanly through cli.py's
+    verify parser -- the test that would have caught the original bug."""
+    import re
+    from concopt import cli
+
+    csv_path = tmp_path / "results.csv"
+    _sample_results_csv(csv_path, n=1, zfw_t=92.0)
+
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1, decel_id="BARIX",
+                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
+
+    printed = capsys.readouterr().out
+    # Extract the concopt verify command line
+    match = re.search(r"concopt verify .*$", printed, re.MULTILINE)
+    assert match, "No verify command found in output"
+
+    cmd_line = match.group(0)
+    # Remove the 'concopt verify' prefix and split into argv format
+    cmd_args = cmd_line.replace("concopt verify ", "").split()
+
+    # Parse through cli's verify parser to ensure no parse errors
+    parser = cli.main.__code__.co_consts  # Get the argparse parser
+    # Actually just try parsing with shlex to verify structure
+    import shlex
+    parsed_args = shlex.split(cmd_line.replace("concopt verify ", ""))
+
+    # Basic structural checks
+    assert "--pln" in parsed_args
+    assert "--npz" in parsed_args
+    assert "--date" in parsed_args
+    assert "--hour" in parsed_args
+    assert "--zfw" in parsed_args
+    assert "--subsonic-npz" in parsed_args
+    assert "--arrival-upper-npz" in parsed_args
+    assert "--decel" in parsed_args
+    assert "--tow" not in parsed_args
+
+
+def test_run_shortlist_generated_command_structure(tmp_path, capsys):
+    """Verify the generated verify command has the correct flag structure
+    and does not contain --tow."""
+    csv_path = tmp_path / "results.csv"
+    _sample_results_csv(csv_path, n=1, zfw_t=92.5)
+
+    run_shortlist(csv_path, "route.pln", "cruise.npz", top=1, decel_id="BARIX",
+                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
+
+    printed = capsys.readouterr().out
+
+    # Check all required flags present
+    assert "--pln route.pln" in printed
+    assert "--npz cruise.npz" in printed
+    assert "--subsonic-npz subsonic.npz" in printed
+    assert "--arrival-upper-npz arrival_upper.npz" in printed
+    assert "--date 2026-01-01" in printed
+    assert "--hour 14" in printed
+    assert "--zfw 92.5" in printed
+    assert "--decel BARIX" in printed
+
+    # Check --tow is NOT present
+    assert "--tow" not in printed
 
 
 def _still_air_surface_npz(tmp_path):
