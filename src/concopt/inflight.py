@@ -412,21 +412,30 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     query this far ahead of the aircraft can fall outside Active Sky's
     loaded scenario/date, and the caller falls back to the pre-flight
     report's arrival figure rather than silently reverting to a flat
-    constant.
+    constant. ALSO returns None if the response comes back so degenerate
+    (see the duplicate-pressure paragraph below) that fewer than two
+    distinct levels survive -- there is then no profile left to interpolate,
+    and the same pre-flight fallback is the right answer, not a fabricated
+    single-point number.
 
-    KNOWN GAP (found via the C3 replay harness, not fixed here -- see
-    tests/test_replay.py's own weather approximation, concopt.replay._row_weather,
-    for exactly how this gets triggered): wind_at_fl's frac below divides by
+    DUPLICATE PRESSURES (D2, closing a gap left open at C3 -- see
+    tests/test_replay.py's own weather approximation,
+    concopt.replay._row_weather, for how a synthetic/degenerate response can
+    trigger this): wind_at_fl's frac would divide by
     (src_log_p[idx1] - src_log_p[idx0]), which is silently 0 if TWO of the
     ARRIVAL_WIND_SAMPLE_FL queries come back at the SAME pressure -- giving
-    NaN wind_kt/temp_k rather than raising. A real Active Sky response
-    should never do this (pressure strictly decreases with altitude), but
-    nothing here actually asserts it; _format_hmm_or_na now tolerates the
-    resulting NaN without crashing the display (see its own docstring), but
-    a NaN still silently reaches arrival.arrival()'s live estimate itself,
-    same failure shape verify.py's SNAPSHOT GUARD comment warns about
-    elsewhere in this project ("silent, plausible, and produces numbers
-    that look fine")."""
+    NaN wind_kt/temp_k rather than raising, the same "silent, plausible,
+    and produces numbers that look fine" failure shape verify.py's SNAPSHOT
+    GUARD comment warns about elsewhere in this project. A real Active Sky
+    response should never do this (pressure strictly decreases with
+    altitude), but nothing here asserted it -- so below, once sorted by
+    pressure, adjacent duplicate levels are collapsed (the first of each
+    equal run kept) BEFORE building the interpolation source arrays, not
+    papered over by clamping the divide -- clamping would turn a bad
+    reading into a plausible-looking number, which is exactly what this is
+    meant to avoid. Ten samples with one duplicate pair still leaves plenty
+    to interpolate across; only the extreme case (every sample the same
+    pressure, fewer than two distinct levels survive) falls back to None."""
     try:
         alt_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c = weather_source(
             lat, lon, ARRIVAL_WIND_SAMPLE_FL * 100.0)
@@ -437,9 +446,8 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
         return None
 
     order = np.argsort(pressure_hpa)  # ascending pressure -> descending FL
-    src_log_p = np.log(pressure_hpa[order] * 100.0)
-    fl_min = float(pressure_to_fl(pressure_hpa[order][-1] * 100.0))
-    fl_max = float(pressure_to_fl(pressure_hpa[order][0] * 100.0))
+    pressure_sorted_hpa = pressure_hpa[order]
+    src_log_p = np.log(pressure_sorted_hpa * 100.0)
 
     speed_ms = wind_speed_kt * KT_TO_MS
     dir_rad = np.radians(wind_dir_deg)
@@ -448,6 +456,19 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     track_rad = np.radians(track_deg)
     along_ms = (u_ms * np.sin(track_rad) + v_ms * np.cos(track_rad))[order]
     temp_k = (temp_c + 273.15)[order]
+
+    # Collapse adjacent duplicate pressures (src_log_p is sorted, so any
+    # duplicates are guaranteed adjacent) -- see the docstring above.
+    keep = np.concatenate(([True], np.diff(src_log_p) > 0))
+    if np.count_nonzero(keep) < 2:
+        return None
+    src_log_p = src_log_p[keep]
+    along_ms = along_ms[keep]
+    temp_k = temp_k[keep]
+    pressure_sorted_hpa = pressure_sorted_hpa[keep]
+
+    fl_min = float(pressure_to_fl(pressure_sorted_hpa[-1] * 100.0))
+    fl_max = float(pressure_to_fl(pressure_sorted_hpa[0] * 100.0))
 
     def wind_at_fl(level_fl):
         level_fl = np.asarray(level_fl, dtype=float)
@@ -499,16 +520,22 @@ def _build_arrival_text(arrival_info):
     didn't answer THIS tick's query and the pre-flight report's total is
     shown instead -- with no live decel/level/descent split, since the
     report CSV only carries the total (arrival_s), not report.py's own
-    per-segment breakdown."""
+    per-segment breakdown.
+
+    D2: both the live and fallback lines carry an explicit [LIVE]/
+    [PRE-FLIGHT] tag, not just a difference in wording -- read at a glance
+    mid-flight, "no live decel/level/descent split" is easy to miss, and
+    this is exactly the distinction that must not be missed (a stale
+    pre-flight figure silently read as a live measurement)."""
     if arrival_info is None:
         return Text("Arrival (BARIX -> touchdown): not yet available")
     if arrival_info.get("source") == "fallback":
         return Text(
-            "Arrival (BARIX -> touchdown): Active Sky unavailable this far "
-            f"ahead -- pre-flight figure {arrival_info['time_min']:.1f} min total"
+            "Arrival (BARIX -> touchdown) [PRE-FLIGHT]: Active Sky unavailable "
+            f"this far ahead -- pre-flight figure {arrival_info['time_min']:.1f} min total"
         )
     return Text(
-        f"Arrival (BARIX -> touchdown), {arrival_info['time_min']:.1f} min total:\n"
+        f"Arrival (BARIX -> touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
         f"  decel {arrival_info['decel_time_min']:.1f} min\n"
         f"  level {arrival_info['level_time_min']:.1f} min  FL{arrival_info['level_fl']:.0f}, "
         f"{arrival_info['level_wind_kt']:+.0f} kt\n"

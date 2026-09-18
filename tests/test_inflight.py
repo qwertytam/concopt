@@ -390,6 +390,7 @@ def test_build_arrival_text_renders_the_segment_breakdown():
     assert "descent" in text
     assert "approach" in text
     assert "30.6 min total" in text
+    assert "LIVE" in text  # D2: a visible marker, not just the absence of a fallback note
 
 
 def test_build_arrival_text_none_reads_not_yet_available():
@@ -412,6 +413,7 @@ def test_build_arrival_text_fallback_shows_note_not_a_segment_breakdown():
     assert "unavailable" in text
     assert "30.6 min" in text
     assert "decel" not in text
+    assert "PRE-FLIGHT" in text  # D2: a visible marker, not just the wording difference
 
 
 def test_render_screen_includes_the_arrival_breakdown_and_live_vs_preflight():
@@ -490,6 +492,87 @@ def test_build_live_arrival_wind_fn_interpolates_in_log_pressure(monkeypatch):
     # Well below the lowest sampled pressure (700 hPa, ~FL99) -- must clamp.
     atm_below = wind_at_fl(np.array([0.0]))
     assert atm_below["fl_clamped"][0]
+
+
+def test_build_live_arrival_wind_fn_duplicate_pressure_pair_gives_finite_wind(monkeypatch):
+    """D2: a real-shaped Active Sky response with two of the ten sample
+    levels collapsed onto the same pressure must not divide by zero in
+    wind_at_fl's log-pressure interpolation -- the duplicate is dropped and
+    the remaining eight distinct levels still interpolate to a finite
+    number, not NaN."""
+    n = len(inflight.ARRIVAL_WIND_SAMPLE_FL)
+    pressure_hpa = np.linspace(700.0, 50.0, n)
+    pressure_hpa[3] = pressure_hpa[2]  # two sample levels collapse to one pressure
+    wind_dir_deg = np.zeros(n)
+    wind_speed_kt = np.linspace(20.0, 80.0, n)
+    temp_c = np.linspace(0.0, -60.0, n)
+
+    def _fake(lat, lon, alts_ft, host_addr=None, port=None):
+        return (alts_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c)
+    monkeypatch.setattr(inflight, "get_atmosphere_np", _fake)
+    weather_source = inflight._live_weather_source("localhost", 19285)
+
+    wind_at_fl = inflight._build_live_arrival_wind_fn(weather_source, 40.0, -60.0, 0.0)
+    assert wind_at_fl is not None
+
+    mid_fl = (inflight.ARRIVAL_WIND_SAMPLE_FL[0] + inflight.ARRIVAL_WIND_SAMPLE_FL[-1]) / 2.0
+    atm = wind_at_fl(np.array([mid_fl]))
+    assert np.isfinite(atm["wind_kt"][0])
+    assert np.isfinite(atm["temp_k"][0])
+
+
+def test_build_live_arrival_wind_fn_all_same_pressure_returns_none(monkeypatch):
+    """D2's other extreme: every sample level comes back at the SAME
+    pressure -- nothing left to interpolate across, so this must return
+    None (the caller's trigger for the pre-flight fallback) rather than a
+    wind_at_fl that would hand back NaN forever."""
+    n = len(inflight.ARRIVAL_WIND_SAMPLE_FL)
+    pressure_hpa = np.full(n, 300.0)
+    wind_dir_deg = np.zeros(n)
+    wind_speed_kt = np.full(n, 40.0)
+    temp_c = np.full(n, -40.0)
+
+    def _fake(lat, lon, alts_ft, host_addr=None, port=None):
+        return (alts_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c)
+    monkeypatch.setattr(inflight, "get_atmosphere_np", _fake)
+    weather_source = inflight._live_weather_source("localhost", 19285)
+
+    wind_at_fl = inflight._build_live_arrival_wind_fn(weather_source, 40.0, -60.0, 0.0)
+    assert wind_at_fl is None
+
+
+def test_all_same_pressure_response_falls_back_to_preflight_figure_and_is_marked(monkeypatch):
+    """The composed behaviour run_inflight's own loop relies on: wind_at_fl
+    is None (previous test), so the caller substitutes the pre-flight
+    report's own arrival figure tagged "fallback" -- and the panel must
+    show a visible [PRE-FLIGHT] marker on the arrival line, not a number
+    that reads as if it were a live measurement."""
+    n = len(inflight.ARRIVAL_WIND_SAMPLE_FL)
+    pressure_hpa = np.full(n, 300.0)
+    wind_dir_deg = np.zeros(n)
+    wind_speed_kt = np.full(n, 40.0)
+    temp_c = np.full(n, -40.0)
+
+    def _fake(lat, lon, alts_ft, host_addr=None, port=None):
+        return (alts_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c)
+    monkeypatch.setattr(inflight, "get_atmosphere_np", _fake)
+    weather_source = inflight._live_weather_source("localhost", 19285)
+
+    wind_at_fl = inflight._build_live_arrival_wind_fn(weather_source, 40.0, -60.0, 0.0)
+    assert wind_at_fl is None
+
+    # run_inflight's own fallback construction (see its arrival_info block):
+    # dict(time_min=preflight_arrival_s / 60.0, source="fallback").
+    preflight_arrival_s = 30.6 * 60.0
+    arrival_info = dict(time_min=preflight_arrival_s / 60.0, source="fallback")
+
+    console = Console(width=120, record=True)
+    console.print(inflight._build_arrival_text(arrival_info))
+    text = console.export_text()
+    assert "unavailable" in text
+    assert "30.6 min" in text
+    assert "PRE-FLIGHT" in text
+    assert "decel" not in text
 
 
 # --- Phase C2: the flight recorder schema -----------------------------------
