@@ -178,6 +178,9 @@ def _arrival_wind_data(n_legs=3, n_time=2):
     distinct interpolated wind, and the exact clamped value at a span edge
     is easy to predict (it's just that edge level's own hPa figure)."""
     times = np.array(["2016-01-01T00:00:00", "2026-12-31T00:00:00"], dtype="datetime64[ns]")
+    # Matches _arrival_wind_fn's own legs below -- B8's cum_nm identity check
+    # needs a real leg axis here, not just a leg count.
+    cum_nm = np.array([50.0 * (i + 1) for i in range(n_legs)])
 
     def _fake(levels_hpa):
         n_lvl = len(levels_hpa)
@@ -186,7 +189,7 @@ def _arrival_wind_data(n_legs=3, n_time=2):
         ).astype(float).copy()
         v = np.zeros((n_time, n_lvl, n_legs))
         t = np.full((n_time, n_lvl, n_legs), 220.0)
-        return dict(time=times, level=levels_hpa, u=u, v=v, t=t)
+        return dict(time=times, level=levels_hpa, u=u, v=v, t=t, cum_nm=cum_nm)
 
     subsonic_data = _fake(np.array([float(x) for x in SUBSONIC_LEVELS]))
     arrival_upper_data = _fake(np.array([float(x) for x in UPPER_AIR_LEVELS]))
@@ -258,4 +261,31 @@ class TestArrivalWindStitching:
         legs = [Leg("A", "B", 45.0, -30.0, 90.0, 50.0, 50.0)]
 
         with pytest.raises(ValueError, match="time"):
+            search._build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, legs)
+
+    def test_wrong_leg_axis_raises_with_leg_count(self):
+        """B8: passing a cruise-leg npz as --arrival-upper-npz (the same
+        era5_upper_*.nc files as the cruise --npz, just never re-reduced
+        onto arrival_legs) must raise, not silently index a leg axis it was
+        never built against -- a ~32-leg cruise axis happily accepts a small
+        positional index like len(arrival_legs)//2 and would otherwise read
+        mid-Atlantic wind for the arrival segment."""
+        n_legs = 3
+        subsonic_data, arrival_upper_data = _arrival_wind_data(n_legs=n_legs)
+        # Stand in for a cruise-leg npz: same shape family, but a leg axis
+        # (and cum_nm) sized like the ~32-leg cruise span, not arrival_legs.
+        arrival_upper_data = dict(arrival_upper_data)
+        n_cruise_legs = 32
+        arrival_upper_data["u"] = np.zeros((2, arrival_upper_data["u"].shape[1], n_cruise_legs))
+        arrival_upper_data["v"] = np.zeros((2, arrival_upper_data["v"].shape[1], n_cruise_legs))
+        arrival_upper_data["t"] = np.full((2, arrival_upper_data["t"].shape[1], n_cruise_legs), 220.0)
+        arrival_upper_data["cum_nm"] = np.array([10.0 * (i + 1) for i in range(n_cruise_legs)])
+
+        dep_i8 = np.full(1, subsonic_data["time"][0].astype("int64"))
+        legs = [
+            Leg(f"A{i}", f"B{i}", 45.0, -30.0 + i, 90.0, 50.0, 50.0 * (i + 1))
+            for i in range(n_legs)
+        ]
+
+        with pytest.raises(ValueError, match=f"{n_cruise_legs}.*{n_legs}|{n_legs}.*{n_cruise_legs}"):
             search._build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, legs)

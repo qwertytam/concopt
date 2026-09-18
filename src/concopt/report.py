@@ -300,6 +300,12 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     print()
 
     cruise_fl_at_barix = float(legs_out["chosen_fl"][0, -1])
+    # Computed here (rather than only at the Totals printout below) so it
+    # can also ride along in the waypoint CSV -- inflight.py's --compare
+    # reads it back (arrival_s, on the decel waypoint's own row) instead of
+    # re-adding a flat constant on top of a plan that already accounts for
+    # its own real per-day arrival.
+    arrival_time_s = float(arrival_out["time_min"][0]) * 60.0
     for line in _arrival_lines(arrival_out, arrival_nm, cruise_fl_at_barix):
         print(line)
     print()
@@ -332,6 +338,9 @@ def run_report(pln_path, npz_path, local_date, local_hour,
         "temp_c": waypoint_table["temp_c"].round(1),
         "isa_dev_k": waypoint_table["isa_dev_k"].round(1),
         "binding": waypoint_table["binding"],
+        # NaN everywhere except the decel waypoint's own (last) row -- the
+        # arrival segment starts there, not at any of the earlier waypoints.
+        "arrival_s": [np.nan] * (len(waypoint_table) - 1) + [arrival_time_s],
     })
     print(display.to_string(index=False))
 
@@ -373,7 +382,6 @@ def run_report(pln_path, npz_path, local_date, local_hour,
           f"{weight_at_barix_t:.1f} t at {cc_legs[-1].to_id} "
           f"({climb_row['mass_t'] - weight_at_barix_t:.1f} t burned)")
 
-    arrival_time_s = float(arrival_out["time_min"][0]) * 60.0
     cruise_time_s = total_elapsed_s - climb_time_s
     runway_penalty_s = 0.0  # Phase 4 fills this in
     total_block_s = climb_time_s + cruise_time_s + arrival_time_s + runway_penalty_s
