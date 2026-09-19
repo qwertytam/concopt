@@ -73,9 +73,9 @@ Synthetic validation: total within −0.36% time / +0.06% fuel; the approach con
 
 ### Two issues found in this review
 
-1. **`run_shortlist` generates verify commands that can't reproduce the search.** `search.py:891` emits `--tow` with neither `--subsonic-npz` nor `--arrival-upper-npz`. The `--tow` path in `verify.py` skips the fixed point and does a plain `march_legs`, so the arrival it computes is not the model the search ranked with. Every one of the 20 verifications would compare against a differently-built arrival. The docstring's justification is also stale — it says `run_search` stamps each row with "the `--tow` it was actually run under", language from before `tow_t` became a per-candidate converged value. **This blocks C5**, which is the next real step.
+1. **FIXED, PR #22.** ~~`run_shortlist` generates verify commands that can't reproduce the search.~~ `search.py:891` emitted `--tow` with neither `--subsonic-npz` nor `--arrival-upper-npz`. The `--tow` path in `verify.py` skips the fixed point and does a plain `march_legs`, so the arrival it computed was not the model the search ranked with. Every one of the 20 verifications would have compared against a differently-built arrival. `run_search` now stamps each row with its own `zfw_t` alongside `tow_t`, and `run_shortlist`/`concopt shortlist` reads `zfw_t` back and builds the verify command with `--zfw` plus both npz paths (new `--subsonic-npz`/`--arrival-upper-npz` flags) instead of `--tow`. **Unblocks C5.**
 
-2. **The known NaN gap is still open.** `inflight.py:417-428` documents it honestly: `wind_at_fl` divides by `src_log_p[idx1] - src_log_p[idx0]`, silently zero if two of the ten sampled arrival levels return the same pressure. The display now tolerates the resulting NaN, but a NaN still reaches `arrival.arrival()`'s live estimate. The code's own comment names the failure shape correctly — "silent, plausible, and produces numbers". Real Active Sky shouldn't do this; nothing asserts it.
+2. **FIXED, PR #22.** ~~The known NaN gap is still open.~~ `inflight.py:417-428` documented it honestly: `wind_at_fl` divided by `src_log_p[idx1] - src_log_p[idx0]`, silently zero if two of the ten sampled arrival levels returned the same pressure. Adjacent duplicate pressure levels are now collapsed before the interpolation source arrays are built; if fewer than two distinct pressures survive, the function returns `None` (the same "Active Sky didn't answer" signal already in use) rather than a silent NaN, and the live panel's arrival line now carries an explicit `[LIVE]`/`[PRE-FLIGHT]` marker.
 
 ---
 
@@ -115,26 +115,23 @@ Kept because several will recur, and several were mine.
 ### Blocking
 
 1. **ZFW.** Still unset, and it drives uplift, TOW, climb time and therefore the entire ranking. Nothing downstream is real until it is chosen.
-2. **`run_shortlist` command generation** — issue 1 above. Blocks C5.
 
-### Should fix before flying
-
-3. The NaN gap in `_build_live_arrival_wind_fn` — issue 2 above.
+(`run_shortlist` command generation and the live-arrival NaN gap, both formerly listed here, are fixed — PR #22, see above.)
 
 ### Assumed, to be measured by the flight
 
-4. `APPROACH_NM = 5.0`, `APPROACH_MIN = 1.5`, `APPROACH_FUEL_T = 0.3` below 1,500 ft.
-5. The descent-segment wind clamp below FL183 — under 0.3 min, visible in its own flag.
+2. `APPROACH_NM = 5.0`, `APPROACH_MIN = 1.5`, `APPROACH_FUEL_T = 0.3` below 1,500 ft.
+3. The descent-segment wind clamp below FL183 — under 0.3 min, visible in its own flag.
 
 ### Accepted
 
-6. 22 of 751 subsonic cruise cells interpolated under the page watermark, marked `illegible = True`. Worst monotonicity break 1.0%.
-7. FL230/250/270 subsonic pages scanned but not transcribed — a weight-dependent M0.86–0.93 schedule the arrival never uses.
-8. Accel/decel points are CLI arguments, not carried in the `.pln`.
+4. 22 of 751 subsonic cruise cells interpolated under the page watermark, marked `illegible = True`. Worst monotonicity break 1.0%.
+5. FL230/250/270 subsonic pages scanned but not transcribed — a weight-dependent M0.86–0.93 schedule the arrival never uses.
+6. Accel/decel points are CLI arguments, not carried in the `.pln`.
 
 ### Gap against the objective
 
-9. **Nothing shows the reasoning across candidates.** The objective asks to identify the best departure *and show the reasoning behind the selection*. `report` explains one day in detail; `shortlist` prints twenty commands. Nothing explains why the winners win, what separates rank 1 from rank 50, how much is seasonal, or how sensitive the answer is to ZFW. That is half of deliverable #1 and it needs no sim.
+7. **Nothing shows the reasoning across candidates.** The objective asks to identify the best departure *and show the reasoning behind the selection*. `report` explains one day in detail; `shortlist` prints twenty commands. Nothing explains why the winners win, what separates rank 1 from rank 50, how much is seasonal, or how sensitive the answer is to ZFW. That is half of deliverable #1 and it needs no sim.
 
 ---
 
@@ -142,8 +139,8 @@ Kept because several will recur, and several were mine.
 
 | | Task | Needs |
 |---|---|---|
-| **D1** | Fix `run_shortlist` to emit `--zfw` and both npz paths | nothing |
-| **D2** | Close the NaN gap in the live arrival wind | nothing |
+| **D1** | ~~Fix `run_shortlist` to emit `--zfw` and both npz paths~~ **Done, PR #22** | nothing |
+| **D2** | ~~Close the NaN gap in the live arrival wind~~ **Done, PR #22** | nothing |
 | **D3** | Build the arrival npz files and run the ERA5 search end to end — produce the top 20 | ERA5 data only |
 | **D4** | Cross-candidate analysis notebook — the reasoning half of deliverable #1, plus a ZFW sensitivity sweep | D3's output |
 
