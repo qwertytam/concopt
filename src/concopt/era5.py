@@ -209,9 +209,30 @@ def reduce_surface_to_npz(nc_paths_by_airport, out_npz):
     screen. runways.py reads this; nothing downstream reopens the netCDF."""
     arrays = {}
     for name, paths in nc_paths_by_airport.items():
-        ds = xr.open_mfdataset([str(p) for p in paths], combine="by_coords")
+        # combine="nested"/concat_dim=<time>, not "by_coords": lat/lon and
+        # variables are identical across every file for one airport, only
+        # time varies, so which dim to concat along is already known -- no
+        # coordinate auto-detection needed. This matters because the most
+        # recent chunk (download_surface's _month_chunks, current year) is
+        # short and CDS truncates it further to ERA5's actual processing lag
+        # (a handful of days behind "today"), so it's an irregular size next
+        # to every other chunk; combine="by_coords" mis-happens to treat that
+        # boundary as needing ALIGNMENT rather than concatenation, and raises
+        # an AlignmentError under xarray's new join="exact" default even
+        # though the two chunks are genuinely disjoint and contiguous in
+        # time -- caught live, 2026-09, against the real KJFK/EGLL archive
+        # (both fully reproduced: same total size, explicit concat_dim vs the
+        # old join="outer" default, which had silently tolerated the same
+        # ambiguity). era5.reduce_to_legs (below) keeps combine="by_coords"
+        # -- it genuinely needs auto-detection across two varying dims (time
+        # AND pressure_level, from era5.py's SUBSONIC_LEVEL_GROUPS), and its
+        # own use_new_combine_kwarg_defaults there is doing real work (see
+        # its docstring), not working around this same limitation.
+        first = xr.open_dataset(str(paths[0]))
+        time_dim = "valid_time" if "valid_time" in first.dims else "time"
+        first.close()
+        ds = xr.open_mfdataset([str(p) for p in paths], combine="nested", concat_dim=time_dim)
         box_mean = ds.mean(dim=("latitude", "longitude"))
-        time_dim = "valid_time" if "valid_time" in box_mean.dims else "time"
 
         arrays[f"{name}_time"] = box_mean[time_dim].values
         arrays[f"{name}_u10"] = box_mean["u10"].values
@@ -242,7 +263,8 @@ def reduce_to_legs(nc_paths, legs, out_npz):
     and level at once. Result arrays are (time, level, leg); saved to
     out_npz with the time axis, pressure levels, and each leg's cum_nm/
     track_deg alongside, so the scan never has to reopen the netCDF."""
-    ds = xr.open_mfdataset([str(p) for p in nc_paths], combine="by_coords")
+    with xr.set_options(use_new_combine_kwarg_defaults=True):
+        ds = xr.open_mfdataset([str(p) for p in nc_paths], combine="by_coords")
 
     lat = xr.DataArray([leg.lat_mid for leg in legs], dims="leg")
     lon = xr.DataArray([leg.lon_mid for leg in legs], dims="leg")
