@@ -13,6 +13,7 @@ overwrites its own .npz.
 --only cruise/arrival/surface builds a subset (default: all three).
 """
 import argparse
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -32,20 +33,39 @@ def build_arrival(arrival_legs, era5_dir, subsonic_out, upper_out):
     subsonic_nc = sorted(era5_dir.glob("era5_subsonic_*.nc"))
     upper_nc = sorted(era5_dir.glob("era5_upper_*.nc"))
 
+    # A month only counts as "downloaded" once ALL its SUBSONIC_LEVEL_GROUPS
+    # files exist -- era5.download_all_subsonic writes them one at a time, so
+    # if it's still running (checked live, 2026-09: it writes a new file every
+    # few minutes) a glob can catch a month with e.g. only its _0 file on
+    # disk. Counting that month as available would feed reduce_to_legs a
+    # (time, pressure_level) grid that's ragged for that one month's time
+    # range -- xr.open_mfdataset's new join="exact" default (see era5.py)
+    # correctly raises on that rather than the old join="outer" default's
+    # silent NaN-pad, which is how this surfaced.
+    month_of = lambda p: p.stem.split("_")[2]
+    n_groups = len(era5.SUBSONIC_LEVEL_GROUPS)
+    month_counts = Counter(month_of(p) for p in subsonic_nc)
+    incomplete = {m for m, n in month_counts.items() if n != n_groups}
+    if incomplete:
+        print(f"NOTE: {len(incomplete)} subsonic month(s) only partially "
+              f"downloaded (download_all_subsonic still running?) -- "
+              f"excluding: {sorted(incomplete)}")
+        subsonic_nc = [p for p in subsonic_nc if month_of(p) not in incomplete]
+
     # Both npz's must share the same time axis (search._build_arrival_wind_fn
     # asserts this at load time) -- restrict both to the months they share
     # if the subsonic download hasn't caught up to the upper-air one yet
     # (2 requests/month vs 1, so it lags).
-    subsonic_months = {p.stem.split("_")[2] for p in subsonic_nc}
-    upper_months = {p.stem.split("_")[2] for p in upper_nc}
+    subsonic_months = {month_of(p) for p in subsonic_nc}
+    upper_months = {month_of(p) for p in upper_nc}
     if subsonic_months != upper_months:
         common = subsonic_months & upper_months
         print(f"WARNING: subsonic covers {len(subsonic_months)} months, "
               f"upper-air covers {len(upper_months)} -- restricting both to "
               f"the {len(common)} shared months. Re-run once "
               f"era5.download_all_subsonic finishes for full archive coverage.")
-        subsonic_nc = [p for p in subsonic_nc if p.stem.split("_")[2] in common]
-        upper_nc = [p for p in upper_nc if p.stem.split("_")[2] in common]
+        subsonic_nc = [p for p in subsonic_nc if month_of(p) in common]
+        upper_nc = [p for p in upper_nc if month_of(p) in common]
 
     print(f"arrival: {len(arrival_legs)} legs, {len(subsonic_nc)} subsonic nc files -> {subsonic_out}")
     era5.reduce_to_legs(subsonic_nc, arrival_legs, subsonic_out)
