@@ -130,12 +130,73 @@ files without a `zfw_t` column, or omitting `--subsonic-npz`/
 command — pass the same npz's you searched with.)
 
 Needs a **running Active Sky** with that historical date/time loaded by
-hand first (one load covers every point queried — no flying required). A
-snapshot guard fingerprints the queried weather and raises if it matches a
-*different* date/hour's fingerprint — the signal that Active Sky wasn't
-actually reloaded before this run. `--csv logs/verify_runs.csv` appends
-one summary row per run so repeated verifications accumulate into
-something rankable rather than living only in scrollback.
+hand first (one load covers every point queried — no flying required).
+
+### What `concopt verify` actually queries
+
+Active Sky exposes a small local HTTP API — `http://localhost:19285/ActiveSky/API/GetAtmosphere`
+by default — and `verify` only ever calls that endpoint (`asky.py`); it
+never touches Active Sky's own settings. **The request itself carries no
+date or time**, only `lat`/`lon`/`altitudes` — Active Sky just answers with
+whatever historical weather it currently has loaded. So `--date`/`--hour`
+on the command line do **not** tell Active Sky what to show you; they only
+(a) pick which ERA5 candidate to compare against and (b) label the
+snapshot-guard cache entry below. **You** are responsible for loading that
+same date/hour inside Active Sky's own UI (its History/historical-weather
+mode) before running the command — if the two don't match, `verify` has no
+way to know, and prints a comparison that looks entirely plausible but
+means nothing.
+
+### Running one verification
+
+1. Pick a candidate line from `shortlist`'s output.
+2. In Active Sky itself, switch to historical weather and load that same
+   date/hour (e.g. 2026-01-21, 14:00 local New York — the historical mode
+   is inside Active Sky's own UI, not something concopt drives).
+3. Run the printed `concopt verify` command **as-is** — copy it, don't
+   retype it, since it already carries the right `--zfw`/npz paths for
+   that candidate.
+
+### What it prints
+
+- Every one of `--points` (default 12) sampled legs is queried *before*
+  anything prints — the snapshot guard needs the whole batch first.
+- A fingerprint (SHA-256 of every wind/temp value returned) is checked
+  against a small cache, `data/verify_snapshot_cache.json`. If it exactly
+  matches a *different* date/hour's cached fingerprint, `verify` raises
+  rather than printing — that's the "you forgot to reload Active Sky"
+  catch (confirmed live, 2026-09: a run came back bit-identical to the
+  wrong-dated run just before it). Re-running the *same* date/hour again is
+  fine, not an error.
+- A per-point table:
+
+  ```text
+   leg      lat       lon  AS FL  ERA5 FL   AS wind  ERA5 wind   dWind   AS temp  ERA5 temp   dTemp
+     2   47.213   -42.881  FL510   FL510      82.1       76.3    +5.8     -54.2      -55.1    +0.9
+  ```
+
+  `AS FL`/`ERA5 FL` are the level each source independently picks as best
+  (same weight, same cruise Mach) — a mismatch is flagged with its TAS
+  cost in kt (a mismatch entirely above the Mmo knee costs ~0 kt; one
+  crossing into the CAS-limited part of the envelope costs real speed).
+- Summary lines: mean/std wind delta with a sign count (e.g. "6 of 6
+  points positive" — the signal that separates a fixable bias from
+  scatter), mean/std temp delta, level-mismatch count + TAS cost, and a
+  recomputed total supersonic-segment time under each source, flagged
+  `OK` or `CHECK -- large divergence`.
+- With `--csv logs/verify_runs.csv`, one summary row is appended per run
+  so candidates accumulate into something rankable rather than living
+  only in scrollback.
+
+### If Active Sky isn't running
+
+```text
+RuntimeError: Active Sky not responding on localhost:19285; is it running with the historical date loaded?
+```
+
+`asky.py` raises this on a plain connection refusal — check Active Sky is
+actually running and reachable at `--host`/`--port` (default
+`localhost:19285`) before troubleshooting anything else.
 
 Work through the shortlist by hand: load a date in Active Sky, run
 `verify`, note the recomputed total time and whether the FL choices/wind
@@ -152,7 +213,7 @@ poetry run concopt report --pln <route.pln> --npz data/era5/route_legs.npz ^
 ```
 
 `report.csv` is what `concopt inflight --compare` (predicted vs actual)
-and the post-flight notebook (step 8) read back — generate it for the day
+and the post-flight notebook (step 7) read back — generate it for the day
 you're actually about to fly before you fly it.
 
 ## 6. Fly it: the live in-flight advisor
@@ -201,12 +262,57 @@ Active Sky historical, live sim), what the advisor's recommendations were
 worth, and whether the fixed approach allowance held up. Set
 `GENERATE_SYNTHETIC = False` and fill in `RECORDING_CSV_PATH`/
 `REPORT_CSV_PATH` at the top to point it at a real flight instead of the
-synthetic self-check it ships with.
+synthetic self-check it ships with. `CRUISE_MACH` at the top must match
+whatever `--cruise-mach` the real flight's `report`/`inflight` runs used
+(see below) — every recompute in this notebook takes it, so a mismatch
+here silently compares the real flight against a plan built for the wrong
+cruise speed.
 
 ```
 poetry run jupyter notebook notebooks/day-search-results.ipynb
 poetry run jupyter notebook notebooks/postflight.ipynb
 ```
+
+---
+
+## Flying at Mmo (M2.04) instead of M2.00
+
+`--cruise-mach` (`search`/`report`/`verify`/`inflight`) substitutes for
+`limits.CRUISE_MACH` (2.00, the Air France manual's cruise schedule) in
+the cruise-speed limit. Try Mmo with `--cruise-mach 2.04` on **every**
+phase for one day, consistently — a mismatched value between phases makes
+predicted-vs-actual comparisons meaningless, since both ERA5 and Active
+Sky pick their "best level" partly based on it:
+
+| Phase | Change |
+|---|---|
+| `concopt search` | add `--cruise-mach 2.04` |
+| `concopt shortlist` | nothing — it only prints commands, computes nothing itself |
+| `concopt verify` | add `--cruise-mach 2.04` (must match the `search` run being verified — both sides pick their best level under the same Mach) |
+| `concopt report` | add `--cruise-mach 2.04` — this produces the `report.csv` that `inflight --compare` and the post-flight notebook read back, so it has to match |
+| `concopt inflight` | add `--cruise-mach 2.04` — the live advisor's own recommendations use it too |
+| `notebooks/day-search-results.ipynb` | set `CRUISE_MACH = 2.04` near the top (already threaded through its `march_legs`/`max_mach` calls) |
+| `notebooks/postflight.ipynb` | set `CRUISE_MACH = 2.04` near the top (threaded through every call that needs it) |
+
+**The important caveat, straight from `limits.py`'s own comment:** the
+ceiling table (`conc_supersonic_cruise.csv`, `limits.ceiling_ft`) is
+**not** parametrized by cruise Mach at all — it's "the altitude attainable
+at M2.00," transcribed straight from the Air France manual. Raising
+`--cruise-mach` to 2.04 changes only the *speed* cap (`mach_components`'s
+`cruise` term); the *altitude* cap every phase still uses is the exact
+same M2.00-validated table. So a `--cruise-mach 2.04` run is really asking
+"how much faster could I go at the altitudes M2.00 can reach," not "what
+would the aircraft actually do at Mmo" — which is exactly why the flag's
+own CLI help text says "try Mmo," not "fly at Mmo."
+
+A second, smaller gap: the arrival model's decel table (`conc_descent.csv`,
+"cruise Mach → M1.0") and the climb table are both keyed by flight
+level/TOW/temperature band only, never by the cruise Mach actually flown —
+`arrival.arrival()` doesn't even take a `cruise_mach` argument. So the
+decel segment's fuel/time always assumes decelerating from the manual's
+own M2.00 baseline, regardless of `--cruise-mach`. Neither gap is tracked
+as a bug in `docs/IMPLEMENTATION-PLAN.md` — `--cruise-mach 2.04` is an
+exploratory lever on cruise TAS, not a re-validated Mmo flight profile.
 
 ---
 
