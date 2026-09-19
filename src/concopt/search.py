@@ -660,7 +660,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
 
     With out_all_path given, also writes the full ranked DataFrame (every
     valid candidate, ~31,000 rows, raw numeric columns rather than --out's
-    rounded/formatted display strings) there -- for nb/day-search-results.ipynb,
+    rounded/formatted display strings) there -- for notebooks/day-search-results.ipynb,
     which needs the raw distribution rather than just the top rows.
 
     zfw_t (tonnes) drives fuel.fixed_point_fuel_iteration (via

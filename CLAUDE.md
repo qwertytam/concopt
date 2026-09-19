@@ -151,7 +151,7 @@ for its own sake, no defensive error handling.
   departure / EGLL arrival wind through `runways.py` (see below) and ranks
   on `total_time`, not supersonic time. `--out-all` writes the *full*
   ranked candidate set (raw numeric columns, ~31,000 rows) alongside
-  `--out`'s top-N formatted display CSV — for `nb/day-search-results.ipynb`,
+  `--out`'s top-N formatted display CSV — for `notebooks/day-search-results.ipynb`,
   which needs the whole distribution rather than just the top rows. Every
   row is stamped with its own `tow_t` (the `--tow` that run was made
   under), read back by `run_shortlist`/`concopt shortlist` (below) so a
@@ -389,7 +389,7 @@ for its own sake, no defensive error handling.
   `nondimensional.py` — vendored fork of the `flightcondition` package.
   **Do not read or modify these.** Legacy; retained only for the pretty
   `tostring()` output in the future in-flight display.
-- `nb/day-search-results.ipynb` — exploratory reporting on a `concopt
+- `notebooks/day-search-results.ipynb` — exploratory reporting on a `concopt
   search --out-all` run: distribution of total block time (histogram +
   top-50 marked, box plot by month, wind/ISA-deviation scatter), a
   formatted top-10 table, and the winning day's profile (chosen FL vs

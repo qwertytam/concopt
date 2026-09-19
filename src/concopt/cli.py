@@ -149,7 +149,7 @@ def main(argv=None):
     search_parser.add_argument('--out-all', default=None,
                                 help='also write the full ranked candidate set (raw numeric columns, '
                                      'not just the top rows) to this CSV path -- for '
-                                     'nb/day-search-results.ipynb')
+                                     'notebooks/day-search-results.ipynb')
     search_parser.add_argument('--tow', type=float, default=None,
                                 help='take-off weight, tonnes -- overrides --zfw and skips the '
                                      'fixed point entirely, flying every candidate at this one '
