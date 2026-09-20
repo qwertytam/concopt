@@ -27,8 +27,6 @@ the crosswind *gust* test reuses the mean wind's direction and rescales
 just the magnitude onto the gust speed -- standard practice absent a
 reported gust direction.
 """
-from pathlib import Path
-
 import numpy as np
 
 from concopt.atmos import KT_TO_MS
