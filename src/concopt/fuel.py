@@ -24,24 +24,8 @@ landing-weight limit, so landing weight is ZFW + reserve by construction.
 import numpy as np
 
 from concopt.data.conc_data import CLIMB_TOW_MAX_T, CLIMB_TOW_MIN_T
-
-# Structural max take-off weight. Coincides with the top of conc_climb.csv's
-# TOW axis (CLIMB_TOW_MAX_T), but it is a different kind of limit: above this
-# the candidate is infeasible, not merely off the end of a table.
-MTOW_T = 185.0
-
-# Fuel remaining at touchdown, tonnes. --min-landing-fuel on the CLI.
-MIN_LANDING_FUEL_T = 10.0
-
-DEFAULT_DAMPING = 0.5
-DEFAULT_TOLERANCE_T = 0.05
-DEFAULT_MAX_ITERATIONS = 30
-
-# Where the loop starts before it has seen any trip fuel. Only the iteration
-# count depends on this -- a contractive map lands in the same place from any
-# start inside the table -- so it is deliberately a plain constant rather than
-# a tuned guess.
-INITIAL_TOW_T = 150.0
+from concopt.params import (DEFAULT_DAMPING, DEFAULT_MAX_ITERATIONS, DEFAULT_TOLERANCE_T,
+                            INITIAL_TOW_T, MIN_LANDING_FUEL_T, MTOW_T)
 
 
 def trip_fuel_split(climb, legs_out, arrival_out):

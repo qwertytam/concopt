@@ -30,44 +30,9 @@ import numpy as np
 
 from . import atmos
 from .data import conc_data
-
-# --- Approach allowance, 1,500 ft to touchdown -------------------------------
-# ASSUMPTIONS, not table values. The Phase C flight recorder measures these.
-APPROACH_NM = 5.0
-APPROACH_MIN = 1.5
-APPROACH_FUEL_T = 0.3
-
-# --- Level segment at M0.95 --------------------------------------------------
-LEVEL_MACH = 0.95
-
-# Typical mass at the decel waypoint -- only used as mass_at_barix_t's
-# default, for the many tests below that exercise wind/band/flag behaviour
-# and don't care what the level segment's fuel table lookup lands on. Real
-# callers (search.py, via fuel._arrival_from_march) always pass the march's
-# own weight_at_barix; MASS IS THE TRAP here (see conc_data.subsonic_cruise
-# and _arrival_for_speed below) so nothing downstream of a real call should
-# ever rely on this default firing.
-#
-# 118, not 110: the subsonic table's lowest levels (FL290-330, which cover
-# the 380 kt schedule's FL312 decel_end_fl) are only published down to
-# 110 t, and the ~1-1.5 t decel burn taken off mass_at_barix_t before that
-# lookup would otherwise land BELOW the table's own floor -- a real, table-
-# shaped envelope edge, not a bug, but not what an arbitrary test default
-# should be tripping over.
-DEFAULT_MASS_AT_BARIX_T = 118.0
-
-# conc_descent.csv has TWO temperature bands, not the three in conc_climb.csv.
-BAND_WARM = "above_isa_minus_10"
-BAND_COLD = "isa_minus_10_and_below"
-
-SCHEDULES_KT = (325, 350, 380)
-
-# Decel table bounds (conc_descent.csv decel_to_mach1 rows).
-CRUISE_FL_MIN = 470.0
-CRUISE_FL_MAX = 600.0
-
-# Altitude the descent segment ends at, in FL units, for its mid-level wind.
-_DESCENT_END_FL = 15.0
+from .params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM, BAND_COLD, BAND_WARM,  # noqa: F401
+                     CRUISE_FL_MAX, CRUISE_FL_MIN, DEFAULT_MASS_AT_BARIX_T, DESCENT_END_FL,
+                     FASTEST_SCHEDULE_KT, FT_TO_M, LEGACY_FLAT_FUEL_T, LEVEL_MACH, SCHEDULES_KT)
 
 _SEGMENT_KEYS = (
     "time_min", "fuel_t", "level_fl", "level_nm", "decel_nm", "descent_nm",
@@ -77,11 +42,6 @@ _SEGMENT_KEYS = (
 
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
               "level_mass_outside_envelope", "wind_fl_clamped")
-
-# Legacy comparison only. The flat (35 min, 2.0 t) pair this module replaces -- see flat_arrival, which --decel-
-# descent-min forces instead of the real model below, for comparing old and
-# new numbers on equal terms.
-LEGACY_FLAT_FUEL_T = 2.0
 
 
 def _band_is_warm(isa_dev_at_cruise):
@@ -155,7 +115,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     descent = _table_by_band(
         conc_data.descent_to_1500ft, decel_end_fl, speed_kt, warm, cols
     )
-    descent_mid_fl = (decel_end_fl + _DESCENT_END_FL) / 2.0
+    descent_mid_fl = (decel_end_fl + DESCENT_END_FL) / 2.0
     descent_wind, _, descent_wind_clamped = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
     descent_nm = conc_data.dist_with_wind(
         descent["dist_zero_wind_nm"], descent["time_min"], descent_wind
@@ -191,7 +151,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     mass_at_level_t = np.broadcast_to(
         np.asarray(mass_at_barix_t, float), (n_cand,)
     ) - decel["fuel_t"]
-    isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * 0.3048)
+    isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * FT_TO_M)
     isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
     subsonic = conc_data.subsonic_cruise(decel_end_fl, mass_at_level_t, isa_dev_c_at_level)
     fuel_total_kgh = subsonic["fuel_total_kgh"]
@@ -262,7 +222,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
 
 
 def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-            mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=380):
+            mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=FASTEST_SCHEDULE_KT):
     """Arrival time and fuel from the decel waypoint to touchdown.
 
     Vectorised across candidates throughout: every argument is a (n_cand,)

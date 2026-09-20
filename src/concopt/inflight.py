@@ -81,53 +81,14 @@ from concopt.atmos import (KT_TO_MS, fl_to_pressure, isa, pressure_to_fl,
 from concopt.route import (build_legs, current_progress_nm,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
-from concopt.search import NM_TO_M, TARGET_FL, _format_hmm
-
-# Sample flight levels for the live arrival wind profile, spanning the same
-# FL183-FL605 envelope search._build_arrival_wind_fn stitches together from
-# two ERA5 npz's pre-flight (era5.SUBSONIC_LEVELS + era5.UPPER_AIR_LEVELS).
-# Active Sky takes altitude directly (no pressure levels to reuse), so this
-# is a plain FL ladder rather than real pressure levels -- the vertical
-# interpolation in _build_live_arrival_wind_fn still works in log(pressure),
-# against Active Sky's OWN returned pressure at each sampled altitude.
-ARRIVAL_WIND_SAMPLE_FL = np.array(
-    [183.0, 230.0, 280.0, 330.0, 380.0, 430.0, 480.0, 530.0, 580.0, 605.0])
-
-DEFAULT_INTERVAL_S = 60.0
-DEFAULT_LOOKAHEAD_NM = 100.0
-DEFAULT_GAIN_THRESHOLD_KT = 3.0
-
-# On-ground ground speed the take-off roll is judged to have started at --
-# "SIM ON GROUND true -> ground speed rising through ~40 kt", per spec.
-BRAKE_RELEASE_GS_KT = 40.0
-
-# The default interval is tuned for cruise, where a 60 s sample resolves a
-# ~3.5 h flight fine. It cannot resolve the arrival's short segments:
-# arrival.APPROACH_MIN is 1.5 min, so 60 s sampling gives it ONE or TWO rows
-# -- not enough to say whether the 1.5 min / 5 nm / 0.3 t approach
-# allowance is right, which is one of the three things this recording
-# exists to answer. Below LOW_ALT_FT the tick tightens to
-# LOW_ALT_INTERVAL_S (~18 samples in that 1.5 min instead of 1). The
-# trigger is pressure altitude, not AGL: alt_ft is always available,
-# whereas agl_ft is an optional SimConnect read and must never gate control
-# flow. This also tightens the take-off roll and initial climb, which is
-# free and useful -- the climb model's first minutes are a modelled
-# quantity too.
-LOW_ALT_FT = 10000.0
-LOW_ALT_INTERVAL_S = 5.0
-
-# Minimum wall-clock spacing between live arrival.arrival() refreshes. The
-# live arrival estimate costs a 10-level Active Sky query
-# (_build_live_arrival_wind_fn); at LOW_ALT_INTERVAL_S that would run 12x
-# more often than at cruise, for a ~30 min quantity that does not move that
-# fast. At the default interval this changes nothing (60 s tick, 60 s
-# refresh); it only bites at the tightened low-altitude tick, where the
-# previous estimate is reused and the recorded arrival_time_min repeats.
-ARRIVAL_REFRESH_S = 60.0
-
-# Height the arrival model's approach allowance starts at (arrival.py's
-# descent segment ends at 1,500 ft) -- the flight-phase cut for "approach".
-APPROACH_AGL_FT = 1500.0
+from concopt.params import (ACCEL_WAYPOINT_ID, ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
+                            APPROACH_AGL_FT, ARRIVAL_REFRESH_S, ARRIVAL_WIND_SAMPLE_FL,
+                            BRAKE_RELEASE_GS_KT, C_TO_K, DECEL_WAYPOINT_ID,
+                            DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
+                            DEFAULT_LOOKAHEAD_NM, FASTEST_SCHEDULE_KT, FT_TO_M,
+                            INHG_TO_HPA, LB_TO_KG, LOW_ALT_FT, LOW_ALT_INTERVAL_S,
+                            NM_TO_M, SIMCONNECT_REQUEST_TIME_MS)
+from concopt.search import TARGET_FL, _format_hmm
 
 # --- Flight recorder schema --------------------------------------------------
 # Bumped whenever RECORD_COLUMNS changes, and written as a column on every
@@ -165,8 +126,6 @@ RECORD_COLUMNS = [
     "predicted_remaining_s", "predicted_total_s", "arrival_time_min", "arrival_source",
 ]
 
-_LB_TO_KG = 0.45359237
-_INHG_TO_HPA = 33.863886666667
 
 
 def _connect(dll_path=None):
@@ -180,7 +139,7 @@ def _connect(dll_path=None):
             "Ctrl+C and pass --simconnect-dll (see inflight.py's docstring)")
     kwargs = {"library_path": dll_path} if dll_path else {}
     sm = SimConnect(**kwargs)
-    aq = AircraftRequests(sm, _time=200)
+    aq = AircraftRequests(sm, _time=SIMCONNECT_REQUEST_TIME_MS)
     print("Connected.")
     return sm, aq
 
@@ -219,12 +178,12 @@ def _read_state(aq):
         mach=aq.get("AIRSPEED_MACH"),
         tas_kt=aq.get("AIRSPEED_TRUE"),
         gs_kt=aq.get("GPS_GROUND_SPEED") / KT_TO_MS,
-        weight_t=aq.get("TOTAL_WEIGHT") * _LB_TO_KG / 1000.0,
+        weight_t=aq.get("TOTAL_WEIGHT") * LB_TO_KG / 1000.0,
         on_ground=bool(aq.get("SIM_ON_GROUND")),
         zulu_s=aq.get("ZULU_TIME"),
         # --- optional, recorder only ---
         # The whole model is a fuel calculation and nothing recorded fuel.
-        fuel_kg=_get_optional(aq, "FUEL_TOTAL_QUANTITY_WEIGHT", _LB_TO_KG),
+        fuel_kg=_get_optional(aq, "FUEL_TOTAL_QUANTITY_WEIGHT", LB_TO_KG),
         # What the aircraft is ACTUALLY flying in, for the Active-Sky-to-sim
         # hand-off nobody has measured. AMBIENT WIND DIRECTION is the
         # meteorological FROM bearing in degrees true -- the same convention
@@ -232,7 +191,7 @@ def _read_state(aq):
         sim_wind_kt=_get_optional(aq, "AMBIENT_WIND_VELOCITY"),
         sim_wind_dir_deg=_get_optional(aq, "AMBIENT_WIND_DIRECTION"),
         sim_temp_c=_get_optional(aq, "AMBIENT_TEMPERATURE"),
-        sim_pressure_hpa=_get_optional(aq, "AMBIENT_PRESSURE", _INHG_TO_HPA),
+        sim_pressure_hpa=_get_optional(aq, "AMBIENT_PRESSURE", INHG_TO_HPA),
         # Height above the surface, for cutting the approach segment at
         # arrival.py's own 1,500 ft descent-end -- alt_ft can't do that at
         # an airport whose elevation isn't zero.
@@ -286,7 +245,7 @@ def _lookahead_atmosphere(weather_source, lat, lon):
     dir_rad = np.radians(wind_dir_deg)
     u_ms = -speed_ms * np.sin(dir_rad)
     v_ms = -speed_ms * np.cos(dir_rad)
-    temp_k = temp_c + 273.15
+    temp_k = temp_c + C_TO_K
     return temp_k, u_ms, v_ms
 
 
@@ -312,7 +271,7 @@ def _level_table(temp_k, u_ms, v_ms, track_deg, weight_t, cruise_mach, current_f
 
     track_rad = np.radians(track_deg)
     wind_per_level = u_ms * np.sin(track_rad) + v_ms * np.cos(track_rad)
-    isa_t_per_level, _ = isa(TARGET_FL * 100.0 * 0.3048)
+    isa_t_per_level, _ = isa(TARGET_FL * 100.0 * FT_TO_M)
     isa_dev_per_level = temp_k - isa_t_per_level
     mach_per_level = limits.max_mach(TARGET_FL, temp_k, weight_t, cruise_mach)
     tas_ms_per_level = mach_per_level * speed_of_sound(temp_k)
@@ -327,7 +286,7 @@ def _level_table(temp_k, u_ms, v_ms, track_deg, weight_t, cruise_mach, current_f
     current_idx = int(np.argmin(np.abs(TARGET_FL - current_fl)))
 
     table = pd.DataFrame(dict(
-        fl=TARGET_FL, temp_c=temp_k - 273.15, isa_dev_c=isa_dev_per_level,
+        fl=TARGET_FL, temp_c=temp_k - C_TO_K, isa_dev_c=isa_dev_per_level,
         wind_kt=wind_per_level / KT_TO_MS, max_mach=mach_per_level,
         max_tas_kt=tas_ms_per_level / KT_TO_MS, gs_kt=gs_per_level / KT_TO_MS,
         above_ceiling=above_ceiling,
@@ -455,7 +414,7 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     v_ms = -speed_ms * np.cos(dir_rad)
     track_rad = np.radians(track_deg)
     along_ms = (u_ms * np.sin(track_rad) + v_ms * np.cos(track_rad))[order]
-    temp_k = (temp_c + 273.15)[order]
+    temp_k = (temp_c + C_TO_K)[order]
 
     # Collapse adjacent duplicate pressures (src_log_p is sorted, so any
     # duplicates are guaranteed adjacent) -- see the docstring above.
@@ -498,7 +457,7 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl)
     level_fuel_t, not level_time_min, and only time feeds the live panel's
     predicted-remaining clock, so it doesn't matter here."""
     out = arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_c,
-                           mass_at_barix_t, speed=380)
+                           mass_at_barix_t, speed=FASTEST_SCHEDULE_KT)
     return dict(
         time_min=float(out["time_min"][0]),
         decel_time_min=float(out["decel_time_min"][0]),
@@ -897,7 +856,7 @@ def _preflight_predicted_total_s(report_df):
     return _parse_hmm_seconds(report_df["elapsed"].iloc[-1]) + _report_arrival_s(report_df)
 
 
-def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id="LINND", decel_id="BARIX"):
+def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID):
     """Predicted (report_df, a concopt report --out CSV) vs actual (cpa, the
     recorder's per-waypoint closest-point-of-approach snapshots) at every
     waypoint report_df covers, plus the three numbers the recorder exists to
@@ -989,8 +948,8 @@ def _print_comparison(table, constants):
 
 
 def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_LOOKAHEAD_NM,
-                  record_path=None, compare_path=None, accel_id="LINND", decel_id="BARIX",
-                  host="localhost", port=19285, cruise_mach=limits.CRUISE_MACH,
+                  record_path=None, compare_path=None, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID,
+                  host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
                   state_source=None, weather_source=None, replay_speed=1.0):
     """The live advisor loop, every interval_s: read the sim, project

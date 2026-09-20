@@ -26,13 +26,16 @@ import pandas as pd
 
 from concopt import arrival, fuel, limits
 from concopt.atmos import fl_to_pressure, isa
+from concopt.params import (C_TO_K, DECEL_WAYPOINT_ID, DESCENT_END_FT, FT_TO_M,
+                            REPLAY_AS_WIND_BIAS_KT, REPLAY_DECEL_END_MACH,
+                            REPLAY_DESCENT_END_MACH, REPLAY_DESCENT_END_TAS_KT,
+                            REPLAY_GROUND_ROLL, REPLAY_GS_NOISE_KT, REPLAY_LEVEL_SPEED_FRACTION,
+                            REPLAY_LIFTOFF, REPLAY_MACH_NOISE_FRAC, REPLAY_POSITION_NOISE_NM,
+                            REPLAY_SAMPLE_INTERVAL_S, REPLAY_SEED, REPLAY_TOP_OF_CLIMB_MACH,
+                            REPLAY_TOP_OF_CLIMB_TAS_KT, REPLAY_TOUCHDOWN_MACH,
+                            REPLAY_TOUCHDOWN_TAS_KT, S_PER_DAY)
 from concopt.route import build_legs, climb_cruise_segment, destination_point, parse_pln
 from concopt.search import TOP_OF_CLIMB_FL, resolve_tow_and_arrival
-
-# On-ground ground speed the take-off roll starts at -- mirrors
-# inflight.BRAKE_RELEASE_GS_KT (not imported, to avoid a replay -> inflight
-# -> replay import cycle; the two are asserted equal in test_replay.py).
-_BRAKE_RELEASE_GS_KT = 40.0
 
 # Profile columns replay_sources reads. A strict subset of
 # inflight.RECORD_COLUMNS (every name here IS one of those, so a real
@@ -174,8 +177,8 @@ def _lat_lon_at_cum_nm(legs, target_cum_nm):
 def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_upper_data=None,
                             tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                             decel_descent_min=None, cruise_mach=limits.CRUISE_MACH,
-                            decel_id="BARIX", sample_interval_s=15.0, seed=0,
-                            as_wind_bias_kt=3.0):
+                            decel_id=DECEL_WAYPOINT_ID, sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
+                            seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT):
     """A synthetic flight-shaped DataFrame (same columns a --record CSV has,
     a valid replay_sources profile) for JFK->LHR on pln_path, built from
     the SAME model concopt report runs (search.resolve_tow_and_arrival:
@@ -236,23 +239,18 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     touchdown_cum_nm = float(legs[-1].cum_nm)
 
     # --- control points, brake release -> touchdown -------------------------
-    points = [
-        dict(elapsed_s=0.0, cum_nm=0.0, alt_ft=0.0, mach=0.0, tas_kt=0.0, gs_kt=0.0,
-             weight_t=tow_t_val, on_ground=True),
-        dict(elapsed_s=20.0, cum_nm=0.05, alt_ft=0.0, mach=0.02, tas_kt=15.0, gs_kt=15.0,
-             weight_t=tow_t_val, on_ground=True),
-        # Crosses _BRAKE_RELEASE_GS_KT (40 kt) between here and the point above.
-        dict(elapsed_s=40.0, cum_nm=0.2, alt_ft=0.0, mach=0.09, tas_kt=60.0, gs_kt=60.0,
-             weight_t=tow_t_val, on_ground=True),
-    ]
-    liftoff_elapsed_s = 55.0
-    points.append(dict(elapsed_s=liftoff_elapsed_s, cum_nm=0.4, alt_ft=200.0, mach=0.18,
-                        tas_kt=110.0, gs_kt=110.0, weight_t=tow_t_val, on_ground=False))
+    # Ground roll and liftoff control points are fixed stand-ins (params.REPLAY_*).
+    _cols = ("elapsed_s", "cum_nm", "alt_ft", "mach", "tas_kt", "gs_kt")
+    points = [dict(zip(_cols, row), weight_t=tow_t_val, on_ground=True)
+              for row in REPLAY_GROUND_ROLL]
+    liftoff_elapsed_s = REPLAY_LIFTOFF[0]
+    points.append(dict(zip(_cols, REPLAY_LIFTOFF), weight_t=tow_t_val, on_ground=False))
     # Top of climb -- march_legs' own accumulated_s starts counting from
     # here (climb["time_min"]*60), so this point's elapsed_s lines up
     # exactly with leg["elapsed_s"]'s own convention, no offset needed.
     points.append(dict(elapsed_s=climb_time_s, cum_nm=climb_ground_nm,
-                        alt_ft=TOP_OF_CLIMB_FL * 100.0, mach=0.95, tas_kt=550.0, gs_kt=550.0,
+                        alt_ft=TOP_OF_CLIMB_FL * 100.0, mach=REPLAY_TOP_OF_CLIMB_MACH,
+                        tas_kt=REPLAY_TOP_OF_CLIMB_TAS_KT, gs_kt=REPLAY_TOP_OF_CLIMB_TAS_KT,
                         weight_t=climb_mass_t, on_ground=False))
 
     # Real cruise legs only (eff_dist_nm > 0) -- a leg wholly inside the
@@ -285,7 +283,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     cursor_cum_nm += a["decel_nm"]
     cursor_weight_t -= a["decel_fuel_t"]
     points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["level_fl"] * 100.0,
-                        mach=1.0, tas_kt=float(a["schedule_kt"]),
+                        mach=REPLAY_DECEL_END_MACH, tas_kt=float(a["schedule_kt"]),
                         gs_kt=float(a["schedule_kt"]) + a["level_wind_kt"],
                         weight_t=cursor_weight_t, on_ground=False))
 
@@ -293,21 +291,23 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     cursor_cum_nm += a["level_nm"]
     cursor_weight_t -= a["level_fuel_t"]
     points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["level_fl"] * 100.0,
-                        mach=arrival.LEVEL_MACH, tas_kt=float(a["schedule_kt"]) * 0.95,
-                        gs_kt=float(a["schedule_kt"]) * 0.95 + a["level_wind_kt"],
+                        mach=arrival.LEVEL_MACH, tas_kt=float(a["schedule_kt"]) * REPLAY_LEVEL_SPEED_FRACTION,
+                        gs_kt=float(a["schedule_kt"]) * REPLAY_LEVEL_SPEED_FRACTION + a["level_wind_kt"],
                         weight_t=cursor_weight_t, on_ground=False))
 
     cursor_elapsed_s += a["descent_time_min"] * 60.0
     cursor_cum_nm += a["descent_nm"]
     cursor_weight_t -= a["descent_fuel_t"]
-    points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=1500.0,
-                        mach=0.3, tas_kt=220.0, gs_kt=220.0,
+    points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=DESCENT_END_FT,
+                        mach=REPLAY_DESCENT_END_MACH, tas_kt=REPLAY_DESCENT_END_TAS_KT,
+                        gs_kt=REPLAY_DESCENT_END_TAS_KT,
                         weight_t=cursor_weight_t, on_ground=False))
 
     touchdown_elapsed_s = cursor_elapsed_s + arrival.APPROACH_MIN * 60.0
     cursor_weight_t -= arrival.APPROACH_FUEL_T
     points.append(dict(elapsed_s=touchdown_elapsed_s, cum_nm=touchdown_cum_nm, alt_ft=0.0,
-                        mach=0.15, tas_kt=140.0, gs_kt=140.0,
+                        mach=REPLAY_TOUCHDOWN_MACH, tas_kt=REPLAY_TOUCHDOWN_TAS_KT,
+                        gs_kt=REPLAY_TOUCHDOWN_TAS_KT,
                         weight_t=cursor_weight_t, on_ground=True))
 
     # --- densify onto a regular sample_interval_s grid -----------------------
@@ -337,9 +337,9 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     # and the position jitter (~0.1 nm) stays well inside build_legs'
     # nearest-leg search tolerance, but large enough that replaying this
     # profile is not just reading the control points back verbatim.
-    mach = np.clip(mach * (1.0 + rng.normal(0.0, 0.003, n)), 0.0, None)
-    gs_kt = np.clip(gs_kt + rng.normal(0.0, 2.0, n), 0.0, None)
-    cum_nm_noisy = np.clip(cum_nm + rng.normal(0.0, 0.1, n), 0.0, touchdown_cum_nm)
+    mach = np.clip(mach * (1.0 + rng.normal(0.0, REPLAY_MACH_NOISE_FRAC, n)), 0.0, None)
+    gs_kt = np.clip(gs_kt + rng.normal(0.0, REPLAY_GS_NOISE_KT, n), 0.0, None)
+    cum_nm_noisy = np.clip(cum_nm + rng.normal(0.0, REPLAY_POSITION_NOISE_NM, n), 0.0, touchdown_cum_nm)
 
     lat_deg = np.empty(n)
     lon_deg = np.empty(n)
@@ -359,8 +359,8 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     along_wind_kt = gs_kt - tas_kt
     sim_wind_dir_deg = np.where(along_wind_kt >= 0.0, (track_deg + 180.0) % 360.0, track_deg)
     sim_wind_kt = np.abs(along_wind_kt)
-    isa_t_k, _ = isa(alt_ft * 0.3048)
-    sim_temp_c = isa_t_k - 273.15
+    isa_t_k, _ = isa(alt_ft * FT_TO_M)
+    sim_temp_c = isa_t_k - C_TO_K
     sim_pressure_hpa = fl_to_pressure(alt_ft / 100.0) / 100.0
 
     as_wind_kt = sim_wind_kt + as_wind_bias_kt
@@ -372,7 +372,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
 
     return pd.DataFrame({
         "elapsed_s": grid,
-        "zulu_s": grid % 86400.0,
+        "zulu_s": grid % S_PER_DAY,
         "lat_deg": lat_deg, "lon_deg": lon_deg,
         "cum_nm": cum_nm, "track_deg": track_deg,
         "alt_ft": alt_ft, "agl_ft": alt_ft,  # JFK/EGLL are both near sea level

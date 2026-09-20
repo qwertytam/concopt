@@ -12,8 +12,8 @@ import pandas as pd
 import pytest
 
 from concopt.atmos import isa, pressure_to_fl
-from concopt.inflight import BRAKE_RELEASE_GS_KT, run_inflight
-from concopt.replay import (_BRAKE_RELEASE_GS_KT, _row_weather, build_synthetic_flight,
+from concopt.inflight import run_inflight
+from concopt.replay import (_row_weather, build_synthetic_flight,
                              replay_sources)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from tests.test_route import SAMPLE_PLN
@@ -67,14 +67,6 @@ def _synthetic_flight_df(seed=0, zfw_t=92.0, sample_interval_s=15.0):
 
 
 # --- pure helpers -------------------------------------------------------------
-
-def test_replay_brake_release_threshold_matches_inflight():
-    """replay.py can't import inflight.BRAKE_RELEASE_GS_KT (would create an
-    import cycle -- inflight imports concopt.replay's sources at the CLI
-    layer), so it keeps its own copy for the ground-roll control points.
-    Pinned equal here rather than trusted to stay in sync silently."""
-    assert _BRAKE_RELEASE_GS_KT == BRAKE_RELEASE_GS_KT
-
 
 def test_row_weather_missing_values_become_nan_not_zero():
     """The C2 schema's own rule (a missing reading writes empty, read back

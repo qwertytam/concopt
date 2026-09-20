@@ -13,13 +13,12 @@ import pandas as pd
 import pint_pandas
 
 from concopt.utils import convert_dms_to_dd
+from concopt.params import ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, ACTIVE_SKY_URL_BASE
 from concopt.units import ppunit
 
-# defaults
-url_base = 'http://'
 
 def get_atmosphere(lat, lon, alts,
-                   host_addr='localhost', port=19285, tude_units='dd'):
+                   host_addr=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, tude_units='dd'):
     """ Get atmospherical conditions from ActiveSky for given position
 
     Arguments:
@@ -52,7 +51,7 @@ def get_atmosphere(lat, lon, alts,
     alts_joined = "|".join(alts)
     altsr = f"&altitudes={alts_joined}"
 
-    req = f"{url_base}{host_addr}:{port}{end_point}{latr}{lonr}{altsr}"
+    req = f"{ACTIVE_SKY_URL_BASE}{host_addr}:{port}{end_point}{latr}{lonr}{altsr}"
     logging.info(f"Getting atmosphere for request {req}")
 
     try:
@@ -77,7 +76,7 @@ def get_atmosphere(lat, lon, alts,
 
 
 def get_atmosphere_as_pd(lat, lon, alts,
-                         host_addr='localhost', port=19285, tude_units='dd'):
+                         host_addr=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, tude_units='dd'):
     """ Get atmospherical conditions from ActiveSky for given position as a
     pandas dataframe. Display-only -- see get_atmosphere_np for the
     pint-free variant everything else (verify.py, the in-flight advisor)
@@ -116,7 +115,7 @@ def get_atmosphere_as_pd(lat, lon, alts,
 
 
 def get_atmosphere_np(lat, lon, alts_ft,
-                      host_addr='localhost', port=19285, tude_units='dd'):
+                      host_addr=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, tude_units='dd'):
     """ Get atmospherical conditions from ActiveSky for given position as
     plain numpy arrays -- no pint, for verify.py and the in-flight advisor
     (atmos.py/limits.py's hot path never touches pint either).

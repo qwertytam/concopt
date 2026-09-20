@@ -11,66 +11,10 @@ import cdsapi
 import numpy as np
 import xarray as xr
 
-# Active Sky's historical archive starts here; no point downloading ERA5
-# for a date the day-search can never actually query.
-ARCHIVE_START = dt.date(2014, 8, 1)
-
-# Route bbox + margin (N, W, S, E), JFK-LHR great circle.
-UPPER_AIR_AREA = [53, -76, 38, 2]
-UPPER_AIR_LEVELS = ["70", "100", "125", "150"]  # FL447-FL605
-UPPER_AIR_GRID = [1.0, 1.0]
-
-# These same netCDFs are reduced TWICE: once onto the cruise legs (the
-# search's own --npz), and again onto the arrival legs (--arrival-upper-npz,
-# B6) to extend arrival.py's decel-segment wind coverage above SUBSONIC_LEVELS'
-# FL414 ceiling -- UPPER_AIR_AREA already covers the arrival region and 150
-# joins 175 hPa (SUBSONIC_LEVELS' top) with no gap, so this needs no new CDS
-# request, just a second era5.reduce_to_legs(nc_paths, arrival_legs, out_npz)
-# call against the already-downloaded era5_upper_*.nc files.
-# Departures are 08:00-14:00 America/New_York -> 12:00-18:00Z under EDT,
-# 13:00-19:00Z under EST, plus ~4h flight time to cover the arrival end.
-# Do not widen this.
-UPPER_AIR_TIMES = [f"{h:02d}:00" for h in range(12, 24)]
-
-# Subsonic cruise segment (last ~300 nm into LHR, arrival-only), FL183-FL414.
-# Seven levels (175-500 hPa) join up with the 150 hPa data already downloaded.
-# B6: this alone does not reach the decel segment's own wind-sampling
-# midpoint from a realistic cruise level (roughly FL446-491) -- see
-# UPPER_AIR_LEVELS above, which stitches on top to FL605.
-SUBSONIC_LEVELS = ["175", "200", "225", "250", "300", "400", "500"]
-SUBSONIC_AREA = [54, -13, 47, 2]  # N, W, S, E — arrival box only
-SUBSONIC_GRID = [1.0, 1.0]
-SUBSONIC_TIMES = UPPER_AIR_TIMES
-# CDS caps this dataset at 4 distinct pressure levels per request, regardless
-# of area size or month count -- confirmed by live bisection, 2026-09: every
-# single level and every pair of SUBSONIC_LEVELS succeeded; 3- and 4-level
-# combos succeeded (including at the full SUBSONIC_AREA above, not just a
-# shrunk test box); 5, 6, and the full 7 were all rejected with "cost limits
-# exceeded" -- even a 5-level/6-grid-cell request (a smaller total volume)
-# was rejected while an unrelated 4-level/105-grid-cell request (a *larger*
-# volume) had already succeeded, ruling out total data volume as the driver.
-# Separately, a 12-month chunk of just 4 levels was *also* rejected, so the
-# existing 1-month chunking (upper_air_months) still has to apply on top of
-# the level cap -- the two are independent limits. SUBSONIC_LEVELS is
-# therefore split into two <=4-level groups, one CDS request per (month,
-# group) -- see download_subsonic.
-#
-# reduce_to_legs (below) needs no changes to consume these: confirmed by
-# live trial, 2026-09, against synthetic files shaped like a 2-month x
-# 2-group download (4 files, disjoint level sets, disjoint time ranges) --
-# xr.open_mfdataset(paths, combine="by_coords") merges cleanly along BOTH
-# the time and pressure_level axes into one (n_time, 7, lat, lon) dataset,
-# no NaNs, no error. Pass every era5_subsonic_*.nc path (both groups, every
-# month) to reduce_to_legs at once, same as the upper-air files.
-SUBSONIC_LEVEL_GROUPS = [SUBSONIC_LEVELS[:4], SUBSONIC_LEVELS[4:]]
-
-# Phase 4 (runways.py's crosswind/tailwind screen, and later the in-flight
-# advisor) consumes these; downloaded now so both sit in the same CDS
-# queue as the upper-air requests.
-SURFACE_AREAS = {"KJFK": [41, -74, 40, -73], "EGLL": [52, -1, 51, 0]}
-SURFACE_TIMES = [f"{h:02d}:00" for h in range(24)]
-
-_ALL_DAYS = [f"{d:02d}" for d in range(1, 32)]
+from concopt.params import (ALL_DAYS, ARCHIVE_START, SUBSONIC_AREA, SUBSONIC_GRID,  # noqa: F401
+                            SUBSONIC_LEVEL_GROUPS, SUBSONIC_LEVELS, SUBSONIC_TIMES,
+                            SURFACE_AREAS, SURFACE_CHUNK_MONTHS, SURFACE_TIMES,
+                            UPPER_AIR_AREA, UPPER_AIR_GRID, UPPER_AIR_LEVELS, UPPER_AIR_TIMES)
 
 
 def _year_months(year):
@@ -127,7 +71,7 @@ def download_upper_air(out_dir, year, month):
             "pressure_level": UPPER_AIR_LEVELS,
             "year": [str(year)],
             "month": [f"{month:02d}"],
-            "day": _ALL_DAYS,
+            "day": ALL_DAYS,
             "time": UPPER_AIR_TIMES,
             "area": UPPER_AIR_AREA,
             "grid": UPPER_AIR_GRID,
@@ -138,7 +82,7 @@ def download_upper_air(out_dir, year, month):
     return out_path
 
 
-def _month_chunks(year, chunk_size=6):
+def _month_chunks(year, chunk_size=SURFACE_CHUNK_MONTHS):
     """_year_months(year) split into runs of at most chunk_size, in order.
     Even the tiny surface area trips the CDS cost check on a full
     12-month request (confirmed by live trial: 9 months clears it, 12
@@ -174,7 +118,7 @@ def download_surface(out_dir, year):
                         ],
                         "year": [str(year)],
                         "month": chunk,
-                        "day": _ALL_DAYS,
+                        "day": ALL_DAYS,
                         "time": SURFACE_TIMES,
                         "area": area,
                         "data_format": "netcdf",
@@ -328,7 +272,7 @@ def download_subsonic(out_dir, year, month):
                     "pressure_level": levels,
                     "year": [str(year)],
                     "month": [f"{month:02d}"],
-                    "day": _ALL_DAYS,
+                    "day": ALL_DAYS,
                     "time": SUBSONIC_TIMES,
                     "area": SUBSONIC_AREA,
                     "grid": SUBSONIC_GRID,
