@@ -108,7 +108,7 @@ for its own sake, no defensive error handling.
   never loop over candidates.
 
   The march starts with a TOW-based climb (`data.conc_data.climb_to`,
-  `conc_climb.csv`; `--tow`, default 185 t): brake release to top of climb
+  `conc_climb.csv`; TOW comes from `--zfw`, see below): brake release to top of climb
   (FL502) burns TOW down to a top-of-climb mass over some ground distance
   and time, both used as the cruise's starting state — replacing an older
   fixed 20-minute/165 t accel-point assumption that credited full cruise
@@ -153,10 +153,23 @@ for its own sake, no defensive error handling.
   ranked candidate set (raw numeric columns, ~31,000 rows) alongside
   `--out`'s top-N formatted display CSV — for `notebooks/day-search-results.ipynb`,
   which needs the whole distribution rather than just the top rows. Every
-  row is stamped with its own `tow_t` (the `--tow` that run was made
-  under), read back by `run_shortlist`/`concopt shortlist` (below) so a
-  generated `concopt verify` command always uses the TOW that candidate
-  was actually found under, not a guessed default.
+  row is stamped with its own `tow_t` (solved from `--zfw`), `zfw_t`, and
+  `tow_override_t` (blank unless the run used `--tow`), read back by
+  `run_shortlist`/`concopt shortlist` (below) so a generated `concopt
+  verify` command carries the same `--zfw` — and the same `--tow`, when
+  that search had one.
+
+  **ZFW is the weight input; TOW is its outcome.** `--zfw` is required on
+  `search`/`report`/`verify` (no flat-185 t fallback any more —
+  `search.DEFAULT_TOW_T` survives only as `march_legs`' own default).
+  `--tow` is an optional override on top of it — e.g. the sim's own
+  trip-calculator fuel load — that skips the fixed point and flies every
+  candidate at that one TOW, ZFW unchanged (fuel loaded = `--tow` minus
+  `--zfw`). A candidate whose trip needs more than that (ZFW + trip fuel +
+  reserve) gets a `tow_below_required` flag, and `report` prints fuel loaded
+  against fuel needed with the margin. The override still runs the real
+  arrival model (`--subsonic-npz`/`--arrival-upper-npz` required as before;
+  only `verify` skips them, since it only needs the TOW).
 
   `run_shortlist`/`concopt shortlist` takes a `concopt search --out` CSV
   (`--search-csv`, default `results.csv`) and prints its top `--top`
@@ -288,9 +301,9 @@ for its own sake, no defensive error handling.
   two TOWs won't agree), so the
   verification is flown at the weight that day was actually found under —
   an Active Sky check flown at the wrong weight undercuts the whole
-  comparison. `--tow` overrides `--zfw` and skips the fixed point (and
-  arrival/subsonic data) entirely, same "what if I actually load X" escape
-  hatch `search`/`report` have; legs still inside the climb are excluded
+  comparison. `--tow` is the optional override (match the search being
+  verified) and skips the fixed point (and arrival/subsonic data)
+  entirely; `--zfw` is still required; legs still inside the climb are excluded
   from the comparison (Active Sky's FL450-FL600 `TARGET_FL` grid doesn't
   apply to climb altitude). Takes `--points` (default 12) evenly spaced cruise
   legs, including the first and last; at each one queries Active Sky live

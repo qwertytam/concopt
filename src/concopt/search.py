@@ -33,7 +33,8 @@ NM_TO_M = 1852.0
 # table) across the cruise, not a linear schedule against cum_nm -- see
 # march_legs. It drives ceiling_ft, which is what actually keeps the
 # optimiser off levels the aircraft can't hold; it does not change max_tas
-# above FL430 (530 kt CAS at every weight there). --tow on the CLI.
+# above FL430 (530 kt CAS at every weight there). Only march_legs' own
+# default now -- the CLI always solves TOW from --zfw (--tow overrides it).
 DEFAULT_TOW_T = 185.0
 
 # The climb table's top-of-climb level (max level_fl in conc_climb.csv) --
@@ -577,6 +578,12 @@ def resolve_tow_and_arrival(
     together -- arrival fuel has to be inside the fixed point (see fuel.py),
     so the two can't be solved separately.
 
+    zfw_t is required: TOW is an outcome of it. tow_t is an optional
+    override (e.g. the sim's own trip-calculator fuel load) -- given, the
+    fixed point is skipped and every candidate flies that one TOW, ZFW
+    unchanged (fuel loaded = tow_t - zfw_t), with any candidate whose trip
+    needs more than that flagged tow_below_required.
+
     decel_descent_min given forces arrival.flat_arrival -- the pre-B3 flat
     (DECEL_DESCENT_S, DESCENT_FUEL_T) pair -- instead of the real per-day
     arrival.arrival() model, for comparing old and new numbers; subsonic_data
@@ -613,8 +620,9 @@ def resolve_tow_and_arrival(
         )
         arrival_fn = arrival.arrival
 
-    if tow_t is None and zfw_t is None:
-        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
+    if zfw_t is None:
+        raise ValueError("zfw_t (--zfw) is required -- TOW is an outcome of ZFW; "
+                         "tow_t (--tow) is only an optional override on top of it")
 
     if tow_t is None:
         zfw_arr = np.full(n_cand, zfw_t, dtype=float)
@@ -631,7 +639,12 @@ def resolve_tow_and_arrival(
         arrival_out = fuel._arrival_from_march(legs_out, arrival_nm, wind_fn_builder, arrival_fn)
         tow_out = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,)).copy()
         n_iterations = None
-        fuel_flags = np.array([""] * n_cand, dtype=object)
+        # Loaded TOW vs what this ZFW's trip actually needs (zfw + trip fuel +
+        # reserve): a fixed TOW that some candidate days can't fly on is
+        # flagged per candidate, the way the fixed point flags its own bounds.
+        trip_t = sum(fuel.trip_fuel_split(climb, legs_out, arrival_out))
+        short = tow_out < zfw_t + trip_t + min_landing_fuel_t
+        fuel_flags = np.where(short, "tow_below_required", "").astype(object)
 
     return tow_out, n_iterations, fuel_flags, legs_out, weight_per_leg, climb, arrival_out
 
@@ -669,13 +682,14 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     fixed point: TOW is solved per candidate rather than assumed, so a
     warm/heavy day's own extra climb AND arrival fuel feeds back into its
     own extra weight rather than every candidate being flown at one shared
-    guess. tow_t overrides zfw_t and skips the solve entirely, applying that
-    one weight to every candidate -- for "what if the whole fleet loads X"
-    or for matching an old run. Neither given falls back to the flat
-    DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was wired in.
-    The fixed point's own boundary/convergence flags (fuel.py's
-    tow_above_mtow_*/tow_below_climb_table_*/fuel_not_converged) join the
-    jfk/lhr/climb/arrival flags already in the output's flags column.
+    guess. zfw_t is required. tow_t is an optional override (e.g. the sim's
+    trip-calculator fuel load): it skips the solve and applies that one TOW
+    to every candidate, ZFW unchanged, stamped in the tow_override_t column
+    (blank when TOW was solved) so run_shortlist can reproduce it. The fixed
+    point's own boundary/convergence flags (fuel.py's
+    tow_above_mtow_*/tow_below_climb_table_*/fuel_not_converged), or
+    tow_below_required under an override, join the jfk/lhr/climb/arrival
+    flags already in the output's flags column.
 
     subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs,
     the route's complement of climb_cruise_segment) and arrival_upper_npz_path
@@ -705,6 +719,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
+    tow_override_t = tow_t
     tow_t, _n_iterations, fuel_flags, legs_out, _weight_per_leg, climb, arrival_out = (
         resolve_tow_and_arrival(
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
@@ -781,8 +796,10 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     candidates = candidates.dropna(subset=["supersonic_time_s", "mean_fl"])
     candidates = candidates.sort_values("total_time_s", ascending=True).reset_index(drop=True)
 
-    # Add zfw_t to candidates so run_shortlist can read it from the CSV output
-    candidates["zfw_t"] = zfw_t if zfw_t is not None else None
+    # zfw_t/tow_override_t on every row so run_shortlist can rebuild the
+    # exact verify command from the CSV output
+    candidates["zfw_t"] = zfw_t
+    candidates["tow_override_t"] = np.nan if tow_override_t is None else tow_override_t
 
     display = pd.DataFrame({
         "date": candidates["local_date"],
@@ -800,6 +817,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
         "total_time": candidates["total_time_s"].map(_format_hmm),
         "tow_t": candidates["tow_t"],
         "zfw_t": candidates["zfw_t"],
+        "tow_override_t": candidates["tow_override_t"],
     })
 
     print(display.head(10).to_string(index=False))
@@ -884,7 +902,9 @@ def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX",
     with the --zfw it was actually run under), so the generated command
     uses the same fixed-point fuel model search did -- verify.py's whole
     comparison depends on that. tow_t in the summary is for reference
-    (the per-candidate converged take-off weight), not used for verify."""
+    (the per-candidate converged take-off weight); the command only gets
+    --tow when the CSV's tow_override_t column is set, i.e. the search itself
+    was run under a --tow override."""
     df = pd.read_csv(search_csv_path).head(top)
 
     print(f"Top {len(df)} shortlist from {search_csv_path}, ready to verify by hand:\n")
@@ -912,6 +932,11 @@ def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX",
                 f"--date {local_date} --hour {local_hour} --zfw {zfw_t:.1f}",
                 f"--decel {decel_id}",
             ])
+            # A search run under a --tow override flew every row at that TOW
+            # (blank/absent column: TOW was solved) -- verify has to as well.
+            tow_override_t = row.get("tow_override_t")
+            if pd.notna(tow_override_t):
+                cmd_parts.append(f"--tow {float(tow_override_t):.1f}")
             print(f"    {' '.join(cmd_parts)}\n")
         else:
             # Fallback for CSV without zfw_t column (shouldn't happen with current search.py)

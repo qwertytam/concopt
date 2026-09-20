@@ -102,9 +102,11 @@ poetry run concopt search --pln <route.pln> ^
 
 `--zfw` solves take-off weight per candidate by fixed-point iteration
 (uplift = trip fuel + reserve), so a hot/heavy day carries its own extra
-fuel rather than every candidate flying one shared weight. Omit it (and
-`--tow`) and every candidate flies a flat 185 t — fine for a first pass,
-not for a real comparison. `--out-all` is worth writing every real run —
+fuel rather than every candidate flying one shared weight. `--zfw` is
+required — TOW is an outcome of it. If the sim's trip calculator gives a
+different fuel load, add `--tow <ZFW + that fuel>` to fly every candidate at
+that one TOW instead (candidates whose trip needs more fuel get a
+`tow_below_required` flag). `--out-all` is worth writing every real run —
 it's what `notebooks/day-search-results.ipynb` (step 7 below) reads.
 
 This ranks on ERA5 alone, which **cannot pick the single best day** —
@@ -124,7 +126,7 @@ poetry run concopt shortlist --pln <route.pln> --npz data/era5/route_legs.npz ^
 prints each candidate as a ready-to-run `concopt verify` command, built
 with `--zfw` (read back from the search CSV's own `zfw_t` column) plus
 both arrival npz paths — the same fixed-point/real-arrival model `search`
-itself ranked with, not the flat `--tow` shortcut. (Older `results.csv`
+itself ranked with (plus `--tow`, from the CSV's `tow_override_t` column, if that search used one). (Older `results.csv`
 files without a `zfw_t` column, or omitting `--subsonic-npz`/
 `--arrival-upper-npz` here, fall back to printing a warning instead of a
 command — pass the same npz's you searched with.)
@@ -323,10 +325,12 @@ exploratory lever on cruise TAS, not a re-validated Mmo flight profile.
   previous run's numbers means the historical date wasn't actually
   reloaded in Active Sky — the snapshot guard (step 4) catches this and
   raises rather than silently proceeding.
-- **`--tow` and `--zfw` are mutually exclusive escape hatches**, not
-  interchangeable — `--tow` skips the fixed-point/real-arrival model
-  entirely ("what if I actually loaded X"); `--zfw` is the real
-  per-candidate model. Don't mix results computed under each.
+- **`--zfw` is required; `--tow` is an optional override on top of it.**
+  `--tow` skips the fixed point ("what if I actually loaded X", e.g. the
+  sim's trip-calculator fuel load) and flies every candidate at that one
+  TOW, ZFW unchanged. Don't mix results computed with and without it —
+  `verify` must be given the same `--tow` the search used (the shortlist
+  command does this for you).
 - **`route_legs.npz` is not `subsonic_legs.npz`/`arrival_upper_legs.npz`**
   — same source netCDFs, different legs. Passing the wrong one raises
   (see step 2), which is much better than the alternative: it used to

@@ -121,7 +121,7 @@ def fuel_plan(climb, legs_out, arrival_out, zfw_t=None,
         arrival_fuel_t=arrival_fuel_t, trip_fuel_t=trip_fuel_t,
         uplift_t=uplift_t, zfw_t=zfw_out, tow_t=tow_out,
         tow_required_t=tow_required_t,
-        landing_weight_t=zfw_out + min_landing_fuel_t,
+        landing_weight_t=tow_out - trip_fuel_t,  # ZFW + reserve, unless TOW was overridden/clamped
         min_landing_fuel_t=min_landing_fuel_t,
         n_iterations=n_iterations, flags=flags,
     )

@@ -15,7 +15,7 @@ import pandas as pd
 from concopt import arrival, fuel, limits
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import (DEFAULT_TOW_T, NM_TO_M, NY_TZ, TOP_OF_CLIMB_FL,
+from concopt.search import (NM_TO_M, NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
 
@@ -30,6 +30,9 @@ _FUEL_FLAG_NOTES = {
     f"tow_below_climb_table_{fuel.CLIMB_TOW_MIN_T:.0f}":
         "TOW fell below conc_climb.csv's {floor:.0f} t floor and was clamped "
         "(the plan wanted {req:.1f} t) -- lower-weight climb pages needed",
+    "tow_below_required":
+        "the TOW override loads less fuel than this trip needs "
+        "(ZFW + trip fuel + reserve = {req:.1f} t) -- lands below the reserve",
     "fuel_not_converged":
         "the fixed point was still moving after {iters} iterations -- the "
         "weights below are the last iterate, not a solution",
@@ -155,7 +158,10 @@ def _fuel_plan_lines(plan):
     ]
 
     if plan["n_iterations"] is None:
-        lines.append("  TOW given, no fixed point -- ZFW above is what that TOW implies")
+        loaded = one["tow_t"] - one["zfw_t"]
+        margin = one["tow_t"] - one["tow_required_t"]
+        lines.append(f"  TOW override, no fixed point -- fuel loaded {loaded:.1f} t, "
+                     f"trip needs {one['uplift_t']:.1f} t ({margin:+.1f} t margin)")
     else:
         lines.append(f"  converged in {plan['n_iterations']} iterations")
 
@@ -244,11 +250,11 @@ def run_report(pln_path, npz_path, local_date, local_hour,
 
     zfw_t (tonnes) is the primary weight input: TOW is solved (via
     resolve_tow_and_arrival) rather than given, so the report shows the
-    weight the day actually needs, arrival fuel included. tow_t overrides
-    that -- given, the fixed point is skipped entirely and ZFW is instead
-    derived from the trip fuel that TOW produces ("what if I actually load
-    X"). Neither given falls back to a flat DEFAULT_TOW_T, same as before
-    the fuel plan existed.
+    weight the day actually needs, arrival fuel included. zfw_t is required.
+    tow_t is an optional override ("what if I actually load X", e.g. the
+    sim's trip-calculator figure): the fixed point is skipped, ZFW stays as
+    given, and the report shows fuel loaded (tow_t - zfw_t) against the
+    fuel the trip needs.
 
     subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs)
     and arrival_upper_npz_path (era5.reduce_to_legs run against those SAME
@@ -284,11 +290,10 @@ def run_report(pln_path, npz_path, local_date, local_hour,
         )
     )
     tow_t = float(tow_arr[0])
-    # n_iterations is None exactly when resolve_tow_and_arrival took the
-    # plain --tow path (no fixed point ran) -- the same discriminator
-    # fuel_plan itself uses, so zfw_t is only passed through when it was
-    # actually the thing being solved for.
-    zfw_arr = np.array([zfw_t], dtype=float) if n_iterations is not None else None
+    # zfw_t is always the given; under a --tow override (n_iterations None)
+    # fuel_plan then reports tow_required_t (zfw + uplift) against the TOW
+    # actually loaded.
+    zfw_arr = np.array([zfw_t], dtype=float)
     plan = fuel.fuel_plan(climb, legs_out, arrival_out,
                            zfw_t=zfw_arr,
                            min_landing_fuel_t=min_landing_fuel_t,

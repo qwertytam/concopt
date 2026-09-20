@@ -177,19 +177,22 @@ def test_run_report_prints_flat_override_arrival_block(tmp_path, capsys):
 
 
 def test_run_report_tow_override_skips_fixed_point(tmp_path, capsys):
-    """--tow still works as a what-if override: no fixed point, and the
-    printed block says so instead of an iteration count."""
+    """--tow is an optional override on top of --zfw: no fixed point, ZFW
+    stays as given, and the printed block reports fuel loaded against the
+    fuel the trip needs instead of an iteration count."""
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                out_path=out_path, zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
 
     assert f"take-off weight {DEFAULT_TOW_T:.1f} t" in fuel_block
-    assert "no fixed point" in fuel_block
+    assert "ZFW 92.0 t" in fuel_block
+    assert "TOW override, no fixed point" in fuel_block
+    assert "fuel loaded" in fuel_block
     assert "converged in" not in fuel_block
 
 
@@ -292,7 +295,7 @@ def test_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                out_path=out_path, zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
