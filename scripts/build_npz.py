@@ -72,6 +72,27 @@ def build_arrival(arrival_legs, era5_dir, subsonic_out, upper_out):
     print(f"arrival: {len(arrival_legs)} legs, {len(upper_nc)} upper-air nc files -> {upper_out}")
     era5.reduce_to_legs(upper_nc, arrival_legs, upper_out)
 
+    # The month-level match above doesn't catch a month that's only partly
+    # covered in one set (2026-09: upper-air downloaded when ERA5 ended on the
+    # 2nd, subsonic later, to the 15th) -- same months, different time axes,
+    # which search._build_arrival_wind_fn rejects. Trim both to the shared
+    # time steps.
+    trim_to_common_time(subsonic_out, upper_out)
+
+
+def trim_to_common_time(*npz_paths):
+    data = [dict(np.load(p)) for p in npz_paths]
+    common = data[0]["time"]
+    for d in data[1:]:
+        common = np.intersect1d(common, d["time"])
+    for p, d in zip(npz_paths, data):
+        if len(d["time"]) == len(common):
+            continue
+        print(f"trim: {p} {len(d['time'])} -> {len(common)} time steps")
+        idx = np.searchsorted(d["time"], common)
+        d = {k: (v[idx] if k in ("time", "u", "v", "t") else v) for k, v in d.items()}
+        np.savez_compressed(p, **d)
+
 
 def build_surface(era5_dir, out_path):
     nc_paths_by_airport = era5.surface_nc_paths(era5_dir)
