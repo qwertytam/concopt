@@ -180,7 +180,7 @@ def main(argv=None):
                                      'legacy arrival instead')
     search_parser.add_argument('--decel-descent-min', type=float, default=None,
                                 help='minutes from the decel point to touchdown -- forces a FLAT '
-                                     'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
+                                     'legacy arrival (the pre-arrival.py 35 min / '
                                      '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
                                      'new numbers (default: None, meaning compute the real per-day '
                                      'arrival model)')
@@ -226,7 +226,7 @@ def main(argv=None):
                                      'legacy arrival instead')
     report_parser.add_argument('--decel-descent-min', type=float, default=None,
                                 help='minutes from the decel point to touchdown -- forces a FLAT '
-                                     'legacy arrival (the pre-arrival.py DECEL_DESCENT_S=35 min / '
+                                     'legacy arrival (the pre-arrival.py 35 min / '
                                      '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
                                      'new numbers (default: None, meaning compute the real per-day '
                                      'arrival model)')

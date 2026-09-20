@@ -186,7 +186,6 @@ def _build_descent_interps():
 
 
 _DESCENT_INTERPS = _build_descent_interps()
-_DESCENT_LEVEL_FL = np.sort(_descent_tbl["level_fl"].unique())
 
 
 def decel_to_mach1(level_fl, speed_kt, temp_band):

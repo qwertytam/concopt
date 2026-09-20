@@ -195,13 +195,12 @@ for its own sake, no defensive error handling.
   convention `_climb_conditions` uses for the climb, not a per-segment
   march. `--decel-descent-min` no longer has a default value:
   given, it forces `arrival.flat_arrival` (the exact pre-arrival.py flat
-  `DECEL_DESCENT_S`/`DESCENT_FUEL_T` pair) instead of the real per-day
+  35 min / 2.0 t pair) instead of the real per-day
   model, ignoring `--subsonic-npz` entirely — for comparing old vs new
   numbers directly. Neither given (the default) requires `--subsonic-npz`;
   omitting both raises rather than silently falling back to something flat.
 - `arrival.py` — the arrival segment, BARIX → touchdown, replacing the old
-  flat `DECEL_DESCENT_S`/`DESCENT_FUEL_T` placeholder search/report used to
-  carry. Four segments over a *route-provided* `arrival_nm` (summed
+  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments over a *route-provided* `arrival_nm` (summed
   post-decel leg distance, not a hardcoded constant — search/report compute
   it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
   (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
@@ -287,10 +286,8 @@ for its own sake, no defensive error handling.
   reports the greatest-headwind runway and a computed time — never
   dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
   each candidate's own `arrival.arrival()` output (`arrival_time_s`,
-  `search.run_search`), not a flat constant any more — `search.DECEL_DESCENT_S`
-  (35 min) survives only as the legacy value `--decel-descent-min` forces
-  and the constant `inflight.py`'s flight recorder still compares measured
-  time against (that wiring is a separate, later task).
+  `search.run_search`), not a flat constant any more (the old flat 35 min
+  survives only as the legacy pair `--decel-descent-min` forces).
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers
@@ -376,9 +373,9 @@ for its own sake, no defensive error handling.
   -> accel point vs that report's own predicted elapsed time there
   (`search.py`'s TOW-based climb model makes this vary by day/TOW, so it's
   read back from the report rather than a fixed constant), measured decel
-  point -> touchdown vs `DECEL_DESCENT_S` (35 min — still a flat constant
-  here specifically; wiring this comparison to `report`'s own per-day
-  `arrival.arrival()` output is a separate, later task), and measured vs
+  point -> touchdown vs that report's own per-day `arrival_s` (from
+  `arrival.arrival()`; `_report_arrival_s` raises on an older report CSV
+  without the column rather than falling back to a flat 35 min), and measured vs
   predicted supersonic segment time. `_level_table`/`_recommendation_line`/
   `compare_to_report` are pure and unit-tested; `run_inflight` itself needs
   a live sim and isn't (same convention as `search.run_search`/

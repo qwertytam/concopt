@@ -49,7 +49,6 @@ _OPTIONAL_STATE_COLUMNS = (
     "fuel_kg", "sim_wind_kt", "sim_wind_dir_deg", "sim_temp_c",
     "sim_pressure_hpa", "agl_ft", "vs_fpm", "cas_kt", "track_deg",
 )
-_WEATHER_COLUMNS = ("as_wind_dir_deg", "as_wind_kt", "as_pressure_hpa", "as_temp_c")
 
 
 def _nan_to_none(value):
