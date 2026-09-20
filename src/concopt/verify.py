@@ -4,7 +4,8 @@ Workflow: the user loads a historical date/time in Active Sky by hand (a
 static snapshot of ActiveSky's global weather model for that moment -- the
 API takes an explicit lat/lon/altitude, not "wherever the aircraft is", so
 one load covers every point queried below), then runs `concopt verify`
-(--tow should match the day's --tow in `concopt search`). It marches the
+(--zfw, and --tow if the search used one, should match the day's `concopt
+search` run). It marches the
 same TOW-based climb search.py uses, then takes --points (default 12)
 evenly spaced cruise legs past top of climb (including the first and last;
 climb-altitude legs are excluded -- Active Sky's FL450-FL600 grid doesn't
@@ -47,7 +48,7 @@ from concopt.asky import get_atmosphere_np
 from concopt.atmos import KT_TO_MS
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import (DEFAULT_TOW_T, NM_TO_M, TARGET_FL, _format_hmm,
+from concopt.search import (NM_TO_M, TARGET_FL, _format_hmm,
                              local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
 
@@ -182,17 +183,16 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
     excluded -- see march_legs' eff_dist_nm) for local_date/local_hour
     (America/New_York).
 
-    zfw_t (tonnes) runs the SAME fixed point `concopt search`/`concopt
-    report` use (search.resolve_tow_and_arrival) rather than a bare --tow
-    guess, so the day is verified at the weight it was actually found under
-    -- an Active Sky check flown at the wrong weight undercuts the whole
-    comparison. subsonic_npz_path AND arrival_upper_npz_path are both
-    required with zfw_t: the fixed point's arrival fuel needs the same
-    stitched post-decel wind source search used (B6), or the two TOWs
-    won't agree. tow_t overrides zfw_t and skips the fixed point
-    entirely (no arrival/subsonic data needed at all, same as a plain
-    march_legs call always worked). Neither given falls back to the flat
-    DEFAULT_TOW_T, same pre-fuel-plan behaviour as before this was wired in.
+    zfw_t (tonnes, required) runs the SAME fixed point `concopt search`/
+    `concopt report` use (search.resolve_tow_and_arrival) rather than a bare
+    TOW guess, so the day is verified at the weight it was actually found
+    under -- an Active Sky check flown at the wrong weight undercuts the
+    whole comparison. subsonic_npz_path AND arrival_upper_npz_path are both
+    required then: the fixed point's arrival fuel needs the same stitched
+    post-decel wind source search used (B6), or the two TOWs won't agree.
+    tow_t is an optional override (match the --tow the search was run with):
+    it skips the fixed point entirely, so no arrival/subsonic data is needed
+    at all -- zfw_t is then unused here beyond being required.
 
     Every point is queried before anything is printed; the whole run is
     then fingerprinted and checked against snapshot_cache_path
@@ -216,8 +216,8 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
-    if tow_t is None and zfw_t is None:
-        tow_t = DEFAULT_TOW_T  # neither given -- pre-fuel-plan flat default
+    if zfw_t is None:
+        raise ValueError("zfw_t (--zfw) is required; tow_t (--tow) is only an override on top of it")
 
     if tow_t is None:
         # zfw_t given -- reproduce search's own fixed point exactly (arrival

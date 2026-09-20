@@ -13,7 +13,7 @@ from concopt.limits import CRUISE_MACH
 from concopt.replay import replay_sources
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
-from concopt.search import DEFAULT_TOW_T, run_search, run_shortlist
+from concopt.search import run_search, run_shortlist
 from concopt.verify import DEFAULT_N_POINTS, run_verify
 
 
@@ -151,16 +151,16 @@ def main(argv=None):
                                      'not just the top rows) to this CSV path -- for '
                                      'notebooks/day-search-results.ipynb')
     search_parser.add_argument('--tow', type=float, default=None,
-                                help='take-off weight, tonnes -- overrides --zfw and skips the '
-                                     'fixed point entirely, flying every candidate at this one '
-                                     f'weight (default: None; neither this nor --zfw given falls '
-                                     f'back to a flat {DEFAULT_TOW_T:.0f} t TOW)')
-    search_parser.add_argument('--zfw', type=float, default=None,
+                                help='optional take-off weight override, tonnes (e.g. the sim\'s '
+                                     'trip-calculator fuel load + --zfw) -- skips the fixed point '
+                                     'and flies every candidate at this one weight; candidates '
+                                     'whose trip needs more get a tow_below_required flag')
+    search_parser.add_argument('--zfw', type=float, required=True,
                                 help='zero fuel weight, tonnes -- TOW is solved per candidate by '
                                      'fixed-point iteration (uplift = trip fuel + reserve) across '
                                      'the whole candidate vector, so a warm/heavy day carries its '
-                                     'own extra fuel rather than every candidate flying --tow\'s '
-                                     'one shared weight')
+                                     'own extra fuel rather than every candidate flying one '
+                                     'shared weight (unless --tow overrides it)')
     search_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
                                 help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
                                      f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
@@ -199,17 +199,17 @@ def main(argv=None):
     report_parser.add_argument('--search-csv', default='results.csv',
                                 help='concopt search --out CSV to read --best from (default: results.csv)')
     report_parser.add_argument('--out', default='report.csv', help='output CSV path (default: report.csv)')
-    report_parser.add_argument('--zfw', type=float, default=None,
+    report_parser.add_argument('--zfw', type=float, required=True,
                                 help='zero fuel weight, tonnes -- TOW is solved for by fixed-point '
-                                     'iteration (uplift = trip fuel + reserve) rather than given; '
-                                     f'neither this nor --tow given falls back to a flat '
-                                     f'{DEFAULT_TOW_T:.0f} t TOW')
+                                     'iteration (uplift = trip fuel + reserve) unless --tow '
+                                     'overrides it')
     report_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
                                 help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
                                      f'reserve (default: {MIN_LANDING_FUEL_T:.0f})')
     report_parser.add_argument('--tow', type=float, default=None,
-                                help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
-                                     'point entirely, for "what if I actually load X"')
+                                help='optional take-off weight override, tonnes -- skips the fixed '
+                                     'point, for "what if I actually load X" (fuel loaded = --tow '
+                                     'minus --zfw, reported against the fuel the trip needs)')
     report_parser.add_argument('--subsonic-npz', default=None,
                                 help='path to the .npz from era5.reduce_to_legs run against the '
                                      'post-decel legs -- drives the real arrival.arrival() model '
@@ -248,12 +248,11 @@ def main(argv=None):
                                      f'Active Sky at (default: {DEFAULT_N_POINTS})')
     verify_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
     verify_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
-    verify_parser.add_argument('--zfw', type=float, default=None,
+    verify_parser.add_argument('--zfw', type=float, required=True,
                                 help='zero fuel weight, tonnes -- TOW is solved by the SAME fixed-'
                                      'point iteration `concopt search`/`concopt report` use, so the '
                                      'verification is flown at the weight that day was actually '
-                                     'found under; neither this nor --tow given falls back to a '
-                                     f'flat {DEFAULT_TOW_T:.0f} t TOW')
+                                     'found under (unless --tow overrides it)')
     verify_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
                                 help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
                                      f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
@@ -270,10 +269,9 @@ def main(argv=None):
                                      '(FL183-FL605 combined span, B6); required alongside '
                                      '--subsonic-npz whenever --zfw is used')
     verify_parser.add_argument('--tow', type=float, default=None,
-                                help='take-off weight, tonnes -- overrides --zfw and skips the fixed '
-                                     'point entirely, for "what if I actually load X" (default: '
-                                     'None; neither this nor --zfw given falls back to a flat '
-                                     f'{DEFAULT_TOW_T:.0f} t TOW)')
+                                help='optional take-off weight override, tonnes -- skips the fixed '
+                                     'point (and so needs no arrival npz files); match the --tow '
+                                     'the search being verified was run with')
     verify_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

@@ -17,12 +17,12 @@ from concopt.cli import main as cli_main
 def test_search_report_decel_descent_defaults_agree():
     with patch("concopt.cli.run_search") as mock_search:
         cli_main(["search", "--pln", "x.pln", "--npz", "x.npz",
-                  "--surface-npz", "x_surface.npz"])
+                  "--surface-npz", "x_surface.npz", "--zfw", "92.0"])
     search_decel_descent_min = mock_search.call_args.kwargs["decel_descent_min"]
 
     with patch("concopt.cli.run_report") as mock_report:
         cli_main(["report", "--pln", "x.pln", "--npz", "x.npz",
-                  "--date", "2020-01-01", "--hour", "10"])
+                  "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0"])
     report_decel_descent_min = mock_report.call_args.kwargs["decel_descent_min"]
 
     assert search_decel_descent_min is None
@@ -32,15 +32,26 @@ def test_search_report_decel_descent_defaults_agree():
 def test_search_report_pass_subsonic_npz_through():
     with patch("concopt.cli.run_search") as mock_search:
         cli_main(["search", "--pln", "x.pln", "--npz", "x.npz",
-                  "--surface-npz", "x_surface.npz",
+                  "--surface-npz", "x_surface.npz", "--zfw", "92.0",
                   "--subsonic-npz", "x_subsonic.npz"])
     assert mock_search.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
 
     with patch("concopt.cli.run_report") as mock_report:
         cli_main(["report", "--pln", "x.pln", "--npz", "x.npz",
-                  "--date", "2020-01-01", "--hour", "10",
+                  "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0",
                   "--subsonic-npz", "x_subsonic.npz"])
     assert mock_report.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
+
+
+def test_zfw_is_required_and_tow_is_optional():
+    """TOW is an outcome of ZFW: every weight-taking subcommand refuses to
+    run without --zfw, while --tow alone is no substitute for it."""
+    import pytest
+    for argv in (["search", "--surface-npz", "s.npz"],
+                 ["report", "--date", "2020-01-01", "--hour", "10"],
+                 ["verify", "--date", "2020-01-01", "--hour", "10"]):
+        with pytest.raises(SystemExit):
+            cli_main([argv[0], "--pln", "x.pln", "--npz", "x.npz", *argv[1:], "--tow", "150"])
 
 
 def test_verify_passes_zfw_and_subsonic_npz_through():

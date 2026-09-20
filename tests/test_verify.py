@@ -253,11 +253,13 @@ def test_run_verify_snapshot_guard_end_to_end(monkeypatch, tmp_path):
     cache_path = tmp_path / "cache.json"
 
     verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
-                       n_points=2, tow_t=DEFAULT_TOW_T, snapshot_cache_path=cache_path)
+                       n_points=2, zfw_t=92.0, tow_t=DEFAULT_TOW_T,
+                       snapshot_cache_path=cache_path)
 
     with pytest.raises(RuntimeError, match="wasn't reloaded"):
         verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 1, 6), 11,
-                           n_points=2, tow_t=DEFAULT_TOW_T, snapshot_cache_path=cache_path)
+                           n_points=2, zfw_t=92.0, tow_t=DEFAULT_TOW_T,
+                       snapshot_cache_path=cache_path)
 
 
 def test_run_verify_zfw_without_subsonic_npz_raises(monkeypatch, tmp_path):

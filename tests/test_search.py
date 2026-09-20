@@ -101,6 +101,25 @@ def test_run_shortlist_shows_each_row_own_tow_in_summary(tmp_path, capsys):
     assert "--tow" not in printed
 
 
+def test_run_shortlist_emits_tow_only_for_a_tow_override_search(tmp_path, capsys):
+    """A search run under --tow flew every row at that TOW, so the generated
+    verify command has to carry it; a solved-TOW search's command must not."""
+    csv_path = tmp_path / "results.csv"
+    df = _sample_results_csv(csv_path, n=1, zfw_t=92.0)
+
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+                  subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
+    assert "--tow" not in capsys.readouterr().out
+
+    df["tow_override_t"] = 150.0
+    df.to_csv(csv_path, index=False)
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+                  subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
+    printed = capsys.readouterr().out
+    assert "--zfw 92.0" in printed
+    assert "--tow 150.0" in printed
+
+
 def test_run_shortlist_blank_flags_shown_as_dash(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=1, zfw_t=92.0)
@@ -246,13 +265,56 @@ def test_run_search_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, mo
 
     candidates = search.run_search(
         SAMPLE_PLN, npz_path, surface_npz_path, out_path=out_path,
-        tow_t=DEFAULT_TOW_T, decel_descent_min=35.0,
+        zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0,
     )
 
     expect_s = (candidates["supersonic_time_s"] + 35.0 * 60.0
                 + candidates["jfk_penalty_s"] + candidates["lhr_penalty_s"])
     assert np.allclose(candidates["total_time_s"], expect_s)
     assert np.allclose(candidates["arrival_time_s"], 35.0 * 60.0)
+
+
+def test_run_search_requires_zfw(tmp_path, monkeypatch):
+    """TOW is an outcome of ZFW -- --tow alone (or nothing) is no longer a
+    way to run a search."""
+    npz_path = _still_air_npz(tmp_path)
+    surface_npz_path = _still_air_surface_npz(tmp_path)
+    monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
+
+    with pytest.raises(ValueError, match="zfw_t"):
+        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+                           out_path=tmp_path / "results.csv", decel_descent_min=35.0)
+    with pytest.raises(ValueError, match="zfw_t"):
+        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+                           out_path=tmp_path / "results.csv", tow_t=DEFAULT_TOW_T,
+                           decel_descent_min=35.0)
+
+
+def test_run_search_tow_override_keeps_zfw_and_flags_short_fuel(tmp_path, monkeypatch):
+    """--tow on top of --zfw: every row flies that one TOW, ZFW is unchanged,
+    the override is stamped for run_shortlist, and a TOW too light for the
+    trip is flagged tow_below_required (a generous one is not)."""
+    npz_path = _still_air_npz(tmp_path)
+    surface_npz_path = _still_air_surface_npz(tmp_path)
+    monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
+
+    def run(**kw):
+        return search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+                                  out_path=tmp_path / "results.csv", zfw_t=92.0,
+                                  decel_descent_min=35.0, **kw)
+
+    solved = run()
+    assert solved["tow_override_t"].isna().all()
+
+    generous = run(tow_t=DEFAULT_TOW_T)
+    assert (generous["tow_t"] == DEFAULT_TOW_T).all()
+    assert (generous["tow_override_t"] == DEFAULT_TOW_T).all()
+    assert (generous["zfw_t"] == 92.0).all()
+    assert not generous["flags"].str.contains("tow_below_required").any()
+
+    short = run(tow_t=110.0)
+    assert (short["tow_t"] == 110.0).all()
+    assert short["flags"].str.contains("tow_below_required").all()
 
 
 def _arrival_wind_data(n_legs=3, n_time=2):
