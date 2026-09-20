@@ -66,12 +66,15 @@ def get_atmosphere(lat, lon, alts,
     logging.info(
         f"Received response with status code {r.status_code}\n{r.text}")
 
-    if r.content == "Error":
-        json = None
-    else:
-        json = r.json()
+    # Active Sky answers a bad request with the bare text "Error", not JSON.
+    # (r.content is bytes, so it can never equal a str -- compare r.text.)
+    if r.text.strip() == "Error":
+        raise RuntimeError(
+            f"Active Sky at {host_addr}:{port} returned 'Error' for {req}; "
+            "check the historical date/time is loaded and the request is valid"
+        )
 
-    return json
+    return r.json()
 
 
 def get_atmosphere_as_pd(lat, lon, alts,

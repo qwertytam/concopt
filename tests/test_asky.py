@@ -45,6 +45,19 @@ def test_get_atmosphere_wraps_connection_error(monkeypatch):
         asky.get_atmosphere(40.0, -70.0, [45000])
 
 
+def test_get_atmosphere_raises_on_error_response(monkeypatch):
+    """Active Sky's bare-text "Error" reply becomes a RuntimeError -- it used
+    to be compared as bytes == str (never true), so r.json() raised an
+    opaque JSONDecodeError instead."""
+    resp = _FakeResponse(None)
+    resp.text = "Error"
+    resp.content = b"Error"
+    monkeypatch.setattr(requests, "get", lambda req: resp)
+
+    with pytest.raises(RuntimeError, match="returned 'Error'"):
+        asky.get_atmosphere(40.0, -70.0, [45000])
+
+
 def test_get_atmosphere_as_pd_accepts_plain_feet(monkeypatch):
     """get_atmosphere_as_pd no longer requires a pint Quantity -- a plain
     list of feet works too."""
