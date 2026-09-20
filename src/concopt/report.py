@@ -15,7 +15,7 @@ import pandas as pd
 from concopt import arrival, fuel, limits
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import (NM_TO_M, NY_TZ, TOP_OF_CLIMB_FL,
+from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
 
@@ -104,7 +104,7 @@ def _waypoint_table(cc_legs, departure_utc_ts, leg):
         "binding": "",
     }]
 
-    for (from_id, to_id), members in groupby(range(len(cc_legs)),
+    for (_, to_id), members in groupby(range(len(cc_legs)),
                                                key=lambda i: (cc_legs[i].from_id, cc_legs[i].to_id)):
         idx = np.array(list(members))
         last = idx[-1]
