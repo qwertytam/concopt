@@ -66,6 +66,21 @@ def test_run_shortlist_prints_ready_to_run_verify_command(tmp_path, capsys):
     assert "--decel BARIX" in printed
 
 
+def test_run_shortlist_shows_local_and_utc_departure(tmp_path, capsys):
+    """Summary line shows New York local time (with its DST-correct zone
+    abbreviation) and the UTC equivalent: EST is UTC-5, EDT is UTC-4."""
+    csv_path = tmp_path / "results.csv"
+    df = _sample_results_csv(csv_path, n=2)
+    df["date"] = ["2026-01-01", "2026-07-01"]
+    df.to_csv(csv_path, index=False)
+
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=2)
+
+    printed = capsys.readouterr().out
+    assert "2026-01-01 14:00 EST | 19:00 UTC" in printed
+    assert "2026-07-01 14:00 EDT | 18:00 UTC" in printed
+
+
 def test_run_shortlist_shows_each_row_own_tow_in_summary(tmp_path, capsys):
     """Each row's per-candidate converged TOW (from the fixed point) is shown
     in the summary line for reference, though not used for the verify command."""

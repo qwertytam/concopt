@@ -894,9 +894,13 @@ def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX",
         tow_t = float(row["tow_t"])
         zfw_t = float(row["zfw_t"]) if pd.notna(row.get("zfw_t")) else None
         flags = row["flags"] if pd.notna(row["flags"]) and row["flags"] else "-"
+        local_dep = dt.datetime(local_date.year, local_date.month, local_date.day,
+                                local_hour, tzinfo=NY_TZ)
+        utc_dep = local_dep.astimezone(dt.timezone.utc)
 
         print(
-            f"{rank:>2}. {local_date} {local_hour:02d}:00  total {row['total_time']}  "
+            f"{rank:>2}. {local_date} {local_hour:02d}:00 {local_dep:%Z} | "
+            f"{utc_dep:%H:%M} UTC  total {row['total_time']}  "
             f"mean_fl {row['mean_fl']}  wind {row['mean_wind_kt']:+.1f} kt  "
             f"tow {tow_t:.0f} t  flags: {flags}")
 
