@@ -30,30 +30,7 @@ reported gust direction.
 import numpy as np
 
 from concopt.atmos import KT_TO_MS
-
-# Runway geometry + JFK/LHR-specific missed-approach-slot/taxi penalty, true
-# bearings (see module docstring). Only 22R/31L are JFK candidates -- not
-# 04L/13R, which this route never uses. EGLL's runways are parallel (09L/
-# 09R and 27R/27L share one true bearing each), so there is no crosswind
-# relief from choosing between the pair -- only the westerly/easterly
-# choice matters here.
-RUNWAYS = {
-    "KJFK": (
-        {"name": "22R", "true_deg": 211.0, "penalty_s": 0.0},
-        {"name": "31L", "true_deg": 301.0, "penalty_s": 2.0 * 60.0},
-    ),
-    "EGLL": (
-        {"name": "09L/09R", "true_deg": 89.0, "penalty_s": 0.0},
-        {"name": "27R/27L", "true_deg": 269.0, "penalty_s": 5.0 * 60.0},
-    ),
-}
-
-# Screen thresholds, kt. 25-30 kt crosswind (gust) is allowed but flagged;
-# above 30 kt gust, or any mean tailwind above 10 kt, is unflyable on that
-# runway. No buffer on the tailwind test -- it's a hard 10 kt.
-XWIND_OK_KT = 25.0
-XWIND_FLAG_KT = 30.0
-TAILWIND_MAX_KT = 10.0
+from concopt.params import CALM_WIND_MS, RUNWAYS, TAILWIND_MAX_KT, XWIND_FLAG_KT, XWIND_OK_KT  # noqa: F401
 
 
 def _headwind_crosswind_gust(u_ms, v_ms, gust_ms, runway_true_deg):
@@ -84,7 +61,7 @@ def _headwind_crosswind_gust(u_ms, v_ms, gust_ms, runway_true_deg):
     headwind_ms = -along
     frac = np.divide(np.abs(cross), w_mean,
                       out=np.ones_like(np.asarray(w_mean, dtype=float)),
-                      where=w_mean > 1e-6)
+                      where=w_mean > CALM_WIND_MS)
     crosswind_gust_ms = frac * gust_ms
 
     return headwind_ms / KT_TO_MS, crosswind_gust_ms / KT_TO_MS

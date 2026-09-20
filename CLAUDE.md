@@ -15,6 +15,21 @@ for its own sake, no defensive error handling.
   `pip install -e '.[test]'` works too, same dependency set either way.
 - `src/concopt/` — package (src-layout; auto-discovered by poetry-core since
   the directory name matches the project name)
+- `params.py` — **every tunable number and physical/aircraft constant, in one
+  place** (sectioned: units/physics, ISA, aircraft limits, fuel model, arrival
+  model, route, search model, runway screen, ERA5 download spec, Active Sky/
+  verify, in-flight advisor, replay's synthetic profile). A *leaf* module —
+  imports nothing from concopt (`tests/test_params.py` enforces it), so any
+  module, `atmos.py`'s hot path included, can import it without a cycle.
+  Modules import what they need and keep the old names (`search.DEFAULT_TOW_T`,
+  `limits.CRUISE_MACH`, `runways.RUNWAYS`, ...), so nothing that imported them
+  from there broke. NOT in it, on purpose: values read out of the performance
+  CSVs (`conc_data`'s grids, `CLIMB_TOW_MIN_T`/`MAX_T`), table labels
+  (`conc_data.CLIMB_BANDS`) and output schemas (`inflight.RECORD_COLUMNS`,
+  `arrival._SEGMENT_KEYS`/`_FLAG_KEYS`) — those describe a table or a file,
+  not a setting — and CLI path defaults (`results.csv`, ...) in `cli.py`. The
+  vendored fork below has its own `constants.py` (pint-based, unrelated —
+  hence the name `params`).
 - `atmos.py`, `limits.py` — vectorised SI numpy, **no pint**. Hot path.
 - `tests/` — pytest suite: `cas_formula.md` worked examples, the ISA+limits
   table, the Mmo/total-temp crossover identity, flight-level round-trip, and
@@ -416,6 +431,10 @@ for its own sake, no defensive error handling.
   this).
 
 ## Conventions
+- New constants go in `params.py`, not inline or at the top of a module. Unit
+  conversions (`FT_TO_M`, `C_TO_K`, `NM_TO_M`, `S_PER_DAY`) and the Active Sky
+  port are pinned by `tests/test_params.py` — a stray `0.3048`/`273.15`/
+  `1852`/`19285` literal in a module fails that test.
 - SI internally (K, Pa, m/s, m). Convert at the edges only.
 - Everything array-in / array-out. No `iterrows()`, no per-row Python loops
   in anything that touches the search — it runs over ~31,000 candidate

@@ -6,15 +6,16 @@ import datetime as dt
 
 import pandas as pd
 
-from concopt.fuel import MIN_LANDING_FUEL_T
-from concopt.inflight import (DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
-                               DEFAULT_LOOKAHEAD_NM, run_inflight)
-from concopt.limits import CRUISE_MACH
+from concopt.inflight import run_inflight
+from concopt.params import (ACCEL_WAYPOINT_ID, ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
+                            DECEL_WAYPOINT_ID, DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
+                            DEFAULT_LOOKAHEAD_NM, DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N,
+                            MAX_LEG_NM, MIN_LANDING_FUEL_T, VERIFY_DEFAULT_N_POINTS)
 from concopt.replay import replay_sources
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import run_search, run_shortlist
-from concopt.verify import DEFAULT_N_POINTS, run_verify
+from concopt.verify import run_verify
 
 
 def _add_common_route_args(parser):
@@ -25,8 +26,8 @@ def _add_common_route_args(parser):
     climb-end point from conc_data.climb_to (TOW + weather), not a fixed
     waypoint, so --accel would be silently ignored there."""
     parser.add_argument('--pln', required=True, help='path to a P3D .pln flight plan')
-    parser.add_argument('--decel', default='BARIX',
-                         help='deceleration waypoint id (default: BARIX)')
+    parser.add_argument('--decel', default=DECEL_WAYPOINT_ID,
+                         help=f'deceleration waypoint id (default: {DECEL_WAYPOINT_ID})')
 
 
 def _cmd_route(args):
@@ -130,11 +131,11 @@ def main(argv=None):
 
     route_parser = subparsers.add_parser(
         'route', parents=[common], help='parse a .pln and list its legs')
-    route_parser.add_argument('--accel', default='LINND',
+    route_parser.add_argument('--accel', default=ACCEL_WAYPOINT_ID,
                                help='acceleration waypoint id, for the supersonic-span marker '
-                                    'column only (default: LINND)')
-    route_parser.add_argument('--max-leg-nm', type=float, default=100.0,
-                               help='subdivide legs longer than this (nm, default: 100)')
+                                    f'column only (default: {ACCEL_WAYPOINT_ID})')
+    route_parser.add_argument('--max-leg-nm', type=float, default=MAX_LEG_NM,
+                               help=f'subdivide legs longer than this (nm, default: {MAX_LEG_NM:g})')
     route_parser.set_defaults(func=_cmd_route)
 
     search_parser = subparsers.add_parser(
@@ -143,8 +144,8 @@ def main(argv=None):
     search_parser.add_argument('--surface-npz', required=True,
                                 help='path to the .npz from era5.reduce_surface_to_npz '
                                      '(KJFK/EGLL surface wind, for the runway screen)')
-    search_parser.add_argument('--top', type=int, default=50,
-                                help='number of ranked rows to write out (default: 50)')
+    search_parser.add_argument('--top', type=int, default=DEFAULT_TOP_N,
+                                help=f'number of ranked rows to write out (default: {DEFAULT_TOP_N})')
     search_parser.add_argument('--out', default='results.csv', help='output CSV path (default: results.csv)')
     search_parser.add_argument('--out-all', default=None,
                                 help='also write the full ranked candidate set (raw numeric columns, '
@@ -243,11 +244,13 @@ def main(argv=None):
                                 help='local (America/New_York) departure date, YYYY-MM-DD')
     verify_parser.add_argument('--hour', type=int, required=True,
                                 help='local departure hour, 24h (08-14)')
-    verify_parser.add_argument('--points', type=int, default=DEFAULT_N_POINTS,
+    verify_parser.add_argument('--points', type=int, default=VERIFY_DEFAULT_N_POINTS,
                                 help='number of evenly spaced cruise legs to query '
-                                     f'Active Sky at (default: {DEFAULT_N_POINTS})')
-    verify_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
-    verify_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
+                                     f'Active Sky at (default: {VERIFY_DEFAULT_N_POINTS})')
+    verify_parser.add_argument('--host', default=ACTIVE_SKY_HOST,
+                                help=f'Active Sky host address (default: {ACTIVE_SKY_HOST})')
+    verify_parser.add_argument('--port', type=int, default=ACTIVE_SKY_PORT,
+                                help=f'Active Sky port (default: {ACTIVE_SKY_PORT})')
     verify_parser.add_argument('--zfw', type=float, required=True,
                                 help='zero fuel weight, tonnes -- TOW is solved by the SAME fixed-'
                                      'point iteration `concopt search`/`concopt report` use, so the '
@@ -287,8 +290,8 @@ def main(argv=None):
     shortlist_parser.add_argument('--npz', required=True, help='path to the .npz from era5.reduce_to_legs')
     shortlist_parser.add_argument('--search-csv', default='results.csv',
                                    help='concopt search --out CSV to read from (default: results.csv)')
-    shortlist_parser.add_argument('--top', type=int, default=10,
-                                   help='number of days to list (default: 10)')
+    shortlist_parser.add_argument('--top', type=int, default=DEFAULT_SHORTLIST_TOP_N,
+                                   help=f'number of days to list (default: {DEFAULT_SHORTLIST_TOP_N})')
     shortlist_parser.add_argument('--subsonic-npz', default=None,
                                    help='path to the .npz from era5.reduce_to_legs run against the '
                                         'post-decel legs -- required to generate verify commands that '
@@ -303,9 +306,9 @@ def main(argv=None):
     inflight_parser = subparsers.add_parser(
         'inflight', parents=[common],
         help='live altitude advisor + flight recorder against a running Prepar3D/Active Sky')
-    inflight_parser.add_argument('--accel', default='LINND',
+    inflight_parser.add_argument('--accel', default=ACCEL_WAYPOINT_ID,
                                   help='acceleration waypoint id, for the recorder\'s supersonic-'
-                                       'span tracking and compare_to_report (default: LINND)')
+                                       f'span tracking and compare_to_report (default: {ACCEL_WAYPOINT_ID})')
     inflight_parser.add_argument('--interval', type=float, default=DEFAULT_INTERVAL_S,
                                   help=f'seconds between advisor ticks (default: {DEFAULT_INTERVAL_S:.0f})')
     inflight_parser.add_argument('--lookahead-nm', type=float, default=DEFAULT_LOOKAHEAD_NM,
@@ -317,8 +320,10 @@ def main(argv=None):
     inflight_parser.add_argument('--compare', default=None,
                                   help='a concopt report --out CSV to compare the recording against '
                                        'once touchdown is detected (requires --record)')
-    inflight_parser.add_argument('--host', default='localhost', help='Active Sky host address (default: localhost)')
-    inflight_parser.add_argument('--port', type=int, default=19285, help='Active Sky port (default: 19285)')
+    inflight_parser.add_argument('--host', default=ACTIVE_SKY_HOST,
+                                help=f'Active Sky host address (default: {ACTIVE_SKY_HOST})')
+    inflight_parser.add_argument('--port', type=int, default=ACTIVE_SKY_PORT,
+                                help=f'Active Sky port (default: {ACTIVE_SKY_PORT})')
     inflight_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                   help='target cruise Mach used in place of Mmo '
                                        f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

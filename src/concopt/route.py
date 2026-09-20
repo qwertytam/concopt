@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-R_NM = 3440.065  # earth radius, nautical miles
+from concopt.params import ACCEL_WAYPOINT_ID, DECEL_WAYPOINT_ID, EARTH_RADIUS_NM
 
 # WorldPosition / *LLA token: HEMdeg° min' sec", e.g. N40° 38' 23.39" or
 # W68° 15' 0" (minutes/seconds may be single-digit, seconds may lack a
@@ -70,7 +70,7 @@ def _central_angle_rad(lat1, lon1, lat2, lon2):
 
 def great_circle_nm(lat1, lon1, lat2, lon2):
     """Great-circle distance (nm), haversine, R = 3440.065 nm."""
-    return R_NM * _central_angle_rad(lat1, lon1, lat2, lon2)
+    return EARTH_RADIUS_NM * _central_angle_rad(lat1, lon1, lat2, lon2)
 
 
 def initial_bearing_deg(lat1, lon1, lat2, lon2):
@@ -94,7 +94,7 @@ def destination_point(lat, lon, bearing_deg, dist_nm):
     lat1 = np.radians(np.asarray(lat, dtype=float))
     lon1 = np.radians(np.asarray(lon, dtype=float))
     brng = np.radians(np.asarray(bearing_deg, dtype=float))
-    delta = np.asarray(dist_nm, dtype=float) / R_NM
+    delta = np.asarray(dist_nm, dtype=float) / EARTH_RADIUS_NM
 
     lat2 = np.arcsin(np.sin(lat1) * np.cos(delta) + np.cos(lat1) * np.sin(delta) * np.cos(brng))
     lon2 = lon1 + np.arctan2(
@@ -254,7 +254,7 @@ def climb_cruise_segment(legs, decel_id="BARIX"):
     return mask
 
 
-def supersonic_segment(legs, accel_id="LINND", decel_id="BARIX"):
+def supersonic_segment(legs, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID):
     """Boolean mask over legs, True from the leg departing accel_id through
     the leg arriving at decel_id (inclusive). Sub-legs of a subdivided
     parent leg all share that parent's from_id/to_id, so this still finds

@@ -11,7 +11,6 @@ calls it for a single candidate and keeps every per-leg quantity.
 import datetime as dt
 import functools
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -20,40 +19,11 @@ from concopt import arrival, fuel, limits, runways
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, pressure_to_fl, speed_of_sound
 from concopt.data.conc_data import CLIMB_BANDS, climb_to, fuel_total_kgh_table
 from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
+from concopt.params import (CLIMB_BAND_SAMPLE_NM, C_TO_K, DECEL_WAYPOINT_ID,  # noqa: F401
+                            DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N, DEFAULT_TOW_T,
+                            DEPARTURE_LOCAL_HOURS, FT_TO_M, NM_TO_M, NS_PER_S, NY_TZ,
+                            S_PER_HOUR, TARGET_FL, TOP_OF_CLIMB_FL, WINTER_MONTHS)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-
-NY_TZ = ZoneInfo("America/New_York")
-DEPARTURE_LOCAL_HOURS = range(8, 15)  # 08:00..14:00 local, inclusive
-
-NM_TO_M = 1852.0
-
-# Take-off weight. From here, weight is a state variable: the climb burns
-# it down to a top-of-climb mass (conc_data.climb_to), then it's integrated
-# leg by leg from conc_data.fuel_total_kgh_table (Air France performance
-# table) across the cruise, not a linear schedule against cum_nm -- see
-# march_legs. It drives ceiling_ft, which is what actually keeps the
-# optimiser off levels the aircraft can't hold; it does not change max_tas
-# above FL430 (530 kt CAS at every weight there). Only march_legs' own
-# default now -- the CLI always solves TOW from --zfw (--tow overrides it).
-DEFAULT_TOW_T = 185.0
-
-# The climb table's top-of-climb level (max level_fl in conc_climb.csv) --
-# climb_to(TOP_OF_CLIMB_FL, tow_t, temp_band) gives the brake-release-to-
-# top-of-climb time/distance/mass the march starts the cruise from.
-TOP_OF_CLIMB_FL = 502.0
-
-# cum_nm within which _climb_conditions samples ISA deviation/wind to pick
-# conc_climb.csv's temp_band and correct the climb's ground distance for
-# wind -- conc_climb.csv's shortest climb span is ~210 nm, so this stays
-# inside every band's actual climb, cold or warm.
-CLIMB_BAND_SAMPLE_NM = 300.0
-
-# best_level picks from this 16-level grid (1000 ft / FL10 steps) rather than
-# the 4 raw ERA5 pressure levels -- interpolated per leg below, not stored in
-# the npz (16 levels there would be ~350 MB vs ~32 MB for 4). FL450-FL600
-# sits inside the ERA5 mandatory-level span (150-70 hPa = FL446-FL605), so
-# every target is bracketed -- see the assert in march_legs.
-TARGET_FL = np.arange(450.0, 601.0, 10.0)
 
 
 def candidate_departures():
@@ -135,7 +105,7 @@ def _climb_conditions(data, dep_i8, cc_legs, cc_idx):
     t_at = t_low[idx1] + frac * (t_low[idx2] - t_low[idx1])
 
     fl_low = float(pressure_to_fl(data["level"][0] * 100.0))
-    isa_t_low, _ = isa(fl_low * 100.0 * 0.3048)
+    isa_t_low, _ = isa(fl_low * 100.0 * FT_TO_M)
     isa_dev = t_at.mean(axis=1) - isa_t_low
 
     temp_band = np.where(
@@ -269,7 +239,7 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
     leg_start_nm = leg_end_nm - np.array([leg.dist_nm for leg in cc_legs])
 
     times_i8 = data["time"].astype("datetime64[ns]").astype("int64")
-    isa_t_per_level, _ = isa(TARGET_FL * 100.0 * 0.3048)  # ISA temp on the 16-level grid, fixed per level
+    isa_t_per_level, _ = isa(TARGET_FL * 100.0 * FT_TO_M)  # ISA temp on the 16-level grid, fixed per level
 
     target_p = fl_to_pressure(TARGET_FL)          # (16,) Pa, decreasing as FL increases
     target_log_p = np.log(target_p)
@@ -320,7 +290,7 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
             leg_end_nm[i] - np.maximum(leg_start_nm[i], climb_ground_nm), 0.0, leg.dist_nm
         )
 
-        leg_time_i8 = dep_i8 + (accumulated_s * 1e9).astype("int64")
+        leg_time_i8 = dep_i8 + (accumulated_s * NS_PER_S).astype("int64")
 
         idx1 = np.searchsorted(times_i8, leg_time_i8, side="right") - 1
         idx1 = np.clip(idx1, 0, len(times_i8) - 2)
@@ -382,7 +352,7 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
         # it -- weight is now a state variable, not a schedule keyed on
         # cum_nm (see _climb_profile).
         fuel_total_kgh = fuel_total_kgh_table(weight, isa_dev_at_best)
-        weight = weight - fuel_total_kgh * (leg_s / 3600.0) / 1000.0
+        weight = weight - fuel_total_kgh * (leg_s / S_PER_HOUR) / 1000.0
 
         chosen_fl[:, i] = best_fl
         best_idx_out[:, i] = best_idx
@@ -390,7 +360,7 @@ def march_legs(cc_legs, cc_idx, data, dep_i8, tow_t=DEFAULT_TOW_T,
         tas_kt[:, i] = tas_ms_at_best / KT_TO_MS
         gs_kt[:, i] = best_gs_ms / KT_TO_MS
         wind_kt[:, i] = wind_at_best / KT_TO_MS
-        temp_c[:, i] = temp_k_at_best - 273.15
+        temp_c[:, i] = temp_k_at_best - C_TO_K
         isa_dev_k[:, i] = isa_dev_at_best
         leg_time_s[:, i] = leg_s
         eff_dist_nm[:, i] = this_eff_dist_nm
@@ -516,7 +486,7 @@ def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_le
     fl_max = float(pressure_to_fl(src_p_hpa[order][0] * 100.0))
 
     def wind_at_fl_builder(accumulated_s):
-        at_i8 = dep_i8 + (np.asarray(accumulated_s, dtype=float) * 1e9).astype("int64")
+        at_i8 = dep_i8 + (np.asarray(accumulated_s, dtype=float) * NS_PER_S).astype("int64")
 
         idx1 = np.searchsorted(times_i8, at_i8, side="right") - 1
         idx1 = np.clip(idx1, 0, len(times_i8) - 2)
@@ -638,8 +608,8 @@ def resolve_tow_and_arrival(
     return tow_out, n_iterations, fuel_flags, legs_out, weight_per_leg, climb, arrival_out
 
 
-def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
-                top=50, out_path="results.csv", out_all_path=None,
+def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
+                top=DEFAULT_TOP_N, out_path="results.csv", out_all_path=None,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, decel_descent_min=None,
@@ -744,7 +714,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     # garbage touchdown_i8 here -- harmless, since that row is dropped by
     # the dropna below same as everywhere else.
     touchdown_i8 = dep_i8 + (
-        (legs_out["accumulated_s"] + candidates["arrival_time_s"].to_numpy()) * 1e9
+        (legs_out["accumulated_s"] + candidates["arrival_time_s"].to_numpy()) * NS_PER_S
     ).astype("int64")
 
     jfk = runways.runway_screen(surface_data, "KJFK", dep_i8)
@@ -818,7 +788,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     top_fl = TARGET_FL.max()
     frac_at_top = float(np.mean(chosen_fl_valid == top_fl))
 
-    is_winter = best_row["local_date"].month in (11, 12, 1, 2)
+    is_winter = best_row["local_date"].month in WINTER_MONTHS
     print("\nSanity checks:")
     print(f"1. Best day (total time): {best_row['local_date']} "
           f"({'winter' if is_winter else 'NOT WINTER -- check wind sign'})")
@@ -881,7 +851,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id="BARIX",
     return candidates
 
 
-def run_shortlist(search_csv_path, pln_path, npz_path, top=10, decel_id="BARIX",
+def run_shortlist(search_csv_path, pln_path, npz_path, top=DEFAULT_SHORTLIST_TOP_N, decel_id=DECEL_WAYPOINT_ID,
                   subsonic_npz_path=None, arrival_upper_npz_path=None):
     """The top `top` rows of a concopt search --out CSV, printed as a
     ready-to-run `concopt verify` command per day -- so working through a

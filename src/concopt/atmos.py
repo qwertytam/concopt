@@ -4,26 +4,16 @@ Mach conversions. Vectorised numpy, SI units, no pint, no classes.
 import numpy as np
 from scipy.optimize import brentq
 
-GAMMA = 1.4
-R = 287.05287       # J/(kg K)
-G0 = 9.80665         # m/s2
-P0 = 101325.0        # Pa
-T0 = 288.15          # K
-A0 = np.sqrt(GAMMA * R * T0)  # m/s, sea-level speed of sound
+from concopt.params import (A0, G0, GAMMA, ISA_H1_M as _H1, ISA_H2_M as _H2,  # noqa: F401
+                            ISA_L1_K_PER_M as _L1, ISA_L3_K_PER_M as _L3,
+                            ISA_T_ISO_K as _T_ISO, KT_TO_MS, M_PER_FL as _M_PER_FL, P0, R, T0)
 
-KT_TO_MS = 1852.0 / 3600.0  # 1 kt in m/s
 
-# ISA layer boundaries and constants
-_L1 = -0.0065     # K/m, troposphere lapse rate, 0-11 km
-_H1 = 11000.0     # m, troposphere/tropopause boundary
-_H2 = 20000.0     # m, tropopause/stratosphere boundary
-_T_ISO = 216.65   # K, isothermal layer temperature (11-20 km)
-_L3 = 0.001       # K/m, lapse rate 20-32 km
+
 
 _P1 = P0 * (_T_ISO / T0) ** (-G0 / (R * _L1))          # pressure at 11 km
 _P2 = _P1 * np.exp(-G0 * (_H2 - _H1) / (R * _T_ISO))   # pressure at 20 km
 
-_M_PER_FL = 30.48  # metres per flight level (FL = 100 ft)
 
 
 def isa(h_m):

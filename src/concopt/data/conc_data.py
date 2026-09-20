@@ -4,9 +4,8 @@ import pandas as pd
 from scipy.interpolate import RegularGridInterpolator
 
 from concopt import atmos
+from concopt.params import FT_TO_M, LEVEL_MACH, MMO, TOTAL_TEMP_MAX_C  # noqa: F401 (MMO/TOTAL_TEMP_MAX_C re-exported)
 
-MMO = 2.04                  # max operating Mach, all altitudes
-TOTAL_TEMP_MAX_C = 127.0    # max stagnation temperature, all altitudes
 
 _fp = files("concopt").joinpath("data/conc_cas_limit.csv")
 _tbl = pd.read_csv(_fp, encoding="utf-8-sig")
@@ -361,8 +360,8 @@ def subsonic_cruise(level_fl, mass_t, isa_dev_c):
     isa_dev_c = np.asarray(isa_dev_c, float)
     level_fl_clamped = np.clip(level_fl, _SUBSONIC_LEVEL_FL[0], _SUBSONIC_LEVEL_FL[-1])
     isa_dev_c_clamped = np.clip(isa_dev_c, _SUBSONIC_ISA_DEV_C[0], _SUBSONIC_ISA_DEV_C[-1])
-    isa_t_k, _ = atmos.isa(level_fl_clamped * 100.0 * 0.3048)
-    tas_ms = atmos.speed_of_sound(isa_t_k + isa_dev_c_clamped) * 0.95
+    isa_t_k, _ = atmos.isa(level_fl_clamped * 100.0 * FT_TO_M)
+    tas_ms = atmos.speed_of_sound(isa_t_k + isa_dev_c_clamped) * LEVEL_MACH
     tas_kt, _ = np.broadcast_arrays(tas_ms / atmos.KT_TO_MS, np.asarray(mass_t, float))
 
     return {

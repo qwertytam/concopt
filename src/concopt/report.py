@@ -15,6 +15,7 @@ import pandas as pd
 from concopt import arrival, fuel, limits
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
+from concopt.params import DECEL_WAYPOINT_ID
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
@@ -235,7 +236,7 @@ def _step_climb_schedule(legs, chosen_fl):
 
 
 def run_report(pln_path, npz_path, local_date, local_hour,
-                decel_id="BARIX", out_path="report.csv",
+                decel_id=DECEL_WAYPOINT_ID, out_path="report.csv",
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, decel_descent_min=None,

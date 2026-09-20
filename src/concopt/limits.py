@@ -5,17 +5,8 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
 from concopt.atmos import KT_TO_MS, isa, mach_from_cas, mach_from_total_temp, speed_of_sound
-from concopt.data.conc_data import TOTAL_TEMP_MAX_C, cas_limit_kt, ceiling_ft_table
-
-TOTAL_TEMP_MAX_K = TOTAL_TEMP_MAX_C + 273.15
-
-# The manual's cruise is flown at M2.00, not Mmo 2.04 -- its ceiling table
-# (conc_data.ceiling_ft_table) is "the altitude attainable at M2.00", so
-# pairing those ceilings with Mmo would let max_mach claim speeds the
-# ceiling was never validated at. MMO (2.04) stays in conc_data.py as the
-# aircraft's structural limit; CRUISE_MACH is what max_mach actually uses,
-# overridable from the CLI (--cruise-mach) to try both.
-CRUISE_MACH = 2.00
+from concopt.data.conc_data import cas_limit_kt, ceiling_ft_table
+from concopt.params import CRUISE_MACH, FT_TO_M, LIMITS_DEFAULT_WEIGHT_T, TOTAL_TEMP_MAX_K
 
 # CAS-limit Mach depends only on altitude and weight, so it is precomputed
 # once on this grid (455 brentq calls, still instant at import) and
@@ -25,7 +16,7 @@ CRUISE_MACH = 2.00
 # live SimConnect weight) is in play.
 _FL_GRID = np.arange(280.0, 601.0, 5.0)  # FL280..FL600, 500 ft steps
 _ALT_GRID_FT = _FL_GRID * 100.0
-_ALT_GRID_M = _ALT_GRID_FT * 0.3048
+_ALT_GRID_M = _ALT_GRID_FT * FT_TO_M
 _WEIGHT_GRID = np.arange(105.0, 165.1, 10.0)  # 105..165 t, 10 t steps
 
 
@@ -48,7 +39,7 @@ _mach_cas_interp = RegularGridInterpolator(
 )
 
 
-def mach_components(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+def mach_components(fl, T_K, weight_t=LIMITS_DEFAULT_WEIGHT_T, cruise_mach=CRUISE_MACH):
     """The three Mach limits max_mach takes the elementwise min of:
     cruise_mach (constant -- CRUISE_MACH by default, the manual's M2.00,
     not Mmo), the interpolated CAS-limit Mach (altitude + weight), and the
@@ -69,7 +60,7 @@ def mach_components(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
     return np.broadcast_arrays(cruise, cas_mach, tt_mach)
 
 
-def max_mach(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+def max_mach(fl, T_K, weight_t=LIMITS_DEFAULT_WEIGHT_T, cruise_mach=CRUISE_MACH):
     """Elementwise min of cruise_mach (CRUISE_MACH by default), the
     interpolated CAS-limit Mach, and the total-temperature-limit Mach.
     weight_t may be a scalar or an array broadcastable with fl."""
@@ -80,7 +71,7 @@ def max_mach(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
 _MACH_LIMIT_NAMES = np.array(["cruise_mach", "CAS", "total_temp"])
 
 
-def binding_mach_limit(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+def binding_mach_limit(fl, T_K, weight_t=LIMITS_DEFAULT_WEIGHT_T, cruise_mach=CRUISE_MACH):
     """Which of cruise_mach/CAS/total_temp is smallest -- i.e. actually
     constrains max_mach -- at each point. String array, same shape as
     max_mach's output. Doesn't know about ceiling_ft: that's a separate,
@@ -92,7 +83,7 @@ def binding_mach_limit(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
     return _MACH_LIMIT_NAMES[idx]
 
 
-def max_tas(fl, T_K, weight_t=135, cruise_mach=CRUISE_MACH):
+def max_tas(fl, T_K, weight_t=LIMITS_DEFAULT_WEIGHT_T, cruise_mach=CRUISE_MACH):
     """Max true airspeed (m/s) at flight level fl, static temperature T_K."""
     T_K = np.asarray(T_K, dtype=float)
     return max_mach(fl, T_K, weight_t, cruise_mach) * speed_of_sound(T_K)
@@ -145,7 +136,7 @@ def best_level(fls, T_K, u_ms, v_ms, track_deg, weight_t, cruise_mach=CRUISE_MAC
     tas_ms = max_tas(fls, T_K, weight_t, cruise_mach)
     gs_per_level = ground_speed(tas_ms, track_deg, u_ms, v_ms)
 
-    isa_t_k, _ = isa(fls * 100.0 * 0.3048)
+    isa_t_k, _ = isa(fls * 100.0 * FT_TO_M)
     isa_dev_c = T_K - isa_t_k
     ceiling = ceiling_ft(weight_t, isa_dev_c)
     above_ceiling = fls * 100.0 > ceiling

@@ -48,16 +48,12 @@ from concopt.asky import get_atmosphere_np
 from concopt.atmos import KT_TO_MS
 from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import (NM_TO_M, TARGET_FL, _format_hmm,
+from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, C_TO_K, DECEL_WAYPOINT_ID,  # noqa: F401
+                            NM_TO_M, SNAPSHOT_CACHE_PATH, VERIFY_TOTAL_TOLERANCE_MIN)
+from concopt.params import VERIFY_DEFAULT_N_POINTS as DEFAULT_N_POINTS  # noqa: F401
+from concopt.search import (TARGET_FL, _format_hmm,
                              local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
-
-DEFAULT_N_POINTS = 12
-
-# Cache of {"<date> <hour>:00": "<sha256 of that run's AS wind+temp>"},
-# under the repo (not gitignored's ephemeral data/era5/ or the .csv
-# outputs -- this is small, hand-inspectable state) -- see _guard_snapshot.
-SNAPSHOT_CACHE_PATH = Path("data/verify_snapshot_cache.json")
 
 
 def _select_points(n_legs, n_points):
@@ -108,7 +104,7 @@ def _as_atmosphere(lat, lon, host, port):
     dir_rad = np.radians(wind_dir_deg)
     u_ms = -speed_ms * np.sin(dir_rad)
     v_ms = -speed_ms * np.cos(dir_rad)
-    temp_k = temp_c + 273.15
+    temp_k = temp_c + C_TO_K
     return temp_k, u_ms, v_ms
 
 
@@ -170,7 +166,7 @@ def _mismatch_tas_cost_kt(as_idx, era5_idx, temp_k_as_grid, weight_t, cruise_mac
 
 
 def run_verify(pln_path, npz_path, local_date, local_hour,
-               decel_id="BARIX", n_points=DEFAULT_N_POINTS, host="localhost", port=19285,
+               decel_id=DECEL_WAYPOINT_ID, n_points=DEFAULT_N_POINTS, host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT,
                tow_t=None, zfw_t=None,
                min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                subsonic_npz_path=None,
@@ -304,7 +300,7 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
         track_rad = np.radians(leg.track_deg)
         along_ms_as = u_ms_as * np.sin(track_rad) + v_ms_as * np.cos(track_rad)
         wind_kt_as = float(along_ms_as[best_idx_as] / KT_TO_MS)
-        temp_c_as = float(temp_k_as[best_idx_as] - 273.15)
+        temp_c_as = float(temp_k_as[best_idx_as] - C_TO_K)
 
         era5_fl = float(era5["chosen_fl"][i])
         era5_idx = int(era5["best_idx"][i])
@@ -367,7 +363,7 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
 
     print(f"\nSupersonic segment time: ERA5 {_format_hmm(era5_total_s)}  "
           f"AS (recomputed) {_format_hmm(as_total_s)}  diff {diff_min:+.1f} min "
-          f"({'OK' if abs(diff_min) <= 5.0 else 'CHECK -- large divergence'})")
+          f"({'OK' if abs(diff_min) <= VERIFY_TOTAL_TOLERANCE_MIN else 'CHECK -- large divergence'})")
 
     if csv_path is not None:
         csv_path = Path(csv_path)
