@@ -875,7 +875,7 @@ def _report_arrival_s(report_df):
     """report_df's own arrival_s column (report.py, on the decel waypoint's
     row) -- the report's OWN prediction of BARIX -> touchdown time, from the
     same real per-day arrival.arrival() model the report was built with.
-    Raises rather than silently falling back to the flat DECEL_DESCENT_S
+    Raises rather than silently falling back to the flat 35 min
     placeholder this was written to replace: a report CSV predating the
     column means `concopt report` needs rerunning, not a quiet regression to
     the old flat number."""
@@ -890,7 +890,7 @@ def _report_arrival_s(report_df):
 
 def _preflight_predicted_total_s(report_df):
     """report_df's own last elapsed (brake release -> decel waypoint) plus
-    its own arrival_s -- NOT DECEL_DESCENT_S: the report CSV was itself
+    its own arrival_s -- NOT the flat 35 min constant: the report CSV was itself
     generated with the real arrival model, so adding the flat 35 min
     constant on top double-counts against a plan that already accounts for
     its own (usually ~30 min, but day-dependent) arrival."""
@@ -944,7 +944,7 @@ def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id="LINND", dec
         measured_decel_to_touchdown_s=(touchdown_elapsed_s - decel_actual_s
                                         if not decel_rows.empty else np.nan),
         # The report's own real per-day arrival total (report.py's
-        # arrival_s column), not the flat DECEL_DESCENT_S constant the plan
+        # arrival_s column), not the old flat 35 min constant the plan
         # was actually predicted with -- comparing against the constant
         # would flag every day's real vs-real difference as a model error.
         predicted_decel_to_touchdown_s=_report_arrival_s(report_df),

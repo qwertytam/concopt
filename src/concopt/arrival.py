@@ -1,6 +1,6 @@
 """Arrival model: decel waypoint (BARIX) to touchdown.
 
-Replaces the flat DECEL_DESCENT_S = 35 min / 2.0 t placeholder. Four segments
+Replaces the flat 35 min / 2.0 t placeholder. Four segments
 covering a ground distance fixed by the route:
 
   1. decel    cruise Mach -> M1.0, cruise_fl -> decel_end_fl  (conc_descent.csv)
@@ -78,8 +78,7 @@ _SEGMENT_KEYS = (
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
               "level_mass_outside_envelope", "wind_fl_clamped")
 
-# Legacy comparison only. The flat (DECEL_DESCENT_S=35 min, DESCENT_FUEL_T=
-# 2.0 t) pair this module replaces -- see flat_arrival, which --decel-
+# Legacy comparison only. The flat (35 min, 2.0 t) pair this module replaces -- see flat_arrival, which --decel-
 # descent-min forces instead of the real model below, for comparing old and
 # new numbers on equal terms.
 LEGACY_FLAT_FUEL_T = 2.0

@@ -55,17 +55,6 @@ CLIMB_BAND_SAMPLE_NM = 300.0
 # every target is bracketed -- see the assert in march_legs.
 TARGET_FL = np.arange(450.0, 601.0, 10.0)
 
-# LEGACY -- no longer this module's own default. arrival.arrival() (below)
-# replaced this flat 35-minute placeholder for search.py/report.py's own
-# brakes-release-to-touchdown estimate; the constant is kept only because
-# inflight.py's flight recorder still compares a measured decel-to-touchdown
-# time against it (compare_to_report) and that wiring is a separate, later
-# task. --decel-descent-min still exists on the CLI, but now as an explicit
-# override that forces arrival.flat_arrival's flat (time, fuel) pair instead
-# of the real per-day model, for comparing old and new numbers -- it is no
-# longer given a default value, see cli.py.
-DECEL_DESCENT_S = 35.0 * 60.0
-
 
 def candidate_departures():
     """Every date from era5.ARCHIVE_START to today, at 08:00-14:00
@@ -585,7 +574,7 @@ def resolve_tow_and_arrival(
     needs more than that flagged tow_below_required.
 
     decel_descent_min given forces arrival.flat_arrival -- the pre-B3 flat
-    (DECEL_DESCENT_S, DESCENT_FUEL_T) pair -- instead of the real per-day
+    (35 min, 2.0 t) pair -- instead of the real per-day
     arrival.arrival() model, for comparing old and new numbers; subsonic_data
     and arrival_upper_data are unused in that case and may both be None.
     decel_descent_min None (the default) requires BOTH subsonic_data (era5.
