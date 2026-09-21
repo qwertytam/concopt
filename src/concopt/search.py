@@ -9,7 +9,6 @@ candidates at once and collapses the result to means, report.run_report
 calls it for a single candidate and keeps every per-leg quantity.
 """
 import datetime as dt
-import functools
 from pathlib import Path
 
 import numpy as np
@@ -529,8 +528,7 @@ def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_le
 def resolve_tow_and_arrival(
     cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
     tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-    decel_descent_min=None, cruise_mach=limits.CRUISE_MACH,
-    arrival_upper_data=None,
+    cruise_mach=limits.CRUISE_MACH, arrival_upper_data=None,
 ):
     """Shared by run_search/run_report/verify.run_verify: solves TOW (fixed
     point on zfw_t, or the flat tow_t override) and the arrival segment
@@ -543,41 +541,31 @@ def resolve_tow_and_arrival(
     unchanged (fuel loaded = tow_t - zfw_t), with any candidate whose trip
     needs more than that flagged tow_below_required.
 
-    decel_descent_min given forces arrival.flat_arrival -- the pre-B3 flat
-    (35 min, 2.0 t) pair -- instead of the real per-day
-    arrival.arrival() model, for comparing old and new numbers; subsonic_data
-    and arrival_upper_data are unused in that case and may both be None.
-    decel_descent_min None (the default) requires BOTH subsonic_data (era5.
-    reduce_to_legs run against arrival_legs, the post-BARIX legs -- see
-    run_search) and arrival_upper_data (era5.reduce_to_legs run against the
-    SAME arrival_legs, but from the UPPER_AIR_LEVELS netCDFs already
-    downloaded for the cruise legs -- --arrival-upper-npz) -- B6:
-    subsonic_data alone (FL183-FL414) doesn't reach the decel segment's own
-    wind-sampling midpoint from a realistic cruise level, so both are
-    stitched together in _build_arrival_wind_fn.
+    subsonic_data (era5.reduce_to_legs run against arrival_legs, the
+    post-BARIX legs -- see run_search) and arrival_upper_data (era5.
+    reduce_to_legs run against the SAME arrival_legs, but from the
+    UPPER_AIR_LEVELS netCDFs already downloaded for the cruise legs --
+    --arrival-upper-npz) are BOTH required -- B6: subsonic_data alone
+    (FL183-FL414) doesn't reach the decel segment's own wind-sampling
+    midpoint from a realistic cruise level, so both are stitched together
+    in _build_arrival_wind_fn.
 
     Returns (tow_t, n_iterations, fuel_flags, legs_out, weight_per_leg,
     climb, arrival_out) -- n_iterations is None for a plain --tow run, same
     convention as fuel.fuel_plan."""
     n_cand = len(dep_i8)
 
-    if decel_descent_min is not None:
-        arrival_fn = functools.partial(arrival.flat_arrival,
-                                        decel_descent_min=decel_descent_min)
-        wind_fn_builder = lambda accumulated_s: None  # noqa: E731 -- never called by flat_arrival
-    else:
-        if subsonic_data is None or arrival_upper_data is None:
-            raise ValueError(
-                "subsonic_data (--subsonic-npz) AND arrival_upper_data "
-                "(--arrival-upper-npz) are both required to compute the real "
-                "arrival model -- subsonic_data alone doesn't reach the decel "
-                "segment's own wind-sampling midpoint (B6); pass "
-                "--decel-descent-min to force the flat legacy arrival instead"
-            )
-        wind_fn_builder = _build_arrival_wind_fn(
-            subsonic_data, arrival_upper_data, dep_i8, arrival_legs
+    if subsonic_data is None or arrival_upper_data is None:
+        raise ValueError(
+            "subsonic_data (--subsonic-npz) AND arrival_upper_data "
+            "(--arrival-upper-npz) are both required to compute the arrival "
+            "model -- subsonic_data alone doesn't reach the decel segment's "
+            "own wind-sampling midpoint (B6)"
         )
-        arrival_fn = arrival.arrival
+    wind_fn_builder = _build_arrival_wind_fn(
+        subsonic_data, arrival_upper_data, dep_i8, arrival_legs
+    )
+    arrival_fn = arrival.arrival
 
     if zfw_t is None:
         raise ValueError("zfw_t (--zfw) is required -- TOW is an outcome of ZFW; "
@@ -612,8 +600,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
                 top=DEFAULT_TOP_N, out_path="results.csv", out_all_path=None,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-                subsonic_npz_path=None, decel_descent_min=None,
-                cruise_mach=limits.CRUISE_MACH,
+                subsonic_npz_path=None, cruise_mach=limits.CRUISE_MACH,
                 arrival_upper_npz_path=None):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
@@ -656,9 +643,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
     UPPER_AIR_LEVELS netCDFs already downloaded for the cruise legs -- B6, no
     new CDS download) together drive arrival.arrival()'s per-day decel/level/
     descent model via _build_arrival_wind_fn's stitched FL183-FL605 wind
-    profile, replacing the old flat DESCENT_FUEL_T placeholder; both required
-    unless decel_descent_min forces the flat legacy arrival instead, for
-    comparing old and new numbers directly."""
+    profile, replacing the old flat DESCENT_FUEL_T placeholder; both required."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
@@ -683,7 +668,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
         resolve_tow_and_arrival(
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
-            decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
+            cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
         )
     )
@@ -708,8 +693,8 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
 
     # Touchdown clock time = departure + accumulated_s (already climb +
     # cruise, see march_legs) + arrival_time_s (arrival.arrival()'s own
-    # per-candidate decel+level+descent+approach time, or the flat
-    # decel_descent_min override -- see resolve_tow_and_arrival). NaN
+    # per-candidate decel+level+descent+approach time -- see
+    # resolve_tow_and_arrival). NaN
     # accumulated_s (a candidate the march couldn't complete) produces a
     # garbage touchdown_i8 here -- harmless, since that row is dropped by
     # the dropna below same as everywhere else.

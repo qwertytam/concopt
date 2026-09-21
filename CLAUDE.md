@@ -204,18 +204,16 @@ for its own sake, no defensive error handling.
   `.npz`s stitched together (B6, see `era5.py` above) — `--subsonic-npz`
   and `--arrival-upper-npz`, both `era5.reduce_to_legs` run against the
   post-BARIX legs (the complement of `route.climb_cruise_segment`'s mask,
-  i.e. `~mask`), both required together unless `--decel-descent-min`
-  forces the flat legacy arrival — sampled at a single representative
-  arrival leg and at BARIX clock time, the same coarse single-point-proxy
-  convention `_climb_conditions` uses for the climb, not a per-segment
-  march. `--decel-descent-min` no longer has a default value:
-  given, it forces `arrival.flat_arrival` (the exact pre-arrival.py flat
-  35 min / 2.0 t pair) instead of the real per-day
-  model, ignoring `--subsonic-npz` entirely — for comparing old vs new
-  numbers directly. Neither given (the default) requires `--subsonic-npz`;
-  omitting both raises rather than silently falling back to something flat.
+  i.e. `~mask`), both always required (argparse enforces it on `search`/
+  `report`; `verify` needs them unless `--tow` is given) — sampled at a
+  single representative arrival leg and at BARIX clock time, the same coarse
+  single-point-proxy convention `_climb_conditions` uses for the climb, not
+  a per-segment march. There is no flat fallback: the old `--decel-descent-min`
+  (a fixed 35 min / 2.0 t arrival, kept only to compare against the real
+  model) has been removed, and omitting either npz raises.
 - `arrival.py` — the arrival segment, BARIX → touchdown, replacing the old
-  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments over a *route-provided* `arrival_nm` (summed
+  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments
+  over a *route-provided* `arrival_nm` (summed
   post-decel leg distance, not a hardcoded constant — search/report compute
   it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
   (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
@@ -243,10 +241,9 @@ for its own sake, no defensive error handling.
   table's three), from the ISA deviation at cruise level. Wind/temperature
   arrive through a caller-supplied `wind_at_fl` callable/dict — this module
   never reads era5/`.npz` files directly, so the ERA5 wiring stays entirely
-  in `search.py` (`_build_arrival_wind_fn`). `flat_arrival` is the
-  `--decel-descent-min` legacy override: same call signature as `arrival()`
-  so `fuel.py`'s fixed point can hold either interchangeably, but returns
-  the flat pre-B3 (time, fuel) pair with `schedule_kt=0` as a sentinel.
+  in `search.py` (`_build_arrival_wind_fn`). `fuel.fixed_point_fuel_iteration`
+  takes the arrival function as an argument (defaulting to `arrival()`), which
+  is how tests substitute a stub.
 
   MASS IS THE TRAP (B5): the level segment's fuel now comes from
   `conc_data.subsonic_cruise` (`conc_subsonic_cruise.csv`, 751 rows,
@@ -301,8 +298,7 @@ for its own sake, no defensive error handling.
   reports the greatest-headwind runway and a computed time — never
   dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
   each candidate's own `arrival.arrival()` output (`arrival_time_s`,
-  `search.run_search`), not a flat constant any more (the old flat 35 min
-  survives only as the legacy pair `--decel-descent-min` forces).
+  `search.run_search`), not a flat constant.
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers

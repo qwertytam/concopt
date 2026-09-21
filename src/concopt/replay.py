@@ -176,7 +176,7 @@ def _lat_lon_at_cum_nm(legs, target_cum_nm):
 
 def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_upper_data=None,
                             tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-                            decel_descent_min=None, cruise_mach=limits.CRUISE_MACH,
+                            cruise_mach=limits.CRUISE_MACH,
                             decel_id=DECEL_WAYPOINT_ID, sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
                             seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT):
     """A synthetic flight-shaped DataFrame (same columns a --record CSV has,
@@ -223,7 +223,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
         resolve_tow_and_arrival(
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
-            decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
+            cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
         )
     )
