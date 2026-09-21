@@ -47,7 +47,7 @@ def test_profile_segments_join_up(prof):
     """Every segment starts where the last one ended, in distance, time and
     weight -- the climb table, the cruise march and the arrival ramps are three
     separate computations, so this is what proves they stitch."""
-    p = prof["profile"]
+    p = prof.profile
     starts, ends = p.iloc[0::2].reset_index(drop=True), p.iloc[1::2].reset_index(drop=True)
     for col in ("cum_nm", "elapsed_s", "weight_t"):
         assert ends[col].iloc[:-1].to_numpy() == pytest.approx(starts[col].iloc[1:].to_numpy(), abs=1e-6)
@@ -57,7 +57,7 @@ def test_profile_segments_join_up(prof):
 
 
 def test_profile_telescopes_to_the_fuel_plan(prof):
-    p, s = prof["profile"], prof["summary"]
+    p, s = prof.profile, prof.summary
     tol = 0.06  # fuel.DEFAULT_TOLERANCE_T -- the march flew the iterate before the last update
     assert p["weight_t"].iloc[0] == pytest.approx(s["tow_t"], abs=tol)
     assert p["weight_t"].iloc[-1] == pytest.approx(s["landing_weight_t"], abs=tol)
@@ -68,23 +68,23 @@ def test_profile_telescopes_to_the_fuel_plan(prof):
 
 
 def test_phase_table_reconciles(prof):
-    ph = prof["phases"].set_index("phase")
+    ph = prof.phases.set_index("phase")
     flown = ["climb", "acceleration", "cruise", "deceleration", "subsonic cruise", "descent", "approach"]
     assert list(ph.index[1:-2]) == flown
     total = ph.loc["TOTAL"]
     assert total["duration_s"] == pytest.approx(
         ph.loc[flown, "duration_s"].sum() + 30.0 + 60.0)  # runway penalties ride on top
     assert total["fuel_t"] == pytest.approx(ph.loc[flown, "fuel_t"].sum())
-    assert total["duration_s"] == pytest.approx(prof["summary"]["total_time_s"])
-    assert ph.loc["climb", "end_nm"] == pytest.approx(prof["summary"]["linnd_nm"])
-    assert ph.loc["acceleration", "end_nm"] == pytest.approx(prof["summary"]["top_of_climb_nm"], abs=1e-6)
+    assert total["duration_s"] == pytest.approx(prof.summary["total_time_s"])
+    assert ph.loc["climb", "end_nm"] == pytest.approx(prof.summary["linnd_nm"])
+    assert ph.loc["acceleration", "end_nm"] == pytest.approx(prof.summary["top_of_climb_nm"], abs=1e-6)
     assert ph.loc["runway penalty (KJFK)", "duration_s"] == 30.0
 
 
 def test_climb_has_no_speeds_and_arrival_does(prof):
     """conc_climb.csv carries no speeds -- climb Mach/TAS/CAS stay NaN, only the
     whole-climb mean GS is filled; the arrival's are derived."""
-    p = prof["profile"]
+    p = prof.profile
     climb = p[p["phase"].isin(["climb", "acceleration"])]
     assert climb[["mach", "tas_kt", "cas_kt"]].isna().all().all()
     assert (climb["speed_basis"] == "mean").all() and climb["gs_kt"].notna().all()
@@ -94,7 +94,7 @@ def test_climb_has_no_speeds_and_arrival_does(prof):
 
 
 def test_mach_limit_is_subsonic_before_linnd_and_after_decel(prof):
-    p = prof["profile"]
+    p = prof.profile
     for phase in ("climb", "subsonic cruise", "descent", "approach"):
         assert (p.loc[p["phase"] == phase, "mach_limit"] == SUBSONIC_LIMIT_MACH).all(), phase
     for phase in ("acceleration", "cruise", "deceleration"):
@@ -102,8 +102,8 @@ def test_mach_limit_is_subsonic_before_linnd_and_after_decel(prof):
 
 
 def test_arrival_speeds_follow_the_model(prof):
-    p = prof["profile"]
-    sched = prof["summary"]["schedule_kt"]
+    p = prof.profile
+    sched = prof.summary["schedule_kt"]
     assert p.loc[p["phase"] == "descent", "cas_kt"].to_numpy() == pytest.approx(sched, abs=0.01)  # CAS schedule
     assert p.loc[p["phase"] == "subsonic cruise", "mach"].to_numpy() == pytest.approx(0.95)
     decel = p[p["phase"] == "deceleration"]
@@ -112,7 +112,7 @@ def test_arrival_speeds_follow_the_model(prof):
 
 
 def test_ceiling_and_cas_limit_columns(prof):
-    p = prof["profile"]
+    p = prof.profile
     assert p.loc[p["phase"] == "cruise", "ceiling_ft"].notna().all()
     assert p.loc[p["phase"] != "cruise", "ceiling_ft"].isna().all()
     assert p["cas_limit_kt"].notna().all()

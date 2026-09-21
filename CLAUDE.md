@@ -302,7 +302,7 @@ for its own sake, no defensive error handling.
   a Runways block and adds the JFK+LHR penalties to its total block time, so
   report and search agree on a day (`tests/test_search.py` pins it).
 - `report.flight_profile` — the whole flight, brake release → touchdown, for
-  ONE candidate, as data (`dict(phases, profile, summary)`) instead of
+  ONE candidate, as data (a `FlightProfile` NamedTuple of `phases, profile, summary`) instead of
   `run_report`'s printed text; the day-search notebook is its consumer. It
   stitches three computations of very different resolution: the climb
   (`conc_climb.csv`'s 18 cumulative levels, air distance turned into ground

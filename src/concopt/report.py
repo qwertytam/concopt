@@ -8,6 +8,7 @@ import datetime as dt
 from collections import Counter
 from itertools import groupby
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -648,6 +649,16 @@ def _phase_table(segments, departure_utc_ts, runway_penalties_s):
                       pd.DataFrame([total])], ignore_index=True)
 
 
+class FlightProfile(NamedTuple):
+    """flight_profile's result. A NamedTuple rather than a dict of the three
+    so each field has its own type (editors/type checkers otherwise type
+    every value as the union of a DataFrame and a dict)."""
+
+    phases: pd.DataFrame
+    profile: pd.DataFrame
+    summary: dict[str, Any]
+
+
 def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None,
                    subsonic_npz_path=None, arrival_upper_npz_path=None,
                    decel_id=DECEL_WAYPOINT_ID, cruise_mach=limits.CRUISE_MACH,
@@ -656,7 +667,7 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None
     -- run_report's model (resolve_tow_and_arrival, so TOW is solved from zfw_t
     or is the tow_t override) laid out as data instead of printed text.
 
-    Returns dict(phases, profile, summary):
+    Returns FlightProfile(phases, profile, summary) (also unpackable):
       phases   DataFrame, one row per phase (climb / acceleration / cruise /
                deceleration / subsonic cruise / descent / approach), then the
                runway penalties and a TOTAL row -- distance, duration, fuel,
@@ -741,4 +752,4 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None
         climb_warm_clamped=bool(climb_row["warm_flag"]), top_of_climb_nm=climb_row["ground_dist_nm"],
         linnd_nm=linnd_nm, total_time_s=float(phases["duration_s"].iloc[-1]),
     )
-    return dict(phases=phases, profile=profile, summary=summary)
+    return FlightProfile(phases=phases, profile=profile, summary=summary)
