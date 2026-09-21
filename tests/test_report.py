@@ -14,11 +14,9 @@ import math
 import numpy as np
 import pytest
 
-from concopt.arrival import LEGACY_FLAT_FUEL_T
 from concopt.atmos import isa, pressure_to_fl
-from concopt.era5 import load_legs_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.search import DEFAULT_TOW_T, resolve_tow_and_arrival
+from concopt.search import DEFAULT_TOW_T
 from concopt.report import run_report
 from tests.test_route import SAMPLE_PLN
 
@@ -128,13 +126,19 @@ def _surface_npz(tmp_path, jfk_from_deg=None, egll_from_deg=None, speed_ms=5.0):
     return path
 
 
+def _arrival_kw(tmp_path):
+    """run_report's two required arrival inputs, still-air."""
+    return dict(subsonic_npz_path=_still_air_subsonic_npz(tmp_path),
+                arrival_upper_npz_path=_still_air_arrival_upper_npz(tmp_path))
+
+
 def test_run_report_with_zfw_prints_fuel_plan_block(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
-                decel_descent_min=35.0)
+                **_arrival_kw(tmp_path))
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
@@ -177,25 +181,6 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     assert "conc_subsonic_cruise.csv" in arrival_block
 
 
-def test_run_report_prints_flat_override_arrival_block(tmp_path, capsys):
-    """--decel-descent-min forces a short flat block, not a segment
-    breakdown whose rows wouldn't sum to the flat total."""
-    npz_path = _still_air_npz(tmp_path)
-    out_path = tmp_path / "report.csv"
-
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
-                decel_descent_min=35.0)
-
-    printed = capsys.readouterr().out
-    arrival_block = printed.split("\n\n")[1]
-
-    assert arrival_block.startswith("Arrival (BARIX -> touchdown,")
-    assert "FLAT OVERRIDE" in arrival_block
-    assert "decel to M1.0" not in arrival_block
-    assert "total" in arrival_block
-
-
 def test_run_report_tow_override_skips_fixed_point(tmp_path, capsys):
     """--tow is an optional override on top of --zfw: no fixed point, ZFW
     stays as given, and the printed block reports fuel loaded against the
@@ -204,7 +189,7 @@ def test_run_report_tow_override_skips_fixed_point(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, **_arrival_kw(tmp_path))
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
@@ -225,7 +210,7 @@ def test_run_report_flags_boundary_clamp(tmp_path, capsys):
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=50.0, min_landing_fuel_t=10.0,
-                decel_descent_min=35.0)
+                **_arrival_kw(tmp_path))
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
@@ -234,10 +219,10 @@ def test_run_report_flags_boundary_clamp(tmp_path, capsys):
     assert "tow_below_climb_table" in fuel_block
 
 
-def test_run_report_missing_subsonic_npz_and_no_override_raises(tmp_path):
-    """Neither --subsonic-npz nor --decel-descent-min given -- the real
-    arrival model has nothing to sample wind from, so this must fail loud
-    rather than silently falling back to something flat."""
+def test_run_report_missing_subsonic_npz_raises(tmp_path):
+    """No --subsonic-npz given -- the arrival model has nothing to sample
+    wind from, so this must fail loud rather than silently falling back to
+    something flat."""
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
@@ -247,9 +232,8 @@ def test_run_report_missing_subsonic_npz_and_no_override_raises(tmp_path):
 
 
 def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
-    """search/report's real path: --zfw + --subsonic-npz, no legacy
-    override -- the real per-day arrival.arrival() model runs inside the
-    fixed point."""
+    """search/report's real path: --zfw + the arrival npz files -- the real
+    per-day arrival.arrival() model runs inside the fixed point."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
     arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
@@ -264,67 +248,7 @@ def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
     fuel_block, arrival_block = printed.split("\n\n")[:2]
 
     assert "converged in" in fuel_block
-    assert "flat override" not in arrival_block
     assert "kt schedule" in arrival_block
-
-
-def test_arrival_fuel_inside_fixed_point_converges_tow_higher(tmp_path):
-    """The whole point of wiring arrival.py into fuel.py's fixed point: at a
-    fixed ZFW, the real arrival model's fuel (several tonnes, vs the old
-    flat 2.0 t DESCENT_FUEL_T it replaces) feeds back into TOW, converging
-    meaningfully higher than the flat legacy override does -- amplified
-    further by the climb feedback (more TOW -> more climb burn -> more
-    TOW), so the final gap is bigger than the raw arrival-fuel delta alone."""
-    npz_path = _still_air_npz(tmp_path)
-    subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
-    arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
-
-    plan = parse_pln(SAMPLE_PLN)
-    legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
-    cc_idx = np.flatnonzero(mask)
-    cc_legs = [legs[i] for i in cc_idx]
-    arrival_idx = np.flatnonzero(~mask)
-    arrival_legs = [legs[i] for i in arrival_idx]
-    arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
-
-    data = load_legs_npz(npz_path)
-    subsonic_data = load_legs_npz(subsonic_npz_path)
-    arrival_upper_data = load_legs_npz(arrival_upper_npz_path)
-    dep_i8 = np.array([1455289200000000000], dtype="int64")  # 2016-02-12 15:00Z
-    zfw_t = np.array([92.0])
-
-    tow_flat, *_ = resolve_tow_and_arrival(
-        cc_legs, cc_idx, arrival_legs, arrival_nm, data, None, dep_i8,
-        zfw_t=zfw_t, min_landing_fuel_t=10.0, decel_descent_min=35.0,
-    )
-    tow_real, *_ = resolve_tow_and_arrival(
-        cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
-        zfw_t=zfw_t, min_landing_fuel_t=10.0,
-        arrival_upper_data=arrival_upper_data,
-    )
-
-    diff_t = float(tow_real[0] - tow_flat[0])
-    assert 4.0 < diff_t < 15.0, f"expected several t higher TOW with real arrival, got {diff_t:.2f} t"
-
-
-def test_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, capsys):
-    """--decel-descent-min forces the exact pre-B3 numbers: the given
-    minutes and arrival.LEGACY_FLAT_FUEL_T (2.0 t), not the real model."""
-    npz_path = _still_air_npz(tmp_path)
-    out_path = tmp_path / "report.csv"
-
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
-
-    printed = capsys.readouterr().out
-    fuel_block = printed.split("\n\n")[0]
-    arrival_block = printed.split("\n\n")[1]
-
-    assert f"arrival {LEGACY_FLAT_FUEL_T:.1f}" in fuel_block
-    assert "FLAT OVERRIDE" in arrival_block
-    assert "35.0 min" in arrival_block
-    assert f"{LEGACY_FLAT_FUEL_T:.2f} t" in arrival_block
 
 
 def test_run_report_requires_surface_npz(tmp_path):
@@ -334,7 +258,7 @@ def test_run_report_requires_surface_npz(tmp_path):
     npz_path = _still_air_npz(tmp_path)
     with pytest.raises(ValueError, match="surface_npz_path"):
         run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                    out_path=tmp_path / "report.csv", zfw_t=92.0, decel_descent_min=35.0)
+                    out_path=tmp_path / "report.csv", zfw_t=92.0, **_arrival_kw(tmp_path))
 
 
 def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
@@ -346,7 +270,7 @@ def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
                 out_path=tmp_path / "report.csv", surface_npz_path=surface,
-                zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                zfw_t=92.0, tow_t=DEFAULT_TOW_T, **_arrival_kw(tmp_path))
 
     printed = capsys.readouterr().out
     assert "Runways (ERA5 surface wind" in printed

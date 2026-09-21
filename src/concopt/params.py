@@ -145,11 +145,6 @@ FASTEST_SCHEDULE_KT = 380     # arrival()'s default forced schedule, and the
 CRUISE_FL_MIN = 470.0
 CRUISE_FL_MAX = 600.0
 
-# Legacy comparison only. The flat (35 min, 2.0 t) pair the arrival model
-# replaces -- see arrival.flat_arrival, which --decel-descent-min forces
-# instead of the real model, for comparing old and new numbers on equal terms.
-LEGACY_FLAT_FUEL_T = 2.0
-
 # =============================================================================
 # Route (route.py, cli.py)
 # =============================================================================

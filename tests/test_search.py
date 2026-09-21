@@ -226,8 +226,7 @@ def _tiny_candidates():
 
 
 def test_run_search_end_to_end_with_zfw_and_subsonic_npz(tmp_path, monkeypatch):
-    """search's real path: --zfw + --subsonic-npz, no legacy override --
-    the real per-day arrival.arrival() model runs inside the fixed point
+    """search's real path: --zfw + the arrival npz files -- the real per-day arrival.arrival() model runs inside the fixed point
     for every candidate, the same machinery test_report.py's run_report
     tests exercise for one candidate at a time."""
     npz_path = _still_air_npz(tmp_path)
@@ -253,25 +252,10 @@ def test_run_search_end_to_end_with_zfw_and_subsonic_npz(tmp_path, monkeypatch):
     assert np.all(candidates["arrival_fuel_t"] < 12.0)
 
 
-def test_run_search_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, monkeypatch):
-    """--decel-descent-min forces arrival.flat_arrival for every candidate:
-    total_time_s == accumulated_s + the given minutes + runway penalties,
-    exactly, no --subsonic-npz needed."""
-    npz_path = _still_air_npz(tmp_path)
-    surface_npz_path = _still_air_surface_npz(tmp_path)
-    out_path = tmp_path / "results.csv"
-
-    monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
-
-    candidates = search.run_search(
-        SAMPLE_PLN, npz_path, surface_npz_path, out_path=out_path,
-        zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0,
-    )
-
-    expect_s = (candidates["supersonic_time_s"] + 35.0 * 60.0
-                + candidates["jfk_penalty_s"] + candidates["lhr_penalty_s"])
-    assert np.allclose(candidates["total_time_s"], expect_s)
-    assert np.allclose(candidates["arrival_time_s"], 35.0 * 60.0)
+def _arrival_kw(tmp_path):
+    """run_search's two required arrival inputs, still-air."""
+    return dict(subsonic_npz_path=_still_air_subsonic_npz(tmp_path),
+                arrival_upper_npz_path=_still_air_arrival_upper_npz(tmp_path))
 
 
 def test_run_search_requires_zfw(tmp_path, monkeypatch):
@@ -283,11 +267,11 @@ def test_run_search_requires_zfw(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="zfw_t"):
         search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
-                           out_path=tmp_path / "results.csv", decel_descent_min=35.0)
+                           out_path=tmp_path / "results.csv", **_arrival_kw(tmp_path))
     with pytest.raises(ValueError, match="zfw_t"):
         search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
                            out_path=tmp_path / "results.csv", tow_t=DEFAULT_TOW_T,
-                           decel_descent_min=35.0)
+                           **_arrival_kw(tmp_path))
 
 
 def test_run_search_tow_override_keeps_zfw_and_flags_short_fuel(tmp_path, monkeypatch):
@@ -301,7 +285,7 @@ def test_run_search_tow_override_keeps_zfw_and_flags_short_fuel(tmp_path, monkey
     def run(**kw):
         return search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
                                   out_path=tmp_path / "results.csv", zfw_t=92.0,
-                                  decel_descent_min=35.0, **kw)
+                                  **_arrival_kw(tmp_path), **kw)
 
     solved = run()
     assert solved["tow_override_t"].isna().all()

@@ -40,7 +40,7 @@ def trip_fuel_split(climb, legs_out, arrival_out):
     the top-of-climb mass). legs_out is search.march_legs' dict, whose
     weight_at_barix is the weight after the last cruise leg's burn -- so the
     cruise burn is just the drop between those two. arrival_out is
-    arrival.arrival()'s (or arrival.flat_arrival's) return dict -- this
+    arrival.arrival()'s return dict -- this
     REPLACES the old flat DESCENT_FUEL_T placeholder entirely; the whole
     point of wiring arrival.py in is that its fuel varies day to day and
     feeds back into TOW, so there is no fallback constant here any more."""
@@ -133,8 +133,8 @@ def _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn):
     by the mass actually flying it, not TOW), and wind sampled at this
     march's own accumulated_s (arrival_wind_fn binds the position -- see
     search._build_arrival_wind_fn -- and this call supplies the time).
-    Shared by every branch below so the fixed point and the plain --tow/
-    --decel-descent-min paths build arrival_out identically.
+    Shared by every branch below so the fixed point and the plain --tow
+    path build arrival_out identically.
 
     speed="auto", not arrival()'s own 380 kt default: 380's decel_end_fl
     (FL312) only has subsonic-table coverage down to 110 t, which real
@@ -170,7 +170,7 @@ def fixed_point_fuel_iteration(
     the caller (search._build_arrival_wind_fn) and re-evaluated at each
     pass's own end-of-cruise clock time, since accumulated_s shifts slightly
     as TOW moves. arrival_fn defaults to arrival.arrival and exists to be
-    substituted (arrival.flat_arrival, or a synthetic stub in tests) the
+    substituted (a synthetic stub in tests) the
     same way march_legs_fn does -- arrival fuel MUST be computed inside this
     loop, not added after it returns, because the whole point of wiring
     arrival.py in is that its ~4-7 t feeds back into TOW and therefore into

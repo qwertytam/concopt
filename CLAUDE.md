@@ -27,21 +27,19 @@ for its own sake, no defensive error handling.
   CSVs (`conc_data`'s grids, `CLIMB_TOW_MIN_T`/`MAX_T`), table labels
   (`conc_data.CLIMB_BANDS`) and output schemas (`inflight.RECORD_COLUMNS`,
   `arrival._SEGMENT_KEYS`/`_FLAG_KEYS`) — those describe a table or a file,
-  not a setting — and CLI path defaults (`results.csv`, ...) in `cli.py`. The
-  vendored fork below has its own `constants.py` (pint-based, unrelated —
-  hence the name `params`).
-- `atmos.py`, `limits.py` — vectorised SI numpy, **no pint**. Hot path.
+  not a setting — and CLI path defaults (`results.csv`, ...) in `cli.py`.
+- `atmos.py`, `limits.py` — vectorised SI numpy. Hot path.
 - `tests/` — pytest suite: `cas_formula.md` worked examples, the ISA+limits
   table, the Mmo/total-temp crossover identity, flight-level round-trip, and
   a vectorised-scan performance/NaN check. Run with `poetry run pytest` (or
   plain `pytest` inside the venv). This replaced the old ad hoc `check.py`
   script — there is no `check.py` any more.
 - `asky.py` — ActiveSky HTTP client (localhost:19285). `get_atmosphere_np`
-  is the pint-free variant (plain numpy arrays), for `verify.py` and
-  `inflight.py`; `get_atmosphere_as_pd` is display-only and accepts either a
-  plain feet sequence or a pint Quantity. Both wrap a `ConnectionError` from
-  `requests` into a `RuntimeError` naming the host/port and telling the user
-  to check Active Sky is running with the historical date loaded.
+  returns plain numpy arrays, for `verify.py` and `inflight.py`. Both it and
+  `get_atmosphere` wrap a `ConnectionError` from `requests` into a
+  `RuntimeError` naming the host/port and telling the user to check Active
+  Sky is running with the historical date loaded, and raise the same way if
+  Active Sky answers with its bare-text `Error` reply.
   `GetAtmosphere`'s `WeatherData` is a **list of per-altitude records, every
   field a string** (confirmed live, 2026-09) -- both functions build a
   `pd.DataFrame` from that list to reshape and parse it; an earlier version
@@ -204,18 +202,16 @@ for its own sake, no defensive error handling.
   `.npz`s stitched together (B6, see `era5.py` above) — `--subsonic-npz`
   and `--arrival-upper-npz`, both `era5.reduce_to_legs` run against the
   post-BARIX legs (the complement of `route.climb_cruise_segment`'s mask,
-  i.e. `~mask`), both required together unless `--decel-descent-min`
-  forces the flat legacy arrival — sampled at a single representative
-  arrival leg and at BARIX clock time, the same coarse single-point-proxy
-  convention `_climb_conditions` uses for the climb, not a per-segment
-  march. `--decel-descent-min` no longer has a default value:
-  given, it forces `arrival.flat_arrival` (the exact pre-arrival.py flat
-  35 min / 2.0 t pair) instead of the real per-day
-  model, ignoring `--subsonic-npz` entirely — for comparing old vs new
-  numbers directly. Neither given (the default) requires `--subsonic-npz`;
-  omitting both raises rather than silently falling back to something flat.
+  i.e. `~mask`), both always required (argparse enforces it on `search`/
+  `report`; `verify` needs them unless `--tow` is given) — sampled at a
+  single representative arrival leg and at BARIX clock time, the same coarse
+  single-point-proxy convention `_climb_conditions` uses for the climb, not
+  a per-segment march. There is no flat fallback: the old `--decel-descent-min`
+  (a fixed 35 min / 2.0 t arrival, kept only to compare against the real
+  model) has been removed, and omitting either npz raises.
 - `arrival.py` — the arrival segment, BARIX → touchdown, replacing the old
-  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments over a *route-provided* `arrival_nm` (summed
+  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments
+  over a *route-provided* `arrival_nm` (summed
   post-decel leg distance, not a hardcoded constant — search/report compute
   it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
   (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
@@ -243,10 +239,9 @@ for its own sake, no defensive error handling.
   table's three), from the ISA deviation at cruise level. Wind/temperature
   arrive through a caller-supplied `wind_at_fl` callable/dict — this module
   never reads era5/`.npz` files directly, so the ERA5 wiring stays entirely
-  in `search.py` (`_build_arrival_wind_fn`). `flat_arrival` is the
-  `--decel-descent-min` legacy override: same call signature as `arrival()`
-  so `fuel.py`'s fixed point can hold either interchangeably, but returns
-  the flat pre-B3 (time, fuel) pair with `schedule_kt=0` as a sentinel.
+  in `search.py` (`_build_arrival_wind_fn`). `fuel.fixed_point_fuel_iteration`
+  takes the arrival function as an argument (defaulting to `arrival()`), which
+  is how tests substitute a stub.
 
   MASS IS THE TRAP (B5): the level segment's fuel now comes from
   `conc_data.subsonic_cruise` (`conc_subsonic_cruise.csv`, 751 rows,
@@ -301,8 +296,7 @@ for its own sake, no defensive error handling.
   reports the greatest-headwind runway and a computed time — never
   dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
   each candidate's own `arrival.arrival()` output (`arrival_time_s`,
-  `search.run_search`), not a flat constant any more (the old flat 35 min
-  survives only as the legacy pair `--decel-descent-min` forces).
+  `search.run_search`), not a flat constant.
   `report.run_report` runs the same two `runway_screen` calls for its one
   candidate (`--surface-npz`, required, the same file `search` takes), prints
   a Runways block and adds the JFK+LHR penalties to its total block time, so
@@ -414,10 +408,6 @@ for its own sake, no defensive error handling.
   indefinitely with the bundled one.
 
 - `data/` — CSV limit tables + `conc_data.py` loader
-- `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
-  `nondimensional.py` — vendored fork of the `flightcondition` package.
-  **Do not read or modify these.** Legacy; retained only for the pretty
-  `tostring()` output in the future in-flight display.
 - `notebooks/day-search-results.ipynb` — exploratory reporting on a `concopt
   search --out-all` run: distribution of total block time (histogram +
   top-50 marked, box plot by month, wind/ISA-deviation scatter), a
@@ -443,7 +433,6 @@ for its own sake, no defensive error handling.
 - Everything array-in / array-out. No `iterrows()`, no per-row Python loops
   in anything that touches the search — it runs over ~31,000 candidate
   departures × ~32 supersonic legs × 4 ERA5 pressure levels.
-- pint is allowed **only** in display code, never in `atmos.py`/`limits.py`.
 - Ad hoc command output captured by hand (e.g. `concopt verify ... |
   Tee-Object -FilePath logs/verify_2016-02-12.log`) goes in `logs/`, not
   the repo root -- gitignored, `logs/.gitkeep` keeps the empty folder

@@ -54,7 +54,6 @@ def _cmd_search(args):
                tow_t=args.tow, zfw_t=args.zfw,
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
-               decel_descent_min=args.decel_descent_min,
                cruise_mach=args.cruise_mach,
                arrival_upper_npz_path=args.arrival_upper_npz)
 
@@ -72,7 +71,6 @@ def _cmd_report(args):
                tow_t=args.tow, zfw_t=args.zfw, surface_npz_path=args.surface_npz,
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
-               decel_descent_min=args.decel_descent_min,
                cruise_mach=args.cruise_mach,
                arrival_upper_npz_path=args.arrival_upper_npz)
 
@@ -165,26 +163,17 @@ def main(argv=None):
     search_parser.add_argument('--min-landing-fuel', type=float, default=MIN_LANDING_FUEL_T,
                                 help='fuel remaining at touchdown, tonnes -- the fixed point\'s '
                                      f'reserve, only used with --zfw (default: {MIN_LANDING_FUEL_T:.0f})')
-    search_parser.add_argument('--subsonic-npz', default=None,
+    search_parser.add_argument('--subsonic-npz', required=True,
                                 help='path to the .npz from era5.reduce_to_legs run against the '
-                                     'post-decel legs -- drives the real arrival.arrival() model '
-                                     '(decel/level/descent/approach); required unless '
-                                     '--decel-descent-min forces the flat legacy arrival instead')
-    search_parser.add_argument('--arrival-upper-npz', default=None,
+                                     'post-decel legs -- drives the arrival.arrival() model '
+                                     '(decel/level/descent/approach)')
+    search_parser.add_argument('--arrival-upper-npz', required=True,
                                 help='path to the .npz from era5.reduce_to_legs run against the '
                                      'SAME post-decel legs as --subsonic-npz, but from the '
                                      'UPPER_AIR_LEVELS netCDFs already downloaded for the cruise '
                                      'legs (no new CDS download) -- stitched onto --subsonic-npz '
                                      'to reach the decel segment\'s own wind-sampling midpoint '
-                                     '(FL183-FL605 combined span, B6); required alongside '
-                                     '--subsonic-npz unless --decel-descent-min forces the flat '
-                                     'legacy arrival instead')
-    search_parser.add_argument('--decel-descent-min', type=float, default=None,
-                                help='minutes from the decel point to touchdown -- forces a FLAT '
-                                     'legacy arrival (the pre-arrival.py 35 min / '
-                                     '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
-                                     'new numbers (default: None, meaning compute the real per-day '
-                                     'arrival model)')
+                                     '(FL183-FL605 combined span, B6)')
     search_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
@@ -215,26 +204,17 @@ def main(argv=None):
                                 help='optional take-off weight override, tonnes -- skips the fixed '
                                      'point, for "what if I actually load X" (fuel loaded = --tow '
                                      'minus --zfw, reported against the fuel the trip needs)')
-    report_parser.add_argument('--subsonic-npz', default=None,
+    report_parser.add_argument('--subsonic-npz', required=True,
                                 help='path to the .npz from era5.reduce_to_legs run against the '
-                                     'post-decel legs -- drives the real arrival.arrival() model '
-                                     '(decel/level/descent/approach); required unless '
-                                     '--decel-descent-min forces the flat legacy arrival instead')
-    report_parser.add_argument('--arrival-upper-npz', default=None,
+                                     'post-decel legs -- drives the arrival.arrival() model '
+                                     '(decel/level/descent/approach)')
+    report_parser.add_argument('--arrival-upper-npz', required=True,
                                 help='path to the .npz from era5.reduce_to_legs run against the '
                                      'SAME post-decel legs as --subsonic-npz, but from the '
                                      'UPPER_AIR_LEVELS netCDFs already downloaded for the cruise '
                                      'legs (no new CDS download) -- stitched onto --subsonic-npz '
                                      'to reach the decel segment\'s own wind-sampling midpoint '
-                                     '(FL183-FL605 combined span, B6); required alongside '
-                                     '--subsonic-npz unless --decel-descent-min forces the flat '
-                                     'legacy arrival instead')
-    report_parser.add_argument('--decel-descent-min', type=float, default=None,
-                                help='minutes from the decel point to touchdown -- forces a FLAT '
-                                     'legacy arrival (the pre-arrival.py 35 min / '
-                                     '2.0 t pair), ignoring --subsonic-npz, for comparing old vs '
-                                     'new numbers (default: None, meaning compute the real per-day '
-                                     'arrival model)')
+                                     '(FL183-FL605 combined span, B6)')
     report_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')

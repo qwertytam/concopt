@@ -178,7 +178,7 @@ def _fuel_plan_lines(plan):
 
 
 def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
-    """arrival.arrival()'s (or arrival.flat_arrival's) dict (n_cand=1),
+    """arrival.arrival()'s dict (n_cand=1),
     arrival_nm, and the cruise FL flown into the decel point -> the printed
     Arrival block, as a list of lines. The per-segment split is the point:
     it is what makes it obvious when the level segment is dominating."""
@@ -187,17 +187,6 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     a["flags"] = arrival_out["flags"][0]
     schedule_kt = int(a["schedule_kt"])
     header = f"Arrival (BARIX -> touchdown, {arrival_nm:.0f} nm)"
-
-    if schedule_kt == 0:
-        # --decel-descent-min forced arrival.flat_arrival -- there is no
-        # real decel/level/descent split to show (see flat_arrival's
-        # docstring), so print the flat legacy pair on its own rather than
-        # a segment breakdown whose rows wouldn't sum to the total.
-        return [
-            header + " -- FLAT OVERRIDE (--decel-descent-min)",
-            f"  {'total':<16}{arrival_nm:6.0f} nm  {a['time_min']:5.1f} min  "
-            f"{a['fuel_t']:5.2f} t",
-        ]
 
     total_nm = a["decel_nm"] + a["level_nm"] + a["descent_nm"] + arrival.APPROACH_NM
     lines = [
@@ -255,8 +244,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
                 decel_id=DECEL_WAYPOINT_ID, out_path="report.csv",
                 tow_t=None, zfw_t=None, surface_npz_path=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-                subsonic_npz_path=None, decel_descent_min=None,
-                cruise_mach=limits.CRUISE_MACH,
+                subsonic_npz_path=None, cruise_mach=limits.CRUISE_MACH,
                 arrival_upper_npz_path=None):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
@@ -283,8 +271,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     legs, from the UPPER_AIR_LEVELS netCDFs already downloaded for the
     cruise legs -- B6, no new CDS download) together drive the real
     arrival.arrival() model's stitched FL183-FL605 wind profile; both
-    required unless decel_descent_min forces the flat legacy arrival
-    instead, for comparing old and new numbers directly."""
+    required."""
     if surface_npz_path is None:
         raise ValueError("surface_npz_path (--surface-npz) is required -- the runway "
                          "penalties are part of total block time, as in concopt search")
@@ -310,7 +297,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
         resolve_tow_and_arrival(
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
-            decel_descent_min=decel_descent_min, cruise_mach=cruise_mach,
+            cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
         )
     )

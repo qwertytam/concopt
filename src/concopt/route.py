@@ -1,5 +1,5 @@
 """Parse a P3D .pln flight plan into legs with distances and tracks.
-Vectorised numpy, SI plus nautical miles at the interface, no pint.
+Vectorised numpy, SI plus nautical miles at the interface.
 """
 import re
 import xml.etree.ElementTree as ET

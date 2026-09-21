@@ -12,13 +12,8 @@ from concopt import params
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "concopt"
 
-# The vendored flightcondition fork -- deliberately left alone.
-VENDORED = {"condition.py", "atmosphere.py", "common.py", "airframeflows.py",
-            "nondimensional.py", "constants.py", "units.py", "utils.py"}
-
-
 def _project_modules():
-    return [p for p in SRC.rglob("*.py") if p.name not in VENDORED and p.name != "params.py"]
+    return [p for p in SRC.rglob("*.py") if p.name != "params.py"]
 
 
 def test_params_is_a_leaf_module():

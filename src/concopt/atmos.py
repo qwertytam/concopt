@@ -1,5 +1,5 @@
 """ISA atmosphere, speed of sound, flight-level/pressure inversion, and CAS/
-Mach conversions. Vectorised numpy, SI units, no pint, no classes.
+Mach conversions. Vectorised numpy, SI units, no classes.
 """
 import numpy as np
 from scipy.optimize import brentq
