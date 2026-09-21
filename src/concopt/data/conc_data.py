@@ -91,6 +91,7 @@ _CLIMB_COLS = ("mass_t", "fuel_used_kg", "dist_nm", "time_min")
 # written. Anything that needs the bound should import it from here.
 CLIMB_TOW_MIN_T = float(_CLIMB_TOW_T[0])
 CLIMB_TOW_MAX_T = float(_CLIMB_TOW_T[-1])
+CLIMB_LEVELS_FL = _CLIMB_LEVEL_FL  # the table's own level axis, ascending
 
 
 def _build_climb_interps():

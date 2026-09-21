@@ -34,7 +34,7 @@ from concopt.params import (C_TO_K, DECEL_WAYPOINT_ID, DESCENT_END_FT, FT_TO_M,
                             REPLAY_SAMPLE_INTERVAL_S, REPLAY_SEED, REPLAY_TOP_OF_CLIMB_MACH,
                             REPLAY_TOP_OF_CLIMB_TAS_KT, REPLAY_TOUCHDOWN_MACH,
                             REPLAY_TOUCHDOWN_TAS_KT, S_PER_DAY)
-from concopt.route import build_legs, climb_cruise_segment, destination_point, parse_pln
+from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
 from concopt.search import TOP_OF_CLIMB_FL, resolve_tow_and_arrival
 
 # Profile columns replay_sources reads. A strict subset of
@@ -153,25 +153,6 @@ def replay_sources(profile_df, replay_speed=1.0, clock=time.monotonic):
         return _row_weather(_current_row(), alt_ft)
 
     return state_source, weather_source
-
-
-def _lat_lon_at_cum_nm(legs, target_cum_nm):
-    """The (lat, lon, track_deg) at along-route distance target_cum_nm --
-    build_synthetic_flight's counterpart to route.current_progress_nm (which
-    goes the other way, point -> cum_nm). Same technique as
-    route.project_along_route: reconstruct a leg's start point from its own
-    midpoint/track/dist_nm (Leg keeps only the midpoint), then walk forward
-    along its track."""
-    target_cum_nm = float(np.clip(target_cum_nm, 0.0, legs[-1].cum_nm))
-    for leg in legs:
-        leg_start_cum_nm = leg.cum_nm - leg.dist_nm
-        if target_cum_nm <= leg.cum_nm or leg is legs[-1]:
-            along_nm = np.clip(target_cum_nm - leg_start_cum_nm, 0.0, leg.dist_nm)
-            start_lat, start_lon = destination_point(
-                leg.lat_mid, leg.lon_mid, leg.track_deg + 180.0, leg.dist_nm / 2.0)
-            lat, lon = destination_point(start_lat, start_lon, leg.track_deg, along_nm)
-            return float(lat), float(lon), float(leg.track_deg)
-    raise AssertionError("unreachable -- target_cum_nm clipped into [0, legs[-1].cum_nm]")
 
 
 def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_upper_data=None,
@@ -345,7 +326,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_u
     lon_deg = np.empty(n)
     track_deg = np.empty(n)
     for i in range(n):
-        lat_deg[i], lon_deg[i], track_deg[i] = _lat_lon_at_cum_nm(legs, cum_nm_noisy[i])
+        lat_deg[i], lon_deg[i], track_deg[i] = position_at_cum_nm(legs, cum_nm_noisy[i])
 
     vs_fpm = np.gradient(alt_ft, grid, edge_order=1) * 60.0
 

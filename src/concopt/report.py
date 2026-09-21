@@ -13,9 +13,15 @@ import numpy as np
 import pandas as pd
 
 from concopt import arrival, fuel, limits, runways
+from concopt.atmos import (KT_TO_MS, cas_from_mach, isa, mach_from_cas, mach_from_total_temp,
+                           speed_of_sound)
+from concopt.data.conc_data import CLIMB_LEVELS_FL, cas_limit_kt, climb_to
 from concopt.era5 import load_legs_npz, load_surface_npz
-from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.params import DECEL_WAYPOINT_ID, NS_PER_S
+from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
+from concopt.params import (ACCEL_WAYPOINT_ID, APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
+                            ARRIVAL_PROFILE_STEPS, C_TO_K, DECEL_WAYPOINT_ID, DESCENT_END_FT,
+                            FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SUBSONIC_LIMIT_MACH,
+                            TOTAL_TEMP_MAX_K)
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
@@ -430,3 +436,309 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     print(f"\nWrote waypoint table to {out_path}")
 
     return waypoint_table
+
+
+# ---------------------------------------------------------------------------
+# Full-flight profile, brake release -> touchdown (notebooks/day-search-results)
+# ---------------------------------------------------------------------------
+# The three regions of the flight have very different resolution: the cruise is
+# marched sub-leg by sub-leg (march_legs), the climb is conc_climb.csv's 18
+# cumulative levels, the arrival is arrival.arrival()'s four segment totals.
+# flight_profile stitches them into one point sequence so the notebook can plot
+# altitude/Mach/CAS/fuel over the whole flight. What is NOT known is left NaN
+# rather than invented: the climb table carries no speeds, so climb points have
+# only the whole-climb mean ground speed (speed_basis "mean"), and the approach
+# allowance is a distance/time/fuel constant with no speed either.
+
+
+def _speeds(mach, alt_ft, isa_dev_k):
+    """(tas_kt, cas_kt) at Mach `mach`, pressure altitude alt_ft, ISA + isa_dev_k."""
+    t_k, p_pa = isa(alt_ft * FT_TO_M)
+    tas_kt = float(mach * speed_of_sound(t_k + isa_dev_k) / KT_TO_MS)
+    return tas_kt, float(cas_from_mach(mach, p_pa) / KT_TO_MS)
+
+
+def _envelope_mach(alt_ft, weight_t, temp_k, cruise_mach):
+    """min(cruise Mach, CAS-limit Mach, total-temp Mach) at one point. Same three
+    limits as limits.max_mach, but the CAS one is solved exactly (mach_from_cas)
+    rather than read off limits' FL280-FL600 grid, so it also holds in the climb
+    and descent."""
+    _, p_pa = isa(alt_ft * FT_TO_M)
+    cas_mach = mach_from_cas(float(cas_limit_kt(alt_ft, weight_t)) * KT_TO_MS, float(p_pa))
+    return min(cruise_mach, cas_mach, float(mach_from_total_temp(temp_k, TOTAL_TEMP_MAX_K)))
+
+
+def _point(cum_nm, elapsed_s, alt_ft, weight_t, cruise_mach, *, mach=np.nan, tas_kt=np.nan,
+           cas_kt=np.nan, gs_kt=np.nan, wind_kt=np.nan, isa_dev_k=0.0, subsonic=False,
+           mach_limit=None, ceiling_ft=np.nan, binding="", speed_basis="derived"):
+    """One profile point. mach_limit is SUBSONIC_LIMIT_MACH where `subsonic`, else
+    the envelope at ISA + isa_dev_k, unless the caller already has it (cruise)."""
+    if mach_limit is None:
+        if subsonic:
+            mach_limit = SUBSONIC_LIMIT_MACH
+        else:
+            t_k = float(isa(alt_ft * FT_TO_M)[0]) + isa_dev_k
+            mach_limit = _envelope_mach(alt_ft, weight_t, t_k, cruise_mach)
+    return dict(cum_nm=float(cum_nm), elapsed_s=float(elapsed_s), alt_ft=float(alt_ft),
+                weight_t=float(weight_t), mach=mach, tas_kt=tas_kt, cas_kt=cas_kt, gs_kt=gs_kt,
+                wind_kt=wind_kt, isa_dev_k=isa_dev_k, mach_limit=float(mach_limit),
+                cas_limit_kt=float(cas_limit_kt(alt_ft, weight_t)), ceiling_ft=ceiling_ft,
+                binding=binding, speed_basis=speed_basis)
+
+
+def _climb_segments(climb_row, tow_t, linnd_nm, cruise_mach):
+    """(phase, p0, p1) tuples for brake release -> top of climb, from conc_climb.csv:
+    one segment per adjacent pair of table levels (the table is cumulative from
+    brake release, so brake release -> FL230 is one straight segment -- the shape
+    below the first row isn't tabulated). Air distance becomes ground distance
+    with the climb's own single proxy wind, the same correction _climb_profile
+    applies (recovered from its ground/air distance, not re-sampled). "climb" is
+    brake release -> LINND (the subsonic limit), "acceleration" LINND -> top of
+    climb; LINND is inserted as an interpolated breakpoint."""
+    levels = CLIMB_LEVELS_FL[CLIMB_LEVELS_FL <= TOP_OF_CLIMB_FL]
+    _m, fuel_kg, air_nm, time_min = climb_to(levels, tow_t, climb_row["temp_band"])
+    wind_kt = (climb_row["ground_dist_nm"] - climb_row["dist_nm"]) / (climb_row["time_min"] / 60.0)
+    mean_gs_kt = climb_row["ground_dist_nm"] / (climb_row["time_min"] / 60.0)
+
+    cum = np.concatenate([[0.0], air_nm + wind_kt * time_min / 60.0])
+    elapsed = np.concatenate([[0.0], time_min * 60.0])
+    alt = np.concatenate([[0.0], levels * 100.0])
+    weight = np.concatenate([[tow_t], tow_t - fuel_kg / 1000.0])
+
+    if linnd_nm is not None and 0.0 < linnd_nm < cum[-1]:
+        i = int(np.searchsorted(cum, linnd_nm))
+        cum, elapsed, alt, weight = (
+            np.insert(a, i, np.interp(linnd_nm, cum, a)) for a in (cum, elapsed, alt, weight))
+    subsonic_until = linnd_nm if linnd_nm is not None else 0.0
+
+    def pt(j, subsonic):
+        return _point(cum[j], elapsed[j], alt[j], weight[j], cruise_mach, wind_kt=wind_kt,
+                      gs_kt=mean_gs_kt, subsonic=subsonic, speed_basis="mean")
+
+    segments = []
+    for j in range(len(cum) - 1):
+        subsonic = cum[j + 1] <= subsonic_until + 1e-9
+        segments.append(("climb" if subsonic else "acceleration", pt(j, subsonic), pt(j + 1, subsonic)))
+    return segments
+
+
+def _cruise_segments(cc_legs, leg, weight_per_leg, weight_at_barix_t, cruise_mach):
+    """One (phase, p0, p1) per cruise sub-leg (eff_dist_nm > 0 -- the ones
+    actually flown at cruise; see march_legs). Values are constant across a
+    sub-leg except weight (its own burn) and what depends on weight."""
+    n_legs = len(cc_legs)
+    segments = []
+    for i in np.flatnonzero(leg["eff_dist_nm"] > 0.0):
+        fl, mach = float(leg["chosen_fl"][i]), float(leg["mach"][i])
+        isa_dev_k, temp_k = float(leg["isa_dev_k"][i]), float(leg["temp_c"][i]) + C_TO_K
+        _, cas_kt = _speeds(mach, fl * 100.0, isa_dev_k)
+        cum1 = cc_legs[i].cum_nm
+        elapsed1 = float(leg["elapsed_s"][i])
+        w0 = float(weight_per_leg[i])
+        w1 = float(weight_per_leg[i + 1]) if i + 1 < n_legs else weight_at_barix_t
+
+        def pt(cum, elapsed, w):
+            return _point(cum, elapsed, fl * 100.0, w, cruise_mach, mach=mach,
+                          tas_kt=float(leg["tas_kt"][i]), cas_kt=cas_kt, gs_kt=float(leg["gs_kt"][i]),
+                          wind_kt=float(leg["wind_kt"][i]), isa_dev_k=isa_dev_k,
+                          mach_limit=float(limits.max_mach(fl, temp_k, w, cruise_mach)),
+                          ceiling_ft=float(limits.ceiling_ft(w, isa_dev_k)),
+                          binding=str(leg["binding"][i]), speed_basis="march")
+
+        segments.append(("cruise",
+                         pt(cum1 - float(leg["eff_dist_nm"][i]), elapsed1 - float(leg["leg_time_s"][i]), w0),
+                         pt(cum1, elapsed1, w1)))
+    return segments
+
+
+def _arrival_segments(a, start, cruise_fl, cruise_mach_at_barix, isa_dev_k, cruise_mach):
+    """decel / subsonic cruise / descent / approach, from arrival.arrival()'s
+    per-segment totals. Distance, time, fuel and weight are linear within a
+    segment (only the totals are tabulated); altitude is linear in distance.
+    Decel Mach is linear from the cruise Mach down to M1.0; the level segment is
+    M0.95; the descent flies the schedule CAS (325/350/380 kt), so its Mach is
+    solved from CAS at each altitude. Temperature is ISA + the last cruise leg's
+    ISA deviation throughout (arrival.py doesn't return its own). The approach
+    allowance has no speed model -- only its mean ground speed."""
+    schedule_ms = a["schedule_kt"] * KT_TO_MS
+    n = ARRIVAL_PROFILE_STEPS
+    cursor = dict(cum_nm=start["cum_nm"], elapsed_s=start["elapsed_s"], weight_t=start["weight_t"])
+    segments = []
+
+    def ramp(phase, steps, dist_nm, time_min, fuel_t, alt0, alt1, mach_at, wind_kt, subsonic):
+        pts = []
+        for f in np.linspace(0.0, 1.0, steps + 1):
+            alt = alt0 + f * (alt1 - alt0)
+            mach = mach_at(alt, f)
+            tas_kt, cas_kt = _speeds(mach, alt, isa_dev_k)
+            pts.append(_point(cursor["cum_nm"] + f * dist_nm, cursor["elapsed_s"] + f * time_min * 60.0,
+                              alt, cursor["weight_t"] - f * fuel_t, cruise_mach, mach=mach, tas_kt=tas_kt,
+                              cas_kt=cas_kt, gs_kt=tas_kt + wind_kt, wind_kt=wind_kt, isa_dev_k=isa_dev_k,
+                              subsonic=subsonic))
+        segments.extend((phase, p0, p1) for p0, p1 in zip(pts[:-1], pts[1:]))
+        cursor.update(cum_nm=pts[-1]["cum_nm"], elapsed_s=pts[-1]["elapsed_s"], weight_t=pts[-1]["weight_t"])
+
+    level_ft = a["level_fl"] * 100.0
+    ramp("deceleration", n, a["decel_nm"], a["decel_time_min"], a["decel_fuel_t"], cruise_fl * 100.0, level_ft,
+         lambda alt, f: cruise_mach_at_barix + f * (SUBSONIC_LIMIT_MACH - cruise_mach_at_barix),
+         a["decel_wind_kt"], False)
+    ramp("subsonic cruise", 1, a["level_nm"], a["level_time_min"], a["level_fuel_t"], level_ft, level_ft,
+         lambda alt, f: LEVEL_MACH, a["level_wind_kt"], True)
+    ramp("descent", n, a["descent_nm"], a["descent_time_min"], a["descent_fuel_t"], level_ft, DESCENT_END_FT,
+         lambda alt, f: mach_from_cas(schedule_ms, float(isa(alt * FT_TO_M)[1])), a["descent_wind_kt"], True)
+
+    mean_gs_kt = APPROACH_NM / (APPROACH_MIN / 60.0)
+    pts = [_point(cursor["cum_nm"] + f * APPROACH_NM, cursor["elapsed_s"] + f * APPROACH_MIN * 60.0,
+                  DESCENT_END_FT * (1.0 - f), cursor["weight_t"] - f * APPROACH_FUEL_T, cruise_mach,
+                  gs_kt=mean_gs_kt, subsonic=True, speed_basis="mean") for f in (0.0, 1.0)]
+    segments.append(("approach", pts[0], pts[1]))
+    return segments
+
+
+def _phase_table(segments, departure_utc_ts, runway_penalties_s):
+    """One row per phase (in flight order) from the (phase, p0, p1) segments, then
+    the two runway penalties (time only -- search adds them to total block time)
+    and a TOTAL row. Mach/TAS/CAS means are time-weighted, wind distance-weighted,
+    mean GS is distance / time; a mean is NaN where the phase has no such data
+    (climb has no speeds, only the whole-climb mean GS)."""
+    def wmean(values, weights):
+        ok = np.isfinite(values) & (weights > 0.0)
+        return float(np.average(values[ok], weights=weights[ok])) if ok.any() else np.nan
+
+    rows = []
+    for phase in dict.fromkeys(p for p, _, _ in segments):
+        pairs = [(a, b) for ph, a, b in segments if ph == phase]
+        first, last = pairs[0][0], pairs[-1][1]
+        dur = np.array([b["elapsed_s"] - a["elapsed_s"] for a, b in pairs])
+        dist = np.array([b["cum_nm"] - a["cum_nm"] for a, b in pairs])
+
+        def mid(key):
+            return np.array([(a[key] + b[key]) / 2.0 for a, b in pairs], dtype=float)
+
+        binding_s = {}
+        for a, _b in pairs:
+            if a["binding"]:
+                binding_s[a["binding"]] = binding_s.get(a["binding"], 0.0) + 1.0
+        alts = [p["alt_ft"] for pair in pairs for p in pair]
+        rows.append(dict(
+            phase=phase, start_nm=first["cum_nm"], end_nm=last["cum_nm"], dist_nm=dist.sum(),
+            duration_s=dur.sum(),
+            start_utc=departure_utc_ts + pd.Timedelta(seconds=first["elapsed_s"]),
+            end_utc=departure_utc_ts + pd.Timedelta(seconds=last["elapsed_s"]),
+            fuel_t=first["weight_t"] - last["weight_t"], weight_start_t=first["weight_t"],
+            weight_end_t=last["weight_t"], fl_start=first["alt_ft"] / 100.0, fl_end=last["alt_ft"] / 100.0,
+            fl_max=max(alts) / 100.0,
+            mean_mach=wmean(mid("mach"), dur), mean_tas_kt=wmean(mid("tas_kt"), dur),
+            mean_cas_kt=wmean(mid("cas_kt"), dur),
+            mean_gs_kt=dist.sum() / dur.sum() * S_PER_HOUR if dur.sum() > 0 else np.nan,
+            mean_wind_kt=wmean(mid("wind_kt"), dist),
+            binding=max(binding_s, key=binding_s.get) if binding_s else "",
+        ))
+
+    flown = pd.DataFrame(rows)
+    total = dict(phase="TOTAL", start_nm=flown["start_nm"].iloc[0], end_nm=flown["end_nm"].iloc[-1],
+                 dist_nm=flown["dist_nm"].sum(), duration_s=flown["duration_s"].sum() + sum(runway_penalties_s),
+                 start_utc=flown["start_utc"].iloc[0], end_utc=flown["end_utc"].iloc[-1],
+                 fuel_t=flown["fuel_t"].sum(), weight_start_t=flown["weight_start_t"].iloc[0],
+                 weight_end_t=flown["weight_end_t"].iloc[-1],
+                 mean_gs_kt=flown["dist_nm"].sum() / flown["duration_s"].sum() * S_PER_HOUR)
+    penalty_rows = [dict(phase=f"runway penalty ({apt})", duration_s=s)
+                    for apt, s in zip(("KJFK", "EGLL"), runway_penalties_s)]
+    return pd.concat([pd.DataFrame(penalty_rows[:1]), flown, pd.DataFrame(penalty_rows[1:]),
+                      pd.DataFrame([total])], ignore_index=True)
+
+
+def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None,
+                   subsonic_npz_path=None, arrival_upper_npz_path=None,
+                   decel_id=DECEL_WAYPOINT_ID, cruise_mach=limits.CRUISE_MACH,
+                   min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T, runway_penalties_s=(0.0, 0.0)):
+    """The whole flight, brake release -> touchdown, for ONE candidate departure
+    -- run_report's model (resolve_tow_and_arrival, so TOW is solved from zfw_t
+    or is the tow_t override) laid out as data instead of printed text.
+
+    Returns dict(phases, profile, summary):
+      phases   DataFrame, one row per phase (climb / acceleration / cruise /
+               deceleration / subsonic cruise / descent / approach), then the
+               runway penalties and a TOTAL row -- distance, duration, fuel,
+               weight, FL, mean Mach/TAS/CAS/GS/wind. duration_s of TOTAL is
+               search's total_time_s for the same candidate.
+      profile  DataFrame of points, two per segment (a segment's start and end,
+               so a step or a limit change plots as a vertical jump): phase, seg,
+               cum_nm, elapsed_s, alt_ft, fl, weight_t, fuel_remaining_t, mach,
+               tas_kt, cas_kt, gs_kt, wind_kt (along-track: + is tailwind),
+               mach_limit, cas_limit_kt, ceiling_ft (cruise only), binding,
+               speed_basis ("march" cruise sub-leg / "derived" arrival ramps /
+               "mean" climb and approach, where only a mean GS exists), lat,
+               lon, clock_utc. Mach/TAS/CAS are NaN in the climb (conc_climb.csv
+               has no speeds).
+      summary  dict of scalars: fuel plan (fuel loaded, burn split, landing fuel
+               against the reserve, flags), climb facts, arrival schedule.
+
+    Mach limit: SUBSONIC_LIMIT_MACH from brake release to ACCEL_WAYPOINT_ID and
+    from the end of the decel segment onward; the cruise/CAS/total-temp envelope
+    in between (ISA temperature off the cruise, where no temperature is known)."""
+    legs = build_legs(parse_pln(pln_path)["waypoints"])
+    mask = climb_cruise_segment(legs, decel_id=decel_id)
+    cc_idx = np.flatnonzero(mask)
+    cc_legs = [legs[i] for i in cc_idx]
+    arrival_legs = [legs[i] for i in np.flatnonzero(~mask)]
+    arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
+
+    departure_utc_ts = pd.Timestamp(local_to_departure_utc(local_date, local_hour))
+    dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
+    tow_arr, n_iterations, plan_flags, legs_out, weight_per_leg, climb, arrival_out = (
+        resolve_tow_and_arrival(
+            cc_legs, cc_idx, arrival_legs, arrival_nm, load_legs_npz(npz_path),
+            load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None, dep_i8,
+            tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t, cruise_mach=cruise_mach,
+            arrival_upper_data=(load_legs_npz(arrival_upper_npz_path)
+                                if arrival_upper_npz_path is not None else None)))
+    plan = fuel.fuel_plan(climb, legs_out, arrival_out, zfw_t=np.array([zfw_t], dtype=float),
+                          min_landing_fuel_t=min_landing_fuel_t, tow_t=tow_arr,
+                          n_iterations=n_iterations, flags=plan_flags)
+
+    leg = {k: v[0] for k, v in legs_out.items() if k not in ("accumulated_s", "weight_at_barix")}
+    climb_row = {k: (v[0] if k in ("temp_band", "warm_flag") else float(v[0])) for k, v in climb.items()}
+    a = {k: float(v[0]) for k, v in arrival_out.items()
+         if k not in ("by_schedule", "flags") and np.ndim(v) == 1 and v.dtype != bool}
+    weight_at_barix_t = float(legs_out["weight_at_barix"][0])
+    # The TOW the march actually flew: the fixed point's last march ran at the
+    # iterate BEFORE its final damped update (within DEFAULT_TOLERANCE_T of
+    # tow_arr), so the climb table is read at that one, not tow_arr, for the
+    # profile's segments to join up.
+    tow_flown_t = climb_row["mass_t"] + climb_row["fuel_used_kg"] / 1000.0
+    tow_t = float(tow_arr[0])
+
+    linnd_nm = next((l.cum_nm for l in legs if l.to_id == ACCEL_WAYPOINT_ID), None)
+    segments = _climb_segments(climb_row, tow_flown_t, linnd_nm, cruise_mach)
+    segments += _cruise_segments(cc_legs, leg, weight_per_leg[0], weight_at_barix_t, cruise_mach)
+    last_cruise = segments[-1][2]
+    segments += _arrival_segments(
+        a, last_cruise, float(leg["chosen_fl"][-1]), float(leg["mach"][-1]),
+        float(leg["isa_dev_k"][-1]), cruise_mach)
+
+    rows = []
+    for k, (phase, p0, p1) in enumerate(segments):
+        rows += [dict(seg=k, phase=phase, **p0), dict(seg=k, phase=phase, **p1)]
+    profile = pd.DataFrame(rows)
+    profile["fl"] = profile["alt_ft"] / 100.0
+    profile["fuel_remaining_t"] = profile["weight_t"] - zfw_t
+    profile[["lat", "lon"]] = [position_at_cum_nm(legs, c)[:2] for c in profile["cum_nm"]]
+    profile["clock_utc"] = departure_utc_ts + pd.to_timedelta(profile["elapsed_s"], unit="s")
+
+    phases = _phase_table(segments, departure_utc_ts, runway_penalties_s)
+
+    one = {k: (float(v[0]) if isinstance(v, np.ndarray) and k != "flags" else v) for k, v in plan.items()}
+    landing_fuel_t = one["landing_weight_t"] - zfw_t
+    summary = dict(
+        tow_t=tow_t, zfw_t=zfw_t, fuel_loaded_t=tow_t - zfw_t, tow_required_t=one["tow_required_t"],
+        trip_fuel_t=one["trip_fuel_t"], climb_fuel_t=one["climb_fuel_t"], cruise_fuel_t=one["cruise_fuel_t"],
+        arrival_fuel_t=one["arrival_fuel_t"], reserve_t=min_landing_fuel_t,
+        landing_weight_t=one["landing_weight_t"], landing_fuel_t=landing_fuel_t,
+        reserve_margin_t=landing_fuel_t - min_landing_fuel_t, n_iterations=n_iterations,
+        fuel_flag=plan["flags"][0], arrival_flags=arrival_out["flags"][0],
+        schedule_kt=int(a["schedule_kt"]), temp_band=climb_row["temp_band"],
+        climb_warm_clamped=bool(climb_row["warm_flag"]), top_of_climb_nm=climb_row["ground_dist_nm"],
+        linnd_nm=linnd_nm, total_time_s=float(phases["duration_s"].iloc[-1]),
+    )
+    return dict(phases=phases, profile=profile, summary=summary)
