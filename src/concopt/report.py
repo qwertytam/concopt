@@ -12,10 +12,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from concopt import arrival, fuel, limits
-from concopt.era5 import load_legs_npz
+from concopt import arrival, fuel, limits, runways
+from concopt.era5 import load_legs_npz, load_surface_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from concopt.params import DECEL_WAYPOINT_ID
+from concopt.params import DECEL_WAYPOINT_ID, NS_PER_S
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
@@ -220,6 +220,22 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
     return lines
 
 
+def _runway_lines(jfk, lhr, departure_utc_ts, touchdown_utc_ts):
+    """runways.runway_screen's dicts (n_cand=1) for KJFK at departure and
+    EGLL at touchdown -> the printed Runways block, as a list of lines. Same
+    screen search.run_search applies, so the penalty below is the one
+    search.total_time already includes."""
+    lines = ["Runways (ERA5 surface wind, same screen as concopt search):"]
+    for airport, r, when in (("KJFK", jfk, departure_utc_ts), ("EGLL", lhr, touchdown_utc_ts)):
+        lines.append(
+            f"  {airport}  {r['runway'][0]:<8} headwind {float(r['headwind_kt'][0]):+4.0f} kt, "
+            f"crosswind gust {float(r['xwind_gust_kt'][0]):3.0f} kt   "
+            f"penalty {_format_hmm(float(r['penalty_s'][0]))}   ({when:%H:%M} UTC)")
+        if r["flag"][0]:
+            lines.append(f"  !! {airport} {r['flag'][0]}")
+    return lines
+
+
 def _step_climb_schedule(legs, chosen_fl):
     """[(cum_nm, FL), ...] at every sub-leg where the chosen level differs
     from the one before it -- sub-leg granularity, not waypoint-aggregated,
@@ -237,7 +253,7 @@ def _step_climb_schedule(legs, chosen_fl):
 
 def run_report(pln_path, npz_path, local_date, local_hour,
                 decel_id=DECEL_WAYPOINT_ID, out_path="report.csv",
-                tow_t=None, zfw_t=None,
+                tow_t=None, zfw_t=None, surface_npz_path=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, decel_descent_min=None,
                 cruise_mach=limits.CRUISE_MACH,
@@ -257,6 +273,11 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     given, and the report shows fuel loaded (tow_t - zfw_t) against the
     fuel the trip needs.
 
+    surface_npz_path (era5.reduce_surface_to_npz) is required: KJFK at
+    departure and EGLL at touchdown go through the same runway screen
+    run_search applies, so the runway penalty in the totals is the one
+    search's total_time already includes and the two agree.
+
     subsonic_npz_path (era5.reduce_to_legs run against the post-BARIX legs)
     and arrival_upper_npz_path (era5.reduce_to_legs run against those SAME
     legs, from the UPPER_AIR_LEVELS netCDFs already downloaded for the
@@ -264,6 +285,9 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     arrival.arrival() model's stitched FL183-FL605 wind profile; both
     required unless decel_descent_min forces the flat legacy arrival
     instead, for comparing old and new numbers directly."""
+    if surface_npz_path is None:
+        raise ValueError("surface_npz_path (--surface-npz) is required -- the runway "
+                         "penalties are part of total block time, as in concopt search")
     parsed_pln = parse_pln(pln_path)
     legs = build_legs(parsed_pln["waypoints"])
     mask = climb_cruise_segment(legs, decel_id=decel_id)
@@ -389,7 +413,20 @@ def run_report(pln_path, npz_path, local_date, local_hour,
           f"({climb_row['mass_t'] - weight_at_barix_t:.1f} t burned)")
 
     cruise_time_s = total_elapsed_s - climb_time_s
-    runway_penalty_s = 0.0  # Phase 4 fills this in
+
+    # Same two calls run_search makes: KJFK wind at departure, EGLL wind at
+    # touchdown (departure + climb+cruise + arrival).
+    surface_data = load_surface_npz(surface_npz_path)
+    touchdown_i8 = dep_i8 + (
+        np.array([total_elapsed_s + arrival_time_s]) * NS_PER_S).astype("int64")
+    jfk = runways.runway_screen(surface_data, "KJFK", dep_i8)
+    lhr = runways.runway_screen(surface_data, "EGLL", touchdown_i8)
+    runway_penalty_s = float(jfk["penalty_s"][0] + lhr["penalty_s"][0])
+    touchdown_utc_ts = pd.Timestamp(int(touchdown_i8[0]))
+
+    print()
+    for line in _runway_lines(jfk, lhr, departure_utc_ts, touchdown_utc_ts):
+        print(line)
     total_block_s = climb_time_s + cruise_time_s + arrival_time_s + runway_penalty_s
 
     print("\nTotals, brakes-release to touchdown:")
@@ -397,7 +434,8 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     print(f"  top of climb -> {cc_legs[-1].to_id:<8}: {_format_hmm(cruise_time_s)}")
     print(f"  {cc_legs[-1].to_id} -> touchdown  : {_format_hmm(arrival_time_s)} "
           f"({arrival_nm:.0f} nm)")
-    print(f"  runway penalty  : {_format_hmm(runway_penalty_s)} (placeholder -- Phase 4)")
+    print(f"  runway penalty  : {_format_hmm(runway_penalty_s)} "
+          f"(KJFK {jfk['runway'][0]}, EGLL {lhr['runway'][0]})")
     print(f"  total block time: {_format_hmm(total_block_s)}")
 
     out_path = Path(out_path)

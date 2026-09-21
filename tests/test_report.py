@@ -9,6 +9,7 @@ B3 extends this with the Arrival breakdown block (arrival.py wired in),
 regression the wiring exists for.
 """
 import datetime as dt
+import math
 
 import numpy as np
 import pytest
@@ -108,12 +109,31 @@ def _still_air_arrival_upper_npz(tmp_path):
     return npz_path
 
 
+def _surface_npz(tmp_path, jfk_from_deg=None, egll_from_deg=None, speed_ms=5.0):
+    """era5.reduce_surface_to_npz-shaped .npz. Zero wind by default; with a
+    *_from_deg, that airport gets a steady wind blowing FROM that true
+    direction at speed_ms (mean and gust), wide enough in time to bracket
+    any candidate these tests use."""
+    times = np.array(["2016-01-01T00:00:00", "2026-12-31T00:00:00"], dtype="datetime64[ns]")
+    arrays = {}
+    for name, from_deg in (("KJFK", jfk_from_deg), ("EGLL", egll_from_deg)):
+        speed = 0.0 if from_deg is None else speed_ms
+        theta = math.radians(0.0 if from_deg is None else from_deg)
+        arrays[f"{name}_time"] = times
+        arrays[f"{name}_u10"] = np.full(2, -speed * math.sin(theta))
+        arrays[f"{name}_v10"] = np.full(2, -speed * math.cos(theta))
+        arrays[f"{name}_i10fg"] = np.full(2, speed)
+    path = tmp_path / "surface.npz"
+    np.savez(path, **arrays)
+    return path
+
+
 def test_run_report_with_zfw_prints_fuel_plan_block(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
@@ -140,7 +160,7 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 subsonic_npz_path=subsonic_npz_path,
                 arrival_upper_npz_path=arrival_upper_npz_path)
 
@@ -164,7 +184,7 @@ def test_run_report_prints_flat_override_arrival_block(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
@@ -184,7 +204,7 @@ def test_run_report_tow_override_skips_fixed_point(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
@@ -204,7 +224,7 @@ def test_run_report_flags_boundary_clamp(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=50.0, min_landing_fuel_t=10.0,
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=50.0, min_landing_fuel_t=10.0,
                 decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
@@ -223,7 +243,7 @@ def test_run_report_missing_subsonic_npz_and_no_override_raises(tmp_path):
 
     with pytest.raises(ValueError, match="subsonic_data"):
         run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                    out_path=out_path, zfw_t=92.0)
+                    out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0)
 
 
 def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
@@ -236,7 +256,7 @@ def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, min_landing_fuel_t=10.0,
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 subsonic_npz_path=subsonic_npz_path,
                 arrival_upper_npz_path=arrival_upper_npz_path)
 
@@ -295,7 +315,7 @@ def test_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, capsys):
     out_path = tmp_path / "report.csv"
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
-                out_path=out_path, zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+                out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
 
     printed = capsys.readouterr().out
     fuel_block = printed.split("\n\n")[0]
@@ -305,3 +325,32 @@ def test_decel_descent_min_reproduces_old_flat_behaviour(tmp_path, capsys):
     assert "FLAT OVERRIDE" in arrival_block
     assert "35.0 min" in arrival_block
     assert f"{LEGACY_FLAT_FUEL_T:.2f} t" in arrival_block
+
+
+def test_run_report_requires_surface_npz(tmp_path):
+    """Runway penalties are part of total block time (as in concopt search),
+    so a report without surface wind fails loud instead of quietly leaving
+    them out."""
+    npz_path = _still_air_npz(tmp_path)
+    with pytest.raises(ValueError, match="surface_npz_path"):
+        run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+                    out_path=tmp_path / "report.csv", zfw_t=92.0, decel_descent_min=35.0)
+
+
+def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
+    """A northwesterly at KJFK picks 31L (2 min penalty) and a westerly at
+    EGLL picks 27R/27L (5 min penalty): both are shown, and the totals'
+    runway penalty is their sum, not a placeholder zero."""
+    npz_path = _still_air_npz(tmp_path)
+    surface = _surface_npz(tmp_path, jfk_from_deg=301.0, egll_from_deg=269.0)
+
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+                out_path=tmp_path / "report.csv", surface_npz_path=surface,
+                zfw_t=92.0, tow_t=DEFAULT_TOW_T, decel_descent_min=35.0)
+
+    printed = capsys.readouterr().out
+    assert "Runways (ERA5 surface wind" in printed
+    assert "KJFK  31L" in printed
+    assert "EGLL  27R/27L" in printed
+    assert "runway penalty  : 0:07 (KJFK 31L, EGLL 27R/27L)" in printed
+    assert "placeholder" not in printed
