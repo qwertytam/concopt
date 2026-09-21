@@ -210,9 +210,15 @@ delta look like a fixable bias or scatter, repeat. Pick the winner.
 poetry run concopt report --pln <route.pln> --npz data/era5/route_legs.npz ^
   --date 2026-01-21 --hour 14 ^
   --zfw <ZFW> ^
+  --surface-npz data/era5/surface_legs.npz ^
   --subsonic-npz data/era5/subsonic_legs.npz --arrival-upper-npz data/era5/arrival_upper_legs.npz ^
   --out report.csv
 ```
+
+`--surface-npz` is the same file `search` takes. `report` runs the same
+runway screen on its one day (KJFK at departure, EGLL at touchdown), prints
+the chosen runways and includes their penalties in the totals, so its
+total block time matches the `total_time` `search` ranked that day on.
 
 `report.csv` is what `concopt inflight --compare` (predicted vs actual)
 and the post-flight notebook (step 7) read back — generate it for the day

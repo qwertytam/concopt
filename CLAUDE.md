@@ -297,6 +297,10 @@ for its own sake, no defensive error handling.
   dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
   each candidate's own `arrival.arrival()` output (`arrival_time_s`,
   `search.run_search`), not a flat constant.
+  `report.run_report` runs the same two `runway_screen` calls for its one
+  candidate (`--surface-npz`, required, the same file `search` takes), prints
+  a Runways block and adds the JFK+LHR penalties to its total block time, so
+  report and search agree on a day (`tests/test_search.py` pins it).
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers

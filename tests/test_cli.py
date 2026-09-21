@@ -11,7 +11,7 @@ from concopt.cli import main as cli_main
 
 SEARCH_BASE = ["search", "--pln", "x.pln", "--npz", "x.npz",
                "--surface-npz", "x_surface.npz", "--zfw", "92.0"]
-REPORT_BASE = ["report", "--pln", "x.pln", "--npz", "x.npz",
+REPORT_BASE = ["report", "--pln", "x.pln", "--npz", "x.npz", "--surface-npz", "x_surface.npz",
                "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0"]
 ARRIVAL_NPZS = ["--subsonic-npz", "x_subsonic.npz", "--arrival-upper-npz", "x_upper.npz"]
 
@@ -41,6 +41,7 @@ def test_search_report_pass_arrival_npzs_through():
 
     with patch("concopt.cli.run_report") as mock_report:
         cli_main([*REPORT_BASE, *ARRIVAL_NPZS])
+    assert mock_report.call_args.kwargs["surface_npz_path"] == "x_surface.npz"
     assert mock_report.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
     assert mock_report.call_args.kwargs["arrival_upper_npz_path"] == "x_upper.npz"
     assert "decel_descent_min" not in mock_report.call_args.kwargs
@@ -50,7 +51,7 @@ def test_zfw_is_required_and_tow_is_optional():
     """TOW is an outcome of ZFW: every weight-taking subcommand refuses to
     run without --zfw, while --tow alone is no substitute for it."""
     for argv in (["search", "--surface-npz", "s.npz", *ARRIVAL_NPZS],
-                 ["report", "--date", "2020-01-01", "--hour", "10", *ARRIVAL_NPZS],
+                 ["report", "--date", "2020-01-01", "--hour", "10", "--surface-npz", "s.npz", *ARRIVAL_NPZS],
                  ["verify", "--date", "2020-01-01", "--hour", "10"]):
         with pytest.raises(SystemExit):
             cli_main([argv[0], "--pln", "x.pln", "--npz", "x.npz", *argv[1:], "--tow", "150"])
@@ -99,3 +100,12 @@ def test_inflight_without_replay_leaves_sources_none():
     assert mock_run_inflight.call_args.kwargs["state_source"] is None
     assert mock_run_inflight.call_args.kwargs["weather_source"] is None
     assert mock_run_inflight.call_args.kwargs["replay_speed"] == 1.0
+
+
+def test_report_requires_surface_npz():
+    """report adds the same runway penalties search does, so it needs the
+    same surface-wind file."""
+    import pytest
+    with pytest.raises(SystemExit):
+        cli_main(["report", "--pln", "x.pln", "--npz", "x.npz",
+                  "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0"])

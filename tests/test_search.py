@@ -17,7 +17,7 @@ from concopt.era5 import SUBSONIC_LEVELS, UPPER_AIR_LEVELS
 from concopt.route import Leg
 from concopt.search import DEFAULT_TOW_T, run_shortlist
 from tests.test_report import (_still_air_arrival_upper_npz, _still_air_npz,
-                                _still_air_subsonic_npz)
+                                _still_air_subsonic_npz, _surface_npz)
 from tests.test_route import SAMPLE_PLN
 
 
@@ -424,3 +424,32 @@ class TestArrivalWindStitching:
 
         with pytest.raises(ValueError, match=f"{n_cruise_legs}.*{n_legs}|{n_legs}.*{n_cruise_legs}"):
             search._build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, legs)
+
+
+def test_report_total_block_time_agrees_with_search(tmp_path, monkeypatch, capsys):
+    """concopt report must reproduce concopt search for the same day: same
+    total block time, with the same JFK/LHR runway penalties in it. Before
+    report took --surface-npz its totals silently left the penalty out."""
+    from concopt.report import run_report
+
+    npz_path = _still_air_npz(tmp_path)
+    subsonic = _still_air_subsonic_npz(tmp_path)
+    upper = _still_air_arrival_upper_npz(tmp_path)
+    surface = _surface_npz(tmp_path, jfk_from_deg=301.0, egll_from_deg=269.0)
+    monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
+
+    candidates = search.run_search(
+        SAMPLE_PLN, npz_path, surface, out_path=tmp_path / "results.csv",
+        zfw_t=92.0, min_landing_fuel_t=10.0,
+        subsonic_npz_path=subsonic, arrival_upper_npz_path=upper)
+    row = candidates[candidates["local_hour"] == 10].iloc[0]
+    assert row["jfk_penalty_s"] + row["lhr_penalty_s"] == 7 * 60.0
+    capsys.readouterr()
+
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+                out_path=tmp_path / "report.csv", zfw_t=92.0, min_landing_fuel_t=10.0,
+                surface_npz_path=surface, subsonic_npz_path=subsonic,
+                arrival_upper_npz_path=upper)
+    printed = capsys.readouterr().out
+
+    assert f"total block time: {search._format_hmm(row['total_time_s'])}" in printed

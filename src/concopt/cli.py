@@ -68,7 +68,7 @@ def _cmd_report(args):
 
     run_report(args.pln, args.npz, local_date, local_hour,
                decel_id=args.decel, out_path=args.out,
-               tow_t=args.tow, zfw_t=args.zfw,
+               tow_t=args.tow, zfw_t=args.zfw, surface_npz_path=args.surface_npz,
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
@@ -189,6 +189,10 @@ def main(argv=None):
     report_parser.add_argument('--search-csv', default='results.csv',
                                 help='concopt search --out CSV to read --best from (default: results.csv)')
     report_parser.add_argument('--out', default='report.csv', help='output CSV path (default: report.csv)')
+    report_parser.add_argument('--surface-npz', required=True,
+                                help='path to the .npz from era5.reduce_surface_to_npz '
+                                     '(KJFK/EGLL surface wind, for the runway screen -- the '
+                                     'same file concopt search takes)')
     report_parser.add_argument('--zfw', type=float, required=True,
                                 help='zero fuel weight, tonnes -- TOW is solved for by fixed-point '
                                      'iteration (uplift = trip fuel + reserve) unless --tow '
