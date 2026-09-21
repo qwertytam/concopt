@@ -121,7 +121,7 @@ def test_still_air_reference():
     after that."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, "BARIX")
     cc_idx = np.flatnonzero(mask)
     cc_legs = [legs[i] for i in cc_idx]
 

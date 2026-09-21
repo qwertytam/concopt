@@ -19,8 +19,8 @@ from concopt.atmos import (KT_TO_MS, cas_from_mach, isa, mach_from_cas, mach_fro
 from concopt.data.conc_data import CLIMB_LEVELS_FL, cas_limit_kt, climb_to
 from concopt.era5 import load_legs_npz, load_surface_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
-from concopt.params import (ACCEL_WAYPOINT_ID, APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
-                            ARRIVAL_PROFILE_STEPS, C_TO_K, DECEL_WAYPOINT_ID, DESCENT_END_FT,
+from concopt.params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
+                            ARRIVAL_PROFILE_STEPS, C_TO_K, DESCENT_END_FT,
                             FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SUBSONIC_LIMIT_MACH,
                             TOTAL_TEMP_MAX_K)
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
@@ -193,7 +193,7 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl):
          for k, v in arrival_out.items() if k != "by_schedule"}
     a["flags"] = arrival_out["flags"][0]
     schedule_kt = int(a["schedule_kt"])
-    header = f"Arrival (BARIX -> touchdown, {arrival_nm:.0f} nm)"
+    header = f"Arrival (decel -> touchdown, {arrival_nm:.0f} nm)"
 
     total_nm = a["decel_nm"] + a["level_nm"] + a["descent_nm"] + arrival.APPROACH_NM
     lines = [
@@ -248,7 +248,7 @@ def _step_climb_schedule(legs, chosen_fl):
 
 
 def run_report(pln_path, npz_path, local_date, local_hour,
-                decel_id=DECEL_WAYPOINT_ID, out_path="report.csv",
+                decel_id, out_path="report.csv",
                 tow_t=None, zfw_t=None, surface_npz_path=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, cruise_mach=limits.CRUISE_MACH,
@@ -659,9 +659,9 @@ class FlightProfile(NamedTuple):
     summary: dict[str, Any]
 
 
-def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None,
+def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, accel_id, decel_id, tow_t=None,
                    subsonic_npz_path=None, arrival_upper_npz_path=None,
-                   decel_id=DECEL_WAYPOINT_ID, cruise_mach=limits.CRUISE_MACH,
+                   cruise_mach=limits.CRUISE_MACH,
                    min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T, runway_penalties_s=(0.0, 0.0)):
     """The whole flight, brake release -> touchdown, for ONE candidate departure
     -- run_report's model (resolve_tow_and_arrival, so TOW is solved from zfw_t
@@ -685,7 +685,7 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None
       summary  dict of scalars: fuel plan (fuel loaded, burn split, landing fuel
                against the reserve, flags), climb facts, arrival schedule.
 
-    Mach limit: SUBSONIC_LIMIT_MACH from brake release to ACCEL_WAYPOINT_ID and
+    Mach limit: SUBSONIC_LIMIT_MACH from brake release to accel_id and
     from the end of the decel segment onward; the cruise/CAS/total-temp envelope
     in between (ISA temperature off the cruise, where no temperature is known)."""
     legs = build_legs(parse_pln(pln_path)["waypoints"])
@@ -720,7 +720,7 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, tow_t=None
     tow_flown_t = climb_row["mass_t"] + climb_row["fuel_used_kg"] / 1000.0
     tow_t = float(tow_arr[0])
 
-    linnd_nm = next((l.cum_nm for l in legs if l.to_id == ACCEL_WAYPOINT_ID), None)
+    linnd_nm = next((l.cum_nm for l in legs if l.to_id == accel_id), None)
     segments = _climb_segments(climb_row, tow_flown_t, linnd_nm, cruise_mach)
     segments += _cruise_segments(cc_legs, leg, weight_per_leg[0], weight_at_barix_t, cruise_mach)
     last_cruise = segments[-1][2]

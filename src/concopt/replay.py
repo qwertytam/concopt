@@ -26,7 +26,7 @@ import pandas as pd
 
 from concopt import arrival, fuel, limits
 from concopt.atmos import fl_to_pressure, isa
-from concopt.params import (C_TO_K, DECEL_WAYPOINT_ID, DESCENT_END_FT, FT_TO_M,
+from concopt.params import (C_TO_K, DESCENT_END_FT, FT_TO_M,
                             REPLAY_AS_WIND_BIAS_KT, REPLAY_DECEL_END_MACH,
                             REPLAY_DESCENT_END_MACH, REPLAY_DESCENT_END_TAS_KT,
                             REPLAY_GROUND_ROLL, REPLAY_GS_NOISE_KT, REPLAY_LEVEL_SPEED_FRACTION,
@@ -155,10 +155,10 @@ def replay_sources(profile_df, replay_speed=1.0, clock=time.monotonic):
     return state_source, weather_source
 
 
-def build_synthetic_flight(pln_path, data, dep_i8, subsonic_data=None, arrival_upper_data=None,
+def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None, arrival_upper_data=None,
                             tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                             cruise_mach=limits.CRUISE_MACH,
-                            decel_id=DECEL_WAYPOINT_ID, sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
+                            sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
                             seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT):
     """A synthetic flight-shaped DataFrame (same columns a --record CSV has,
     a valid replay_sources profile) for JFK->LHR on pln_path, built from

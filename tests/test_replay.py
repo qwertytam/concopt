@@ -16,7 +16,7 @@ from concopt.inflight import run_inflight
 from concopt.replay import (_row_weather, build_synthetic_flight,
                              replay_sources)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID
 
 # Fast enough that a full ~3-hour synthetic flight replays in well under the
 # "under a minute" budget the brief sets, with margin (see the reported
@@ -50,7 +50,7 @@ def _synthetic_flight_df(seed=0, zfw_t=92.0, sample_interval_s=15.0):
     runs), via build_synthetic_flight."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     arrival_legs = [leg for leg, m in zip(legs, mask) if not m]
 
     data = _still_air_data(np.array([150.0, 125.0, 100.0, 70.0]), legs)
@@ -60,7 +60,7 @@ def _synthetic_flight_df(seed=0, zfw_t=92.0, sample_interval_s=15.0):
 
     dep_i8 = np.array([1455289200000000000], dtype="int64")  # 2016-02-12 15:00Z
     return build_synthetic_flight(
-        SAMPLE_PLN, data, dep_i8, subsonic_data=subsonic_data,
+        SAMPLE_PLN, data, dep_i8, SAMPLE_DECEL_ID, subsonic_data=subsonic_data,
         arrival_upper_data=arrival_upper_data, zfw_t=zfw_t,
         sample_interval_s=sample_interval_s, seed=seed,
     )
@@ -150,7 +150,7 @@ def test_synthetic_flight_replays_end_to_end_with_phases_in_order(tmp_path):
     record_path = tmp_path / "recording.csv"
 
     t_start = time.monotonic()
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(record_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
                  state_source=state_source, weather_source=weather_source,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
     wall_s = time.monotonic() - t_start
@@ -181,7 +181,7 @@ def test_touchdown_detected_and_loop_exits(tmp_path):
     state_source, weather_source = replay_sources(profile_df, replay_speed=_FAST_REPLAY_SPEED)
     record_path = tmp_path / "recording.csv"
 
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(record_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
                  state_source=state_source, weather_source=weather_source,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
 
@@ -195,7 +195,7 @@ def test_no_live_replay_prints_plain_output(tmp_path, capsys):
     state_source, weather_source = replay_sources(profile_df, replay_speed=_FAST_REPLAY_SPEED)
     record_path = tmp_path / "recording.csv"
 
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(record_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
                  state_source=state_source, weather_source=weather_source,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
 
@@ -214,14 +214,14 @@ def test_replay_from_recording_reproduces_advisory_sequence(tmp_path):
 
     rec1_path = tmp_path / "rec1.csv"
     s1, w1 = replay_sources(profile_df, replay_speed=_FAST_REPLAY_SPEED)
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(rec1_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(rec1_path),
                  state_source=s1, weather_source=w1,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
     rec1 = pd.read_csv(rec1_path)
 
     rec2_path = tmp_path / "rec2.csv"
     s2, w2 = replay_sources(rec1, replay_speed=_FAST_REPLAY_SPEED)
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(rec2_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(rec2_path),
                  state_source=s2, weather_source=w2,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
     rec2 = pd.read_csv(rec2_path)
@@ -262,7 +262,7 @@ def test_ctrl_c_mid_flight_closes_csv_with_partial_rows(tmp_path):
             raise KeyboardInterrupt
         return real_state_source()
 
-    run_inflight(SAMPLE_PLN, interval_s=60.0, record_path=str(record_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
                  state_source=flaky_state_source, weather_source=weather_source,
                  replay_speed=_FAST_REPLAY_SPEED, live=False)
 
@@ -288,7 +288,7 @@ def test_live_display_handles_none_values_early_in_flight(tmp_path):
         return real_state_source()
 
     record_path = tmp_path / "recording.csv"
-    run_inflight(SAMPLE_PLN, interval_s=5.0, record_path=str(record_path),
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=5.0, record_path=str(record_path),
                  state_source=stopping_state_source, weather_source=weather_source,
                  replay_speed=5.0, live=True)
     # No exception -> rich.Live tolerated the early None values.

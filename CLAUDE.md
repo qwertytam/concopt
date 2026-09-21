@@ -317,7 +317,7 @@ for its own sake, no defensive error handling.
   back-derived from Δdist/Δtime between climb levels — the table's times are
   whole minutes, so that gives Mach 0.2-9. The profile is two points per
   segment so steps and limit changes plot as vertical jumps. Phases: `climb`
-  = brake release → `ACCEL_WAYPOINT_ID` (LINND, an interpolated breakpoint
+  = brake release → `accel_id` (LINND on the sample route, an interpolated breakpoint
   in the climb), `acceleration` = LINND → top of climb, `cruise`,
   `deceleration`, `subsonic cruise`, `descent`, `approach`; takeoff roll and
   landing are not modelled (the runway penalties, time only, ride in the
@@ -471,6 +471,20 @@ for its own sake, no defensive error handling.
   this).
 
 ## Conventions
+- **`--decel`/`--accel` have no defaults.** Both are the `id` of an
+  `<ATCWaypoint id="...">` in the `.pln` (`route.parse_pln` reads that
+  attribute; `Leg.from_id`/`to_id` are those same strings — the ids are not
+  fields in the file itself). `--decel` is on every subcommand that takes
+  `--pln` and on `scripts/build_npz.py`: the climb+cruise span ends at the leg
+  arriving there (`route.climb_cruise_segment`) and the arrival model starts
+  from it. `--accel` (where supersonic flight begins) is only on `route` and
+  `inflight`, and `report.flight_profile` takes `accel_id` for its
+  climb/acceleration split and Mach limit; `search`/`report`/`verify` don't
+  use it. There are no `DECEL_WAYPOINT_ID`/`ACCEL_WAYPOINT_ID` constants any
+  more, so a route's decel point can't be silently assumed. The per-leg
+  `.npz` files are cut at the decel point and don't record it — rebuild them
+  and re-run every command with the same `--decel` when the route changes.
+  Tests use `tests/test_route.py`'s `SAMPLE_ACCEL_ID`/`SAMPLE_DECEL_ID`.
 - New constants go in `params.py`, not inline or at the top of a module. Unit
   conversions (`FT_TO_M`, `C_TO_K`, `NM_TO_M`, `S_PER_DAY`) and the Active Sky
   port are pinned by `tests/test_params.py` — a stray `0.3048`/`273.15`/

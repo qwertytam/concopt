@@ -762,9 +762,11 @@ def test_synthetic_recording_round_trips_through_compare_to_report(tmp_path):
 
     report_df = _sample_report_df()
     wide_table, wide_constants = inflight.compare_to_report(
-        report_df, _cpa_from_recording(wide, wp_positions), 6096.0)
+        report_df, _cpa_from_recording(wide, wp_positions), 6096.0,
+        accel_id="LINND", decel_id="BARIX")
     narrow_table, narrow_constants = inflight.compare_to_report(
-        report_df, _cpa_from_recording(narrow, wp_positions), 6096.0)
+        report_df, _cpa_from_recording(narrow, wp_positions), 6096.0,
+        accel_id="LINND", decel_id="BARIX")
 
     pd.testing.assert_frame_equal(wide_table, narrow_table)
     assert wide_constants == narrow_constants

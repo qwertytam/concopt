@@ -18,6 +18,9 @@ from concopt.route import (
 )
 
 SAMPLE_PLN = Path(__file__).parent / "data" / "KJFKEGLL_CONC_01.pln"
+# The sample plan's accel/decel waypoints (`ATCWaypoint id`s) -- no defaults in concopt itself.
+SAMPLE_ACCEL_ID = "LINND"
+SAMPLE_DECEL_ID = "BARIX"
 
 EXP_DIST_NM = [
     30.6, 89.8, 162.3, 66.2, 352.7, 345.6, 114.0, 430.9, 402.4, 389.3,
@@ -95,7 +98,7 @@ def test_subdivided_legs(legs):
 
 
 def test_supersonic_segment(legs):
-    mask = supersonic_segment(legs)
+    mask = supersonic_segment(legs, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID)
     span_nm = sum(leg.dist_nm for leg in np.array(legs)[mask])
 
     cum = np.array([leg.cum_nm for leg in legs])
@@ -126,7 +129,7 @@ def test_supersonic_segment_swapped_raises(legs):
 def test_climb_cruise_segment_spans_from_brake_release(legs):
     """Unlike supersonic_segment, climb_cruise_segment starts at leg 0
     (brake release), not at a named accel waypoint."""
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     assert mask[0]
     cum = np.array([leg.cum_nm for leg in legs])
     barix_leg = [leg for leg in legs if leg.to_id == "BARIX"][-1]

@@ -17,7 +17,7 @@ from concopt.search import (DEFAULT_TOW_T, TARGET_FL, local_to_departure_utc,
                              resolve_tow_and_arrival)
 from tests.test_report import (_still_air_arrival_upper_npz, _still_air_npz,
                                 _still_air_subsonic_npz)
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_DECEL_ID
 
 
 def test_select_points_includes_both_ends():
@@ -252,12 +252,12 @@ def test_run_verify_snapshot_guard_end_to_end(monkeypatch, tmp_path):
 
     cache_path = tmp_path / "cache.json"
 
-    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14, decel_id=SAMPLE_DECEL_ID,
                        n_points=2, zfw_t=92.0, tow_t=DEFAULT_TOW_T,
                        snapshot_cache_path=cache_path)
 
     with pytest.raises(RuntimeError, match="wasn't reloaded"):
-        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 1, 6), 11,
+        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 1, 6), 11, decel_id=SAMPLE_DECEL_ID,
                            n_points=2, zfw_t=92.0, tow_t=DEFAULT_TOW_T,
                        snapshot_cache_path=cache_path)
 
@@ -271,7 +271,7 @@ def test_run_verify_zfw_without_subsonic_npz_raises(monkeypatch, tmp_path):
     cache_path = tmp_path / "cache.json"
 
     with pytest.raises(ValueError, match="subsonic_npz_path"):
-        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14, decel_id=SAMPLE_DECEL_ID,
                            n_points=2, zfw_t=92.0, snapshot_cache_path=cache_path)
 
 
@@ -286,7 +286,7 @@ def test_run_verify_zfw_without_arrival_upper_npz_raises(monkeypatch, tmp_path):
     cache_path = tmp_path / "cache.json"
 
     with pytest.raises(ValueError, match="arrival_upper_npz_path"):
-        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+        verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14, decel_id=SAMPLE_DECEL_ID,
                            n_points=2, zfw_t=92.0, snapshot_cache_path=cache_path,
                            subsonic_npz_path=subsonic_npz_path)
 
@@ -314,7 +314,7 @@ def test_verify_zfw_produces_same_tow_as_search_zfw(monkeypatch, tmp_path):
     arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     cache_path = tmp_path / "cache.json"
 
-    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14,
+    verify.run_verify(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 14, decel_id=SAMPLE_DECEL_ID,
                        n_points=2, zfw_t=92.0, min_landing_fuel_t=10.0,
                        subsonic_npz_path=subsonic_npz_path,
                        arrival_upper_npz_path=arrival_upper_npz_path,
@@ -328,7 +328,7 @@ def test_verify_zfw_produces_same_tow_as_search_zfw(monkeypatch, tmp_path):
     # run_search itself does).
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     cc_idx = np.flatnonzero(mask)
     cc_legs = [legs[i] for i in cc_idx]
     arrival_idx = np.flatnonzero(~mask)

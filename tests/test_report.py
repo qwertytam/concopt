@@ -18,7 +18,7 @@ from concopt.atmos import isa, pressure_to_fl
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import DEFAULT_TOW_T
 from concopt.report import run_report
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_DECEL_ID
 
 
 def _still_air_npz(tmp_path):
@@ -53,7 +53,7 @@ def _still_air_subsonic_npz(tmp_path):
     wind_at_fl to run end to end without a real ERA5 download."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     arrival_legs = [legs[i] for i, m in enumerate(mask) if not m]
 
     levels_hpa = np.array([175.0, 200.0, 225.0, 250.0, 300.0, 400.0, 500.0])
@@ -86,7 +86,7 @@ def _still_air_arrival_upper_npz(tmp_path):
     assuming it."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     arrival_legs = [legs[i] for i, m in enumerate(mask) if not m]
 
     levels_hpa = np.array([70.0, 100.0, 125.0, 150.0])
@@ -136,7 +136,7 @@ def test_run_report_with_zfw_prints_fuel_plan_block(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 **_arrival_kw(tmp_path))
 
@@ -156,14 +156,14 @@ def test_run_report_with_zfw_prints_fuel_plan_block(tmp_path, capsys):
 
 
 def test_run_report_prints_arrival_block(tmp_path, capsys):
-    """The Arrival (BARIX -> touchdown) block: per-segment nm/min/t plus a
+    """The Arrival (decel -> touchdown) block: per-segment nm/min/t plus a
     total row, printed as its own block right after the fuel plan."""
     npz_path = _still_air_npz(tmp_path)
     subsonic_npz_path = _still_air_subsonic_npz(tmp_path)
     arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 subsonic_npz_path=subsonic_npz_path,
                 arrival_upper_npz_path=arrival_upper_npz_path)
@@ -171,7 +171,7 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     printed = capsys.readouterr().out
     arrival_block = printed.split("\n\n")[1]
 
-    assert arrival_block.startswith("Arrival (BARIX -> touchdown,")
+    assert arrival_block.startswith("Arrival (decel -> touchdown,")
     assert "decel to M1.0" in arrival_block
     assert "level at M0.95" in arrival_block
     assert "descent" in arrival_block
@@ -188,7 +188,7 @@ def test_run_report_tow_override_skips_fixed_point(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, tow_t=DEFAULT_TOW_T, **_arrival_kw(tmp_path))
 
     printed = capsys.readouterr().out
@@ -208,7 +208,7 @@ def test_run_report_flags_boundary_clamp(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=50.0, min_landing_fuel_t=10.0,
                 **_arrival_kw(tmp_path))
 
@@ -227,7 +227,7 @@ def test_run_report_missing_subsonic_npz_raises(tmp_path):
     out_path = tmp_path / "report.csv"
 
     with pytest.raises(ValueError, match="subsonic_data"):
-        run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+        run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                     out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0)
 
 
@@ -239,7 +239,7 @@ def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
     arrival_upper_npz_path = _still_air_arrival_upper_npz(tmp_path)
     out_path = tmp_path / "report.csv"
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=out_path, surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
                 subsonic_npz_path=subsonic_npz_path,
                 arrival_upper_npz_path=arrival_upper_npz_path)
@@ -257,7 +257,7 @@ def test_run_report_requires_surface_npz(tmp_path):
     them out."""
     npz_path = _still_air_npz(tmp_path)
     with pytest.raises(ValueError, match="surface_npz_path"):
-        run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+        run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                     out_path=tmp_path / "report.csv", zfw_t=92.0, **_arrival_kw(tmp_path))
 
 
@@ -268,7 +268,7 @@ def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
     npz_path = _still_air_npz(tmp_path)
     surface = _surface_npz(tmp_path, jfk_from_deg=301.0, egll_from_deg=269.0)
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=tmp_path / "report.csv", surface_npz_path=surface,
                 zfw_t=92.0, tow_t=DEFAULT_TOW_T, **_arrival_kw(tmp_path))
 

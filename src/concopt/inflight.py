@@ -81,9 +81,9 @@ from concopt.atmos import (KT_TO_MS, fl_to_pressure, isa, pressure_to_fl,
 from concopt.route import (build_legs, current_progress_nm,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
-from concopt.params import (ACCEL_WAYPOINT_ID, ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
+from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
                             APPROACH_AGL_FT, ARRIVAL_REFRESH_S, ARRIVAL_WIND_SAMPLE_FL,
-                            BRAKE_RELEASE_GS_KT, C_TO_K, DECEL_WAYPOINT_ID,
+                            BRAKE_RELEASE_GS_KT, C_TO_K,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, FASTEST_SCHEDULE_KT, FT_TO_M,
                             INHG_TO_HPA, LB_TO_KG, LOW_ALT_FT, LOW_ALT_INTERVAL_S,
@@ -471,7 +471,7 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl)
 
 
 def _build_arrival_text(arrival_info):
-    """The Arrival (BARIX -> touchdown) breakdown for the live panel -- at
+    """The Arrival (to touchdown) breakdown for the live panel -- at
     most 4 lines (decel / level / descent+approach), per the layout spec:
     this panel is read at a glance while flying. arrival_info is None
     before anything is computable yet (no --compare report given AND Active
@@ -487,14 +487,14 @@ def _build_arrival_text(arrival_info):
     this is exactly the distinction that must not be missed (a stale
     pre-flight figure silently read as a live measurement)."""
     if arrival_info is None:
-        return Text("Arrival (BARIX -> touchdown): not yet available")
+        return Text("Arrival (to touchdown): not yet available")
     if arrival_info.get("source") == "fallback":
         return Text(
-            "Arrival (BARIX -> touchdown) [PRE-FLIGHT]: Active Sky unavailable "
+            "Arrival (to touchdown) [PRE-FLIGHT]: Active Sky unavailable "
             f"this far ahead -- pre-flight figure {arrival_info['time_min']:.1f} min total"
         )
     return Text(
-        f"Arrival (BARIX -> touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
+        f"Arrival (to touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
         f"  decel {arrival_info['decel_time_min']:.1f} min\n"
         f"  level {arrival_info['level_time_min']:.1f} min  FL{arrival_info['level_fl']:.0f}, "
         f"{arrival_info['level_wind_kt']:+.0f} kt\n"
@@ -856,7 +856,7 @@ def _preflight_predicted_total_s(report_df):
     return _parse_hmm_seconds(report_df["elapsed"].iloc[-1]) + _report_arrival_s(report_df)
 
 
-def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID):
+def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id, decel_id):
     """Predicted (report_df, a concopt report --out CSV) vs actual (cpa, the
     recorder's per-waypoint closest-point-of-approach snapshots) at every
     waypoint report_df covers, plus the three numbers the recorder exists to
@@ -947,8 +947,8 @@ def _print_comparison(table, constants):
           constants["predicted_supersonic_s"])
 
 
-def run_inflight(pln_path, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_LOOKAHEAD_NM,
-                  record_path=None, compare_path=None, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID,
+def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_LOOKAHEAD_NM,
+                  record_path=None, compare_path=None,
                   host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
                   state_source=None, weather_source=None, replay_speed=1.0):
