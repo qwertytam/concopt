@@ -524,4 +524,3 @@ for its own sake, no defensive error handling.
 
 ## Known non-problems — do not "fix" these
 - The CSVs have a UTF-8 BOM. Current pandas and numpy strip it. Leave it.
-- `README.rst` is empty. Intentional for now.
