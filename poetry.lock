@@ -691,42 +691,6 @@ files = [
 tests = ["asttokens (>=2.1.0)", "coverage", "coverage-enable-subprocess", "ipython", "littleutils", "pytest", "rich ; python_version >= \"3.11\""]
 
 [[package]]
-name = "flexcache"
-version = "0.3"
-description = "Saves and loads to the cache a transformed versions of a source object."
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "flexcache-0.3-py3-none-any.whl", hash = "sha256:d43c9fea82336af6e0115e308d9d33a185390b8346a017564611f1466dcd2e32"},
-    {file = "flexcache-0.3.tar.gz", hash = "sha256:18743bd5a0621bfe2cf8d519e4c3bfdf57a269c15d1ced3fb4b64e0ff4600656"},
-]
-
-[package.dependencies]
-typing-extensions = "*"
-
-[package.extras]
-test = ["pytest", "pytest-cov", "pytest-mpl", "pytest-subtests"]
-
-[[package]]
-name = "flexparser"
-version = "0.4"
-description = "Parsing made fun ... using typing."
-optional = false
-python-versions = ">=3.9"
-groups = ["main"]
-files = [
-    {file = "flexparser-0.4-py3-none-any.whl", hash = "sha256:3738b456192dcb3e15620f324c447721023c0293f6af9955b481e91d00179846"},
-    {file = "flexparser-0.4.tar.gz", hash = "sha256:266d98905595be2ccc5da964fe0a2c3526fbbffdc45b65b3146d75db992ef6b2"},
-]
-
-[package.dependencies]
-typing-extensions = "*"
-
-[package.extras]
-test = ["pytest", "pytest-cov", "pytest-mpl", "pytest-subtests"]
-
-[[package]]
 name = "fonttools"
 version = "4.65.0"
 description = "Tools to manipulate font files"
@@ -1836,67 +1800,13 @@ tests = ["coverage (>=7.4.2)", "defusedxml", "markdown2", "olefile", "packaging"
 xmp = ["defusedxml"]
 
 [[package]]
-name = "pint"
-version = "0.25.3"
-description = "Physical quantities module"
-optional = false
-python-versions = ">=3.11"
-groups = ["main"]
-files = [
-    {file = "pint-0.25.3-py3-none-any.whl", hash = "sha256:27eb25143bd5de9fcc4d5a4b484f16faf6b4615aa93ece6b3373a8c1a3c1b97d"},
-    {file = "pint-0.25.3.tar.gz", hash = "sha256:f8f5df6cf65314d74da1ade1bf96f8e3e4d0c41b51577ac53c49e7d44ca5acee"},
-]
-
-[package.dependencies]
-flexcache = ">=0.3"
-flexparser = ">=0.4"
-platformdirs = ">=2.1.0"
-typing-extensions = ">=4.0.0"
-
-[package.extras]
-all = ["babel (<=2.8)", "dask (<2025.3.0)", "matplotlib", "numpy (>=1.23)", "pint-pandas (>=0.3)", "scipy", "uncertainties (>=3.1.6)", "xarray"]
-babel = ["babel (<=2.8)"]
-codspeed = ["pytest", "pytest-benchmark", "pytest-codspeed", "pytest-cov", "pytest-mpl", "pytest-subtests"]
-dask = ["dask (<2025.3.0)"]
-docs = ["babel", "commonmark (==0.8.1)", "currencyconverter", "docutils", "graphviz", "ipykernel", "ipython (<=8.12)", "jupyter-client", "nbsphinx", "pooch", "pygments (>=2.4)", "recommonmark (==0.5.0)", "sciform", "scipy", "serialize", "sparse", "sphinx (>=6,<8.2)", "sphinx-book-theme (>=1.1.0)", "sphinx-copybutton", "sphinx-design"]
-matplotlib = ["matplotlib"]
-numpy = ["numpy (>=1.23)"]
-pandas = ["pint-pandas (>=0.3)"]
-scipy = ["scipy"]
-test = ["pytest", "pytest-benchmark", "pytest-cov", "pytest-subtests"]
-test-all = ["pytest", "pytest-benchmark", "pytest-cov", "pytest-mpl", "pytest-subtests"]
-test-mpl = ["pytest-mpl"]
-uncertainties = ["uncertainties (>=3.1.6)"]
-xarray = ["xarray"]
-
-[[package]]
-name = "pint-pandas"
-version = "0.8.0"
-description = "Extend Pandas Dataframe with Physical quantities module"
-optional = false
-python-versions = ">=3.11"
-groups = ["main"]
-files = [
-    {file = "pint_pandas-0.8.0-py3-none-any.whl", hash = "sha256:40ee8a85f0923695fa7dcc6927caa3043627e1561c056e9f4499fb2e7478f779"},
-    {file = "pint_pandas-0.8.0.tar.gz", hash = "sha256:6b8b607c0cfeb615afed68e087cfde56b1bd8399a4b088d15d2a0d7692ea9bfc"},
-]
-
-[package.dependencies]
-packaging = ">=26.0"
-pandas = ">=3.0"
-pint = ">=0.24"
-
-[package.extras]
-docs = ["Serialize", "graphviz", "ipykernel", "ipython (<=8.12)", "jupyter_client", "matplotlib", "nbsphinx", "pooch", "pygments (>=2.4)", "sparse", "sphinx (>=6,<8.2)", "sphinx-book-theme (>=1.1.0)", "sphinx_copybutton", "sphinx_design", "uncertainties-pandas"]
-test = ["codecov", "coveralls", "nbval", "pyarrow", "pytest", "pytest-cov", "pytest-mpl", "pytest-subtests"]
-
-[[package]]
 name = "platformdirs"
 version = "4.11.7"
 description = "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`."
-optional = false
+optional = true
 python-versions = ">=3.10"
 groups = ["main"]
+markers = "extra == \"test\""
 files = [
     {file = "platformdirs-4.11.7-py3-none-any.whl", hash = "sha256:8a02cb259042c79d1cd0450facc2fe6dc9d303ae7901afbe33bf8ea0b188cef6"},
     {file = "platformdirs-4.11.7.tar.gz", hash = "sha256:4f41487eeeeeb07f3a6625e61d9bc0ae6809f92d3386dbd74392fbb76108104d"},
@@ -2702,4 +2612,4 @@ test = ["ipykernel", "pytest"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11"
-content-hash = "5d66abd9307a2cd71dbdf13469ffd4f1ad79c92de51b87247414bb4db9d50996"
+content-hash = "9d9d0755aba0f8e2ef8af9ea4e632f2a480a19080c013c5bc8d0151ea0e3471e"
