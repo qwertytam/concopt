@@ -1,5 +1,5 @@
 """Speed/altitude limits and level-selection for the Concorde envelope.
-Vectorised numpy, SI units, no pint, no classes.
+Vectorised numpy, SI units, no classes.
 """
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator

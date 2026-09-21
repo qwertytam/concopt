@@ -22,8 +22,6 @@ dependencies = [
     "netCDF4",
     "numpy",
     "pandas",
-    "pint",
-    "pint-pandas",
     "requests",
     "rich",
     "scipy",

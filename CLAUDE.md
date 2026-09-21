@@ -27,21 +27,19 @@ for its own sake, no defensive error handling.
   CSVs (`conc_data`'s grids, `CLIMB_TOW_MIN_T`/`MAX_T`), table labels
   (`conc_data.CLIMB_BANDS`) and output schemas (`inflight.RECORD_COLUMNS`,
   `arrival._SEGMENT_KEYS`/`_FLAG_KEYS`) — those describe a table or a file,
-  not a setting — and CLI path defaults (`results.csv`, ...) in `cli.py`. The
-  vendored fork below has its own `constants.py` (pint-based, unrelated —
-  hence the name `params`).
-- `atmos.py`, `limits.py` — vectorised SI numpy, **no pint**. Hot path.
+  not a setting — and CLI path defaults (`results.csv`, ...) in `cli.py`.
+- `atmos.py`, `limits.py` — vectorised SI numpy. Hot path.
 - `tests/` — pytest suite: `cas_formula.md` worked examples, the ISA+limits
   table, the Mmo/total-temp crossover identity, flight-level round-trip, and
   a vectorised-scan performance/NaN check. Run with `poetry run pytest` (or
   plain `pytest` inside the venv). This replaced the old ad hoc `check.py`
   script — there is no `check.py` any more.
 - `asky.py` — ActiveSky HTTP client (localhost:19285). `get_atmosphere_np`
-  is the pint-free variant (plain numpy arrays), for `verify.py` and
-  `inflight.py`; `get_atmosphere_as_pd` is display-only and accepts either a
-  plain feet sequence or a pint Quantity. Both wrap a `ConnectionError` from
-  `requests` into a `RuntimeError` naming the host/port and telling the user
-  to check Active Sky is running with the historical date loaded.
+  returns plain numpy arrays, for `verify.py` and `inflight.py`. Both it and
+  `get_atmosphere` wrap a `ConnectionError` from `requests` into a
+  `RuntimeError` naming the host/port and telling the user to check Active
+  Sky is running with the historical date loaded, and raise the same way if
+  Active Sky answers with its bare-text `Error` reply.
   `GetAtmosphere`'s `WeatherData` is a **list of per-altitude records, every
   field a string** (confirmed live, 2026-09) -- both functions build a
   `pd.DataFrame` from that list to reshape and parse it; an earlier version
@@ -410,10 +408,6 @@ for its own sake, no defensive error handling.
   indefinitely with the bundled one.
 
 - `data/` — CSV limit tables + `conc_data.py` loader
-- `condition.py`, `atmosphere.py`, `common.py`, `airframeflows.py`,
-  `nondimensional.py` — vendored fork of the `flightcondition` package.
-  **Do not read or modify these.** Legacy; retained only for the pretty
-  `tostring()` output in the future in-flight display.
 - `notebooks/day-search-results.ipynb` — exploratory reporting on a `concopt
   search --out-all` run: distribution of total block time (histogram +
   top-50 marked, box plot by month, wind/ISA-deviation scatter), a
@@ -439,7 +433,6 @@ for its own sake, no defensive error handling.
 - Everything array-in / array-out. No `iterrows()`, no per-row Python loops
   in anything that touches the search — it runs over ~31,000 candidate
   departures × ~32 supersonic legs × 4 ERA5 pressure levels.
-- pint is allowed **only** in display code, never in `atmos.py`/`limits.py`.
 - Ad hoc command output captured by hand (e.g. `concopt verify ... |
   Tee-Object -FilePath logs/verify_2016-02-12.log`) goes in `logs/`, not
   the repo root -- gitignored, `logs/.gitkeep` keeps the empty folder
