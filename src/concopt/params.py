@@ -117,6 +117,17 @@ APPROACH_AGL_FT = DESCENT_END_FT
 # --- Level segment at M0.95 --------------------------------------------------
 LEVEL_MACH = 0.95
 
+# Mach at which the decel segment ends, and the operating limit on the
+# subsonic stretches of the flight (brake release -> ACCEL_WAYPOINT_ID, and
+# everything after the decel segment). report.flight_profile draws it as the
+# Mach limit there.
+SUBSONIC_LIMIT_MACH = 1.0
+
+# report.flight_profile straight-line-subdivides the decel and descent
+# segments (arrival.py only gives per-segment totals) into this many pieces,
+# so their Mach/TAS/CAS come out as curves rather than one chord.
+ARRIVAL_PROFILE_STEPS = 8
+
 # Typical mass at the decel waypoint -- only used as mass_at_barix_t's
 # default, for the many tests below that exercise wind/band/flag behaviour
 # and don't care what the level segment's fuel table lookup lands on. Real

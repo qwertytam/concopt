@@ -301,6 +301,45 @@ for its own sake, no defensive error handling.
   candidate (`--surface-npz`, required, the same file `search` takes), prints
   a Runways block and adds the JFK+LHR penalties to its total block time, so
   report and search agree on a day (`tests/test_search.py` pins it).
+- `report.flight_profile` — the whole flight, brake release → touchdown, for
+  ONE candidate, as data (`dict(phases, profile, summary)`) instead of
+  `run_report`'s printed text; the day-search notebook is its consumer. It
+  stitches three computations of very different resolution: the climb
+  (`conc_climb.csv`'s 18 cumulative levels, air distance turned into ground
+  distance with the climb's own single proxy wind, recovered from
+  `_climb_profile`'s ground/air distance), the cruise (one segment per
+  `march_legs` sub-leg with `eff_dist_nm > 0`) and the arrival (`arrival.
+  arrival()`'s four segment totals, straight-line subdivided into
+  `ARRIVAL_PROFILE_STEPS`; altitude/weight/time linear within a segment).
+  **What is not known stays NaN**: `conc_climb.csv` has no speeds, so climb
+  Mach/TAS/CAS are blank and only the whole-climb mean GS is filled
+  (`speed_basis == "mean"`; the approach allowance likewise); nothing is
+  back-derived from Δdist/Δtime between climb levels — the table's times are
+  whole minutes, so that gives Mach 0.2-9. The profile is two points per
+  segment so steps and limit changes plot as vertical jumps. Phases: `climb`
+  = brake release → `ACCEL_WAYPOINT_ID` (LINND, an interpolated breakpoint
+  in the climb), `acceleration` = LINND → top of climb, `cruise`,
+  `deceleration`, `subsonic cruise`, `descent`, `approach`; takeoff roll and
+  landing are not modelled (the runway penalties, time only, ride in the
+  phase table so its TOTAL equals search's `total_time_s`). The **Mach
+  limit** is `SUBSONIC_LIMIT_MACH` (1.0) from brake release to LINND and
+  from the end of the decel segment on (decel is the transition, so it runs
+  above that line), the CAS/total-temp/cruise-Mach envelope in between
+  (`_envelope_mach` solves the CAS limit exactly — `limits.max_mach`'s grid
+  only covers FL280-FL600 — at ISA temperature off the cruise, where none is
+  known). The **CAS limit** is `conc_data.cas_limit_kt(alt, weight)`, not a
+  flat 530. `ceiling_ft` is filled for the cruise only — the table is
+  altitude attainable at cruise Mach, not a climb/descent limit. Arrival
+  Mach/CAS: decel is linear from the last cruise Mach to M1.0, level is
+  M0.95, and the descent flies the 325/350/380 kt schedule as a **CAS**
+  (Mach solved from it per altitude — `atmos.cas_from_mach`/`mach_from_cas`),
+  held down to 1,500 ft, which the CAS limit table puts above the limit at
+  low altitude (a table simplification, left as is). The profile's first
+  point is the TOW the march actually flew (`climb["mass_t"]` + climb fuel),
+  which sits within `DEFAULT_TOLERANCE_T` of `summary["tow_t"]` since the
+  fixed point's last march runs one damped update before its returned TOW.
+  `arrival.arrival()` now also returns `decel_wind_kt`/`descent_wind_kt`
+  (already computed internally) for this.
 - `verify.py` — Phase 5, `concopt verify`. The user loads a historical date/
   time in Active Sky by hand first (a static snapshot of its global weather
   model — the API takes an explicit lat/lon/altitude, so one load covers
@@ -411,12 +450,19 @@ for its own sake, no defensive error handling.
 - `notebooks/day-search-results.ipynb` — exploratory reporting on a `concopt
   search --out-all` run: distribution of total block time (histogram +
   top-50 marked, box plot by month, wind/ISA-deviation scatter), a
-  formatted top-10 table, and the winning day's profile (chosen FL vs
-  `ceiling_ft`, TAS/GS/along-track wind vs distance) plus a flag-count
-  summary. Loads only; every computed value reuses concopt's own
-  functions (`search.march_legs` rerun for the single winning candidate —
-  the same call `report.run_report` makes — `report._step_climb_schedule`,
-  `limits.ceiling_ft`), it does not reimplement the march. The still-air
+  formatted top-10 table, and the winning day over the FULL flight, brake
+  release to touchdown (sections 6-7c: chosen FL vs `ceiling_ft`, Mach and
+  CAS against their limits, TAS/GS/along-track wind, fuel remaining and
+  burn by phase, a phase table, a lat/lon route map coloured by phase —
+  no `cartopy`, deliberately) plus a flag-count summary. Loads only; every
+  computed value reuses concopt's own functions (`report.flight_profile`
+  for the winner, `search.march_legs` for the cruise-only total-temperature
+  cell), it does not reimplement the march. `flight_profile` re-solves TOW
+  from ZFW and needs the arrival wind files too (`SUBSONIC_NPZ_PATH`/
+  `ARRIVAL_UPPER_NPZ_PATH` in the config cell), and the notebook prints a
+  warning when its total differs from the search CSV's `total_time_s` by
+  over a minute (a CSV made with another `--cruise-mach`/wind files/code
+  version — the notebook's `CRUISE_MACH` must match the search's). The still-air
   ISA+0 reference figure feeds `march_legs` a synthetic zero-wind
   atmosphere rather than hand-computing a time, exploiting FL450-FL600
   sitting entirely inside the ISA's 11-20 km isothermal layer (`atmos.isa`)

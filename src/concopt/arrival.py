@@ -38,6 +38,7 @@ _SEGMENT_KEYS = (
     "time_min", "fuel_t", "level_fl", "level_nm", "decel_nm", "descent_nm",
     "decel_time_min", "level_time_min", "descent_time_min",
     "decel_fuel_t", "level_fuel_t", "descent_fuel_t", "level_wind_kt",
+    "decel_wind_kt", "descent_wind_kt",
 )
 
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
@@ -198,6 +199,8 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         "level_nm": level_nm,
         "level_fl": np.full(n_cand, decel_end_fl),
         "level_wind_kt": np.broadcast_to(level_wind, (n_cand,)).astype(float),
+        "decel_wind_kt": np.broadcast_to(decel_wind, (n_cand,)).astype(float),
+        "descent_wind_kt": np.broadcast_to(descent_wind, (n_cand,)).astype(float),
         "decel_time_min": decel["time_min"],
         "level_time_min": level_time_min,
         "descent_time_min": descent["time_min"],

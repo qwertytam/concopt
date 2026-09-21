@@ -87,6 +87,14 @@ def mach_from_cas(cas_ms, p_Pa):
     return brentq(f, 0.05, 6.0)
 
 
+def cas_from_mach(M, p_Pa):
+    """CAS (m/s) at Mach M and ambient pressure p_Pa (Pa), vectorised -- the
+    inverse of mach_from_cas. Subsonic-CAS formula (valid below A0, ~661 kt;
+    Concorde's CAS never gets near it)."""
+    qc = qc_over_p(M) * np.asarray(p_Pa, dtype=float)
+    return A0 * np.sqrt(2.0 / (GAMMA - 1.0) * ((qc / P0 + 1.0) ** ((GAMMA - 1.0) / GAMMA) - 1.0))
+
+
 def mach_from_total_temp(T_K, total_temp_max_K):
     """Mach number at which static temperature T_K reaches total_temp_max_K
     (inverse of Tt = T*(1 + 0.2*M^2))."""

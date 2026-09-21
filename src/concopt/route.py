@@ -231,6 +231,25 @@ def project_along_route(legs, lat, lon, lookahead_nm):
     return float(cur_lat), float(cur_lon), float(leg.track_deg)
 
 
+def position_at_cum_nm(legs, target_cum_nm):
+    """The (lat, lon, track_deg) at along-route distance target_cum_nm --
+    the counterpart to current_progress_nm (which
+    goes the other way, point -> cum_nm). Same technique as
+    route.project_along_route: reconstruct a leg's start point from its own
+    midpoint/track/dist_nm (Leg keeps only the midpoint), then walk forward
+    along its track."""
+    target_cum_nm = float(np.clip(target_cum_nm, 0.0, legs[-1].cum_nm))
+    for leg in legs:
+        leg_start_cum_nm = leg.cum_nm - leg.dist_nm
+        if target_cum_nm <= leg.cum_nm or leg is legs[-1]:
+            along_nm = np.clip(target_cum_nm - leg_start_cum_nm, 0.0, leg.dist_nm)
+            start_lat, start_lon = destination_point(
+                leg.lat_mid, leg.lon_mid, leg.track_deg + 180.0, leg.dist_nm / 2.0)
+            lat, lon = destination_point(start_lat, start_lon, leg.track_deg, along_nm)
+            return float(lat), float(lon), float(leg.track_deg)
+    raise AssertionError("unreachable -- target_cum_nm clipped into [0, legs[-1].cum_nm]")
+
+
 def climb_cruise_segment(legs, decel_id="BARIX"):
     """Boolean mask over legs, True from the first leg (brake release)
     through the leg arriving at decel_id (inclusive) -- the span
