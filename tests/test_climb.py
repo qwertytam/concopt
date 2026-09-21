@@ -11,7 +11,7 @@ import pytest
 
 from concopt.data.conc_data import CLIMB_BANDS, climb_to
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_DECEL_ID
 
 
 @pytest.fixture(scope="module")
@@ -95,7 +95,7 @@ def test_end_to_end_top_of_climb_beyond_fix03():
     start past it, not fly Fix03 supersonically."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     cc_legs = [leg for leg, m in zip(legs, mask) if m]
 
     # Fix02->Fix03 is subdivided into several equal sub-legs sharing that

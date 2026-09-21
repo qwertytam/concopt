@@ -18,7 +18,7 @@ from concopt import arrival, fuel, limits, runways
 from concopt.atmos import KT_TO_MS, fl_to_pressure, isa, pressure_to_fl, speed_of_sound
 from concopt.data.conc_data import CLIMB_BANDS, climb_to, fuel_total_kgh_table
 from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
-from concopt.params import (CLIMB_BAND_SAMPLE_NM, C_TO_K, DECEL_WAYPOINT_ID,  # noqa: F401
+from concopt.params import (CLIMB_BAND_SAMPLE_NM, C_TO_K,  # noqa: F401
                             DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N, DEFAULT_TOW_T,
                             DEPARTURE_LOCAL_HOURS, FT_TO_M, NM_TO_M, NS_PER_S, NY_TZ,
                             S_PER_HOUR, TARGET_FL, TOP_OF_CLIMB_FL, WINTER_MONTHS)
@@ -596,7 +596,7 @@ def resolve_tow_and_arrival(
     return tow_out, n_iterations, fuel_flags, legs_out, weight_per_leg, climb, arrival_out
 
 
-def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
+def run_search(pln_path, npz_path, surface_npz_path, decel_id,
                 top=DEFAULT_TOP_N, out_path="results.csv", out_all_path=None,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
@@ -836,7 +836,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id=DECEL_WAYPOINT_ID,
     return candidates
 
 
-def run_shortlist(search_csv_path, pln_path, npz_path, top=DEFAULT_SHORTLIST_TOP_N, decel_id=DECEL_WAYPOINT_ID,
+def run_shortlist(search_csv_path, pln_path, npz_path, decel_id, top=DEFAULT_SHORTLIST_TOP_N,
                   subsonic_npz_path=None, arrival_upper_npz_path=None):
     """The top `top` rows of a concopt search --out CSV, printed as a
     ready-to-run `concopt verify` command per day -- so working through a

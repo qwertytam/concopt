@@ -118,7 +118,7 @@ APPROACH_AGL_FT = DESCENT_END_FT
 LEVEL_MACH = 0.95
 
 # Mach at which the decel segment ends, and the operating limit on the
-# subsonic stretches of the flight (brake release -> ACCEL_WAYPOINT_ID, and
+# subsonic stretches of the flight (brake release -> the accel waypoint, and
 # everything after the decel segment). report.flight_profile draws it as the
 # Mach limit there.
 SUBSONIC_LIMIT_MACH = 1.0
@@ -159,8 +159,8 @@ CRUISE_FL_MAX = 600.0
 # =============================================================================
 # Route (route.py, cli.py)
 # =============================================================================
-DECEL_WAYPOINT_ID = "BARIX"   # supersonic -> subsonic; ends the climb+cruise span
-ACCEL_WAYPOINT_ID = "LINND"   # supersonic-span marker / in-flight span tracking
+# No default decel/accel waypoint: both are per-route, passed as `--decel`/`--accel`
+# (an `ATCWaypoint id` from the .pln).
 MAX_LEG_NM = 100.0            # `concopt route --max-leg-nm`: subdivide longer legs
 
 # =============================================================================

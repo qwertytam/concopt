@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from concopt.params import ACCEL_WAYPOINT_ID, DECEL_WAYPOINT_ID, EARTH_RADIUS_NM
+from concopt.params import EARTH_RADIUS_NM
 
 # WorldPosition / *LLA token: HEMdeg° min' sec", e.g. N40° 38' 23.39" or
 # W68° 15' 0" (minutes/seconds may be single-digit, seconds may lack a
@@ -37,6 +37,10 @@ def parse_pln(path):
     ATCWaypointType is not used to identify the endpoints (it is unreliable
     in practice, e.g. every fix typed "Airport") - DepartureID/DestinationID
     are used instead.
+
+    Each waypoint's id is its `<ATCWaypoint id="...">` attribute -- the same
+    string a Leg carries as from_id/to_id, and the one `--accel`/`--decel`
+    (accel_id/decel_id below) name.
     """
     root = ET.parse(path).getroot()
     plan = root.find('FlightPlan.FlightPlan')
@@ -250,9 +254,10 @@ def position_at_cum_nm(legs, target_cum_nm):
     raise AssertionError("unreachable -- target_cum_nm clipped into [0, legs[-1].cum_nm]")
 
 
-def climb_cruise_segment(legs, decel_id="BARIX"):
+def climb_cruise_segment(legs, decel_id):
     """Boolean mask over legs, True from the first leg (brake release)
-    through the leg arriving at decel_id (inclusive) -- the span
+    through the leg arriving at decel_id (inclusive; an `ATCWaypoint id`
+    from the .pln, no default -- it is a property of the route) -- the span
     search.march_legs covers now that a TOW-based climb model
     (data.conc_data.climb_to) replaces the old fixed accel-point/weight
     assumption: the march starts at brake release, not at a named accel
@@ -273,7 +278,7 @@ def climb_cruise_segment(legs, decel_id="BARIX"):
     return mask
 
 
-def supersonic_segment(legs, accel_id=ACCEL_WAYPOINT_ID, decel_id=DECEL_WAYPOINT_ID):
+def supersonic_segment(legs, accel_id, decel_id):
     """Boolean mask over legs, True from the leg departing accel_id through
     the leg arriving at decel_id (inclusive). Sub-legs of a subdivided
     parent leg all share that parent's from_id/to_id, so this still finds

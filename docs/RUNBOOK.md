@@ -58,13 +58,30 @@ ls data/era5/era5_sfc_*.nc | wc -l        # complete at 25 per airport (50 total
 
 ## 2. Reduce the netCDFs to per-leg .npz files
 
+**Name your accel and decel waypoints first.** Neither has a default: both
+are the `id` attribute of an `<ATCWaypoint id="...">` in your `.pln` (e.g.
+`50N009W`, `BARIX`), passed as `--decel <id>` / `--accel <id>`.
+
+- `--decel` — where the deceleration to subsonic starts. The climb + cruise
+  span ends at the leg *arriving* at it; everything after is the arrival
+  model. Needed by every command below, and by `build_npz.py`. It can't be
+  the first waypoint (no leg arrives there).
+- `--accel` — where supersonic flight begins (the point from which the
+  aircraft is free to go above Mach 1). Only `route` and `inflight` take it
+  (the span marker and the recorder's phases); `search`/`report`/`verify`
+  derive top of climb from the climb table instead.
+
+The `.npz` files below are cut at `--decel`, so they must be rebuilt for a
+route with a different decel point, and every command must then be run with
+that same `--decel` (nothing checks it against the file).
+
 No CLI subcommand does this — `scripts/build_npz.py` wraps
 `era5.reduce_to_legs`/`reduce_surface_to_npz` against whatever's on disk
 in `data/era5`. Re-run it any time more months finish downloading; it just
 overwrites the three/four output files.
 
 ```
-poetry run python scripts/build_npz.py --pln <route.pln>
+poetry run python scripts/build_npz.py --pln <route.pln> --decel <id>
 ```
 
 Produces, all in `data/era5/`:
@@ -89,7 +106,7 @@ mid-Atlantic wind for the arrival.
 ## 3. Search: shortlist the best departures
 
 ```
-poetry run concopt search --pln <route.pln> ^
+poetry run concopt search --pln <route.pln> --decel <id> ^
   --npz data/era5/route_legs.npz ^
   --surface-npz data/era5/surface_legs.npz ^
   --subsonic-npz data/era5/subsonic_legs.npz ^
@@ -118,7 +135,7 @@ shortlist to verify, not a final answer.
 ## 4. Shortlist → verify each candidate against Active Sky
 
 ```
-poetry run concopt shortlist --pln <route.pln> --npz data/era5/route_legs.npz ^
+poetry run concopt shortlist --pln <route.pln> --decel <id> --npz data/era5/route_legs.npz ^
   --subsonic-npz data/era5/subsonic_legs.npz --arrival-upper-npz data/era5/arrival_upper_legs.npz ^
   --search-csv results.csv --top 20
 ```
@@ -207,7 +224,7 @@ delta look like a fixable bias or scatter, repeat. Pick the winner.
 ## 5. Report: the full per-leg plan for the winning day
 
 ```
-poetry run concopt report --pln <route.pln> --npz data/era5/route_legs.npz ^
+poetry run concopt report --pln <route.pln> --decel <id> --npz data/era5/route_legs.npz ^
   --date 2026-01-21 --hour 14 ^
   --zfw <ZFW> ^
   --surface-npz data/era5/surface_legs.npz ^
@@ -235,7 +252,7 @@ one, e.g. FSLabs's `Libraries\SimConnect_P3D_v5.dll`, or Little Navmap's
 install).
 
 ```
-poetry run concopt inflight --pln <route.pln> ^
+poetry run concopt inflight --pln <route.pln> --accel <id> --decel <id> ^
   --simconnect-dll "C:\path\to\SimConnect_P3D_v5.dll" ^
   --record data/inflight/recording_2026-01-21.csv ^
   --compare report.csv
@@ -253,7 +270,7 @@ instead of the redraw-in-place display, useful when piping to a log file.
 **Dry-run first** against a previous recording instead of the real sim:
 
 ```
-poetry run concopt inflight --pln <route.pln> --replay data/inflight/some_earlier_recording.csv --replay-speed 60
+poetry run concopt inflight --pln <route.pln> --accel <id> --decel <id> --replay data/inflight/some_earlier_recording.csv --replay-speed 60
 ```
 
 ## 7. Post-flight analysis

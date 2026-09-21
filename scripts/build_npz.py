@@ -8,7 +8,7 @@ are already on disk under --era5-dir (put there by
 to re-run any time more months finish downloading; each call just
 overwrites its own .npz.
 
-    poetry run python scripts/build_npz.py --pln <route.pln>
+    poetry run python scripts/build_npz.py --pln <route.pln> --decel <ATCWaypoint id>
 
 --only cruise/arrival/surface builds a subset (default: all three).
 """
@@ -105,7 +105,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--pln", required=True, help="path to the route .pln")
-    p.add_argument("--decel", default="BARIX", help="deceleration waypoint id (default: BARIX)")
+    p.add_argument("--decel", required=True,
+                    help="deceleration waypoint: the id of an ATCWaypoint in the .pln (must match the "
+                         "--decel every concopt command is run with)")
     p.add_argument("--era5-dir", default="data/era5", help="directory holding the downloaded netCDFs")
     p.add_argument("--only", choices=["cruise", "arrival", "surface"], action="append",
                     help="build only these targets (default: all three)")

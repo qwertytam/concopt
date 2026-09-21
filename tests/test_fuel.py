@@ -25,7 +25,7 @@ from concopt.fuel import (CLIMB_TOW_MIN_T, MTOW_T, calculate_trip_fuel,
                            trip_fuel_split)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 from concopt.search import march_legs
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_DECEL_ID
 
 # A fixed post-decel distance for every test here -- the exact value doesn't
 # matter (nothing asserts a specific arrival number), only that arrival()
@@ -501,7 +501,7 @@ def _multi_band_march_legs_data():
     candidates spanning more than one conc_climb.csv temp_band at once."""
     plan = parse_pln(SAMPLE_PLN)
     legs = build_legs(plan["waypoints"])
-    mask = climb_cruise_segment(legs)
+    mask = climb_cruise_segment(legs, SAMPLE_DECEL_ID)
     cc_idx = np.flatnonzero(mask)
     cc_legs = [legs[i] for i in cc_idx]
 

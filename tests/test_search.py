@@ -18,7 +18,7 @@ from concopt.route import Leg
 from concopt.search import DEFAULT_TOW_T, run_shortlist
 from tests.test_report import (_still_air_arrival_upper_npz, _still_air_npz,
                                 _still_air_subsonic_npz, _surface_npz)
-from tests.test_route import SAMPLE_PLN
+from tests.test_route import SAMPLE_PLN, SAMPLE_DECEL_ID
 
 
 def _sample_results_csv(path, n=15, zfw_t=92.0):
@@ -43,7 +43,7 @@ def test_run_shortlist_returns_top_n_rows(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=15)
 
-    out = run_shortlist(csv_path, "route.pln", "route_legs.npz", top=5)
+    out = run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=5)
 
     assert len(out) == 5
     assert out["date"].tolist() == [f"2026-01-{i + 1:02d}" for i in range(5)]
@@ -53,8 +53,7 @@ def test_run_shortlist_prints_ready_to_run_verify_command(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=3, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=3, decel_id="BARIX",
-                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=3, subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     printed = capsys.readouterr().out
     assert "concopt verify --pln route.pln --npz route_legs.npz" in printed
@@ -63,7 +62,7 @@ def test_run_shortlist_prints_ready_to_run_verify_command(tmp_path, capsys):
     assert "--date 2026-01-01 --hour 14" in printed
     assert "--zfw 92.0" in printed
     assert "--tow" not in printed
-    assert "--decel BARIX" in printed
+    assert f"--decel {SAMPLE_DECEL_ID}" in printed
 
 
 def test_run_shortlist_shows_local_and_utc_departure(tmp_path, capsys):
@@ -74,7 +73,7 @@ def test_run_shortlist_shows_local_and_utc_departure(tmp_path, capsys):
     df["date"] = ["2026-01-01", "2026-07-01"]
     df.to_csv(csv_path, index=False)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=2)
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=2)
 
     printed = capsys.readouterr().out
     assert "2026-01-01 14:00 EST | 19:00 UTC" in printed
@@ -89,7 +88,7 @@ def test_run_shortlist_shows_each_row_own_tow_in_summary(tmp_path, capsys):
     df.loc[1, "tow_t"] = 175.0
     df.to_csv(csv_path, index=False)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=2,
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=2,
                   subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
     printed = capsys.readouterr().out
 
@@ -107,13 +106,13 @@ def test_run_shortlist_emits_tow_only_for_a_tow_override_search(tmp_path, capsys
     csv_path = tmp_path / "results.csv"
     df = _sample_results_csv(csv_path, n=1, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1,
                   subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
     assert "--tow" not in capsys.readouterr().out
 
     df["tow_override_t"] = 150.0
     df.to_csv(csv_path, index=False)
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1,
                   subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
     printed = capsys.readouterr().out
     assert "--zfw 92.0" in printed
@@ -124,7 +123,7 @@ def test_run_shortlist_blank_flags_shown_as_dash(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=1, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1,
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1,
                   subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     assert "flags: -" in capsys.readouterr().out
@@ -139,8 +138,7 @@ def test_run_shortlist_generated_command_parses_through_verify_parser(tmp_path, 
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=1, zfw_t=92.0)
 
-    run_shortlist(csv_path, "route.pln", "route_legs.npz", top=1, decel_id="BARIX",
-                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1, subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     printed = capsys.readouterr().out
     # Extract the concopt verify command line
@@ -175,8 +173,7 @@ def test_run_shortlist_generated_command_structure(tmp_path, capsys):
     csv_path = tmp_path / "results.csv"
     _sample_results_csv(csv_path, n=1, zfw_t=92.5)
 
-    run_shortlist(csv_path, "route.pln", "cruise.npz", top=1, decel_id="BARIX",
-                  subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
+    run_shortlist(csv_path, "route.pln", "cruise.npz", SAMPLE_DECEL_ID, top=1, subsonic_npz_path="subsonic.npz", arrival_upper_npz_path="arrival_upper.npz")
 
     printed = capsys.readouterr().out
 
@@ -188,7 +185,7 @@ def test_run_shortlist_generated_command_structure(tmp_path, capsys):
     assert "--date 2026-01-01" in printed
     assert "--hour 14" in printed
     assert "--zfw 92.5" in printed
-    assert "--decel BARIX" in printed
+    assert f"--decel {SAMPLE_DECEL_ID}" in printed
 
     # Check --tow is NOT present
     assert "--tow" not in printed
@@ -238,7 +235,7 @@ def test_run_search_end_to_end_with_zfw_and_subsonic_npz(tmp_path, monkeypatch):
     monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
 
     candidates = search.run_search(
-        SAMPLE_PLN, npz_path, surface_npz_path, out_path=out_path,
+        SAMPLE_PLN, npz_path, surface_npz_path, decel_id=SAMPLE_DECEL_ID, out_path=out_path,
         zfw_t=92.0, min_landing_fuel_t=10.0, subsonic_npz_path=subsonic_npz_path,
         arrival_upper_npz_path=arrival_upper_npz_path,
     )
@@ -266,10 +263,10 @@ def test_run_search_requires_zfw(tmp_path, monkeypatch):
     monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
 
     with pytest.raises(ValueError, match="zfw_t"):
-        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path, decel_id=SAMPLE_DECEL_ID,
                            out_path=tmp_path / "results.csv", **_arrival_kw(tmp_path))
     with pytest.raises(ValueError, match="zfw_t"):
-        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+        search.run_search(SAMPLE_PLN, npz_path, surface_npz_path, decel_id=SAMPLE_DECEL_ID,
                            out_path=tmp_path / "results.csv", tow_t=DEFAULT_TOW_T,
                            **_arrival_kw(tmp_path))
 
@@ -283,7 +280,7 @@ def test_run_search_tow_override_keeps_zfw_and_flags_short_fuel(tmp_path, monkey
     monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
 
     def run(**kw):
-        return search.run_search(SAMPLE_PLN, npz_path, surface_npz_path,
+        return search.run_search(SAMPLE_PLN, npz_path, surface_npz_path, decel_id=SAMPLE_DECEL_ID,
                                   out_path=tmp_path / "results.csv", zfw_t=92.0,
                                   **_arrival_kw(tmp_path), **kw)
 
@@ -439,14 +436,14 @@ def test_report_total_block_time_agrees_with_search(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(search, "candidate_departures", _tiny_candidates)
 
     candidates = search.run_search(
-        SAMPLE_PLN, npz_path, surface, out_path=tmp_path / "results.csv",
+        SAMPLE_PLN, npz_path, surface, decel_id=SAMPLE_DECEL_ID, out_path=tmp_path / "results.csv",
         zfw_t=92.0, min_landing_fuel_t=10.0,
         subsonic_npz_path=subsonic, arrival_upper_npz_path=upper)
     row = candidates[candidates["local_hour"] == 10].iloc[0]
     assert row["jfk_penalty_s"] + row["lhr_penalty_s"] == 7 * 60.0
     capsys.readouterr()
 
-    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10,
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=tmp_path / "report.csv", zfw_t=92.0, min_landing_fuel_t=10.0,
                 surface_npz_path=surface, subsonic_npz_path=subsonic,
                 arrival_upper_npz_path=upper)

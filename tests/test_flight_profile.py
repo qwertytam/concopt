@@ -11,6 +11,7 @@ from concopt.atmos import cas_from_mach, isa, mach_from_cas
 from concopt.params import FT_TO_M, KT_TO_MS, SUBSONIC_LIMIT_MACH
 from concopt.report import flight_profile
 from concopt.route import build_legs, parse_pln, position_at_cum_nm
+from tests.test_route import SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID
 from tests.test_report import (SAMPLE_PLN, _still_air_arrival_upper_npz, _still_air_npz,
                                _still_air_subsonic_npz)
 
@@ -21,7 +22,7 @@ ZFW_T = 92.0
 def prof(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("profile")
     return flight_profile(
-        SAMPLE_PLN, _still_air_npz(tmp), dt.date(2016, 2, 12), 10, ZFW_T,
+        SAMPLE_PLN, _still_air_npz(tmp), dt.date(2016, 2, 12), 10, ZFW_T, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID,
         subsonic_npz_path=_still_air_subsonic_npz(tmp),
         arrival_upper_npz_path=_still_air_arrival_upper_npz(tmp),
         runway_penalties_s=(30.0, 60.0))

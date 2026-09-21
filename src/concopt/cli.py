@@ -7,8 +7,8 @@ import datetime as dt
 import pandas as pd
 
 from concopt.inflight import run_inflight
-from concopt.params import (ACCEL_WAYPOINT_ID, ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
-                            DECEL_WAYPOINT_ID, DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
+from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
+                            DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N,
                             MAX_LEG_NM, MIN_LANDING_FUEL_T, VERIFY_DEFAULT_N_POINTS)
 from concopt.replay import replay_sources
@@ -20,14 +20,17 @@ from concopt.verify import run_verify
 
 def _add_common_route_args(parser):
     """--pln/--decel, shared verbatim by every subcommand that works from a
-    parsed flight plan. --accel is added separately, only where a named
+    parsed flight plan. Neither has a default -- the decel point is a
+    property of the route. --accel is added separately, only where a named
     accel waypoint is still meaningful (route's display, inflight's live
     supersonic-segment tracking) -- search/report/verify now derive their
     climb-end point from conc_data.climb_to (TOW + weather), not a fixed
     waypoint, so --accel would be silently ignored there."""
     parser.add_argument('--pln', required=True, help='path to a P3D .pln flight plan')
-    parser.add_argument('--decel', default=DECEL_WAYPOINT_ID,
-                         help=f'deceleration waypoint id (default: {DECEL_WAYPOINT_ID})')
+    parser.add_argument('--decel', required=True,
+                         help='deceleration waypoint: the `id` of an ATCWaypoint in the .pln (e.g. '
+                              '<ATCWaypoint id="50N009W">) -- the climb+cruise span ends at the leg '
+                              'arriving here, and the arrival model starts from it')
 
 
 def _cmd_route(args):
@@ -88,7 +91,7 @@ def _cmd_verify(args):
 
 
 def _cmd_shortlist(args):
-    run_shortlist(args.search_csv, args.pln, args.npz, top=args.top, decel_id=args.decel,
+    run_shortlist(args.search_csv, args.pln, args.npz, args.decel, top=args.top,
                   subsonic_npz_path=args.subsonic_npz, arrival_upper_npz_path=args.arrival_upper_npz)
 
 
@@ -110,9 +113,8 @@ def _cmd_inflight(args):
     state_source, weather_source = (
         replay_sources(pd.read_csv(args.replay), replay_speed=args.replay_speed)
         if args.replay is not None else (None, None))
-    run_inflight(args.pln, interval_s=args.interval, lookahead_nm=args.lookahead_nm,
+    run_inflight(args.pln, args.accel, args.decel, interval_s=args.interval, lookahead_nm=args.lookahead_nm,
                  record_path=args.record, compare_path=args.compare,
-                 accel_id=args.accel, decel_id=args.decel,
                  host=args.host, port=args.port, cruise_mach=args.cruise_mach,
                  gain_threshold_kt=args.gain_threshold_kt,
                  simconnect_dll=args.simconnect_dll, live=not args.no_live,
@@ -129,9 +131,10 @@ def main(argv=None):
 
     route_parser = subparsers.add_parser(
         'route', parents=[common], help='parse a .pln and list its legs')
-    route_parser.add_argument('--accel', default=ACCEL_WAYPOINT_ID,
-                               help='acceleration waypoint id, for the supersonic-span marker '
-                                    f'column only (default: {ACCEL_WAYPOINT_ID})')
+    route_parser.add_argument('--accel', required=True,
+                               help='acceleration waypoint: the `id` of an ATCWaypoint in the .pln, '
+                                    'where supersonic flight begins -- for the supersonic-span marker '
+                                    'column only')
     route_parser.add_argument('--max-leg-nm', type=float, default=MAX_LEG_NM,
                                help=f'subdivide legs longer than this (nm, default: {MAX_LEG_NM:g})')
     route_parser.set_defaults(func=_cmd_route)
@@ -290,9 +293,10 @@ def main(argv=None):
     inflight_parser = subparsers.add_parser(
         'inflight', parents=[common],
         help='live altitude advisor + flight recorder against a running Prepar3D/Active Sky')
-    inflight_parser.add_argument('--accel', default=ACCEL_WAYPOINT_ID,
-                                  help='acceleration waypoint id, for the recorder\'s supersonic-'
-                                       f'span tracking and compare_to_report (default: {ACCEL_WAYPOINT_ID})')
+    inflight_parser.add_argument('--accel', required=True,
+                                  help='acceleration waypoint: the `id` of an ATCWaypoint in the .pln, '
+                                       'where supersonic flight begins -- for the recorder\'s '
+                                       'supersonic-span tracking and compare_to_report')
     inflight_parser.add_argument('--interval', type=float, default=DEFAULT_INTERVAL_S,
                                   help=f'seconds between advisor ticks (default: {DEFAULT_INTERVAL_S:.0f})')
     inflight_parser.add_argument('--lookahead-nm', type=float, default=DEFAULT_LOOKAHEAD_NM,
