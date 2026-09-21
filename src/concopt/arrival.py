@@ -32,7 +32,7 @@ from . import atmos
 from .data import conc_data
 from .params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM, BAND_COLD, BAND_WARM,  # noqa: F401
                      CRUISE_FL_MAX, CRUISE_FL_MIN, DEFAULT_MASS_AT_BARIX_T, DESCENT_END_FL,
-                     FASTEST_SCHEDULE_KT, FT_TO_M, LEGACY_FLAT_FUEL_T, LEVEL_MACH, SCHEDULES_KT)
+                     FASTEST_SCHEDULE_KT, FT_TO_M, LEVEL_MACH, SCHEDULES_KT)
 
 _SEGMENT_KEYS = (
     "time_min", "fuel_t", "level_fl", "level_nm", "decel_nm", "descent_nm",
@@ -416,47 +416,3 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
     result["flags"] = flag_str.astype(str)
 
     return result
-
-
-def flat_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-                  mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed="auto",
-                  *, decel_descent_min):
-    """Drop-in replacement for arrival() with the SAME call signature (so
-    callers -- fuel.fixed_point_fuel_iteration in particular -- don't need
-    to know which one they're holding), but returning the flat legacy pair
-    this module replaces: decel_descent_min minutes at LEGACY_FLAT_FUEL_T
-    tonnes, everything else zeroed. wind_at_fl, mass_at_barix_t and speed are
-    accepted and ignored -- --decel-descent-min forces this instead of the
-    real model, for comparing old and new numbers on equal terms.
-
-    n_cand is read off cruise_fl/arrival_nm/isa_dev_at_cruise the same way
-    arrival() itself does, so scalars broadcast to one candidate."""
-    cruise_fl, arrival_nm, isa_dev_at_cruise = (
-        np.array(a) for a in np.broadcast_arrays(
-            np.atleast_1d(np.asarray(cruise_fl, float)),
-            np.atleast_1d(np.asarray(arrival_nm, float)),
-            np.atleast_1d(np.asarray(isa_dev_at_cruise, float)),
-        )
-    )
-    n_cand = cruise_fl.shape[0]
-    zeros = np.zeros(n_cand)
-    falses = np.zeros(n_cand, dtype=bool)
-
-    return {
-        "time_min": np.full(n_cand, float(decel_descent_min)),
-        "fuel_t": np.full(n_cand, LEGACY_FLAT_FUEL_T),
-        "schedule_kt": np.zeros(n_cand, dtype=int),  # N/A -- flat override
-        "level_fl": zeros, "level_nm": zeros, "decel_nm": zeros, "descent_nm": zeros,
-        "level_wind_kt": zeros,
-        "decel_time_min": zeros,
-        "level_time_min": np.full(n_cand, float(decel_descent_min)),
-        "descent_time_min": zeros,
-        "decel_fuel_t": zeros,
-        "level_fuel_t": np.full(n_cand, LEGACY_FLAT_FUEL_T),
-        "descent_fuel_t": zeros,
-        "level_nm_clamped": falses, "cruise_fl_clamped": falses,
-        "level_gs_nonpositive": falses, "level_mass_outside_envelope": falses,
-        "wind_fl_clamped": falses, "descent_wind_clamped": falses,
-        "flags": np.full(n_cand, "", dtype=object).astype(str),
-        "by_schedule": {},
-    }

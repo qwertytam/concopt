@@ -1,54 +1,56 @@
-"""concopt search and concopt report both describe the decel-point-to-
-touchdown segment. B3 replaced the old flat DECEL_DESCENT_S constant with
-arrival.arrival() as the default for both; --decel-descent-min is now an
-explicit opt-in override (forcing the flat legacy arrival) rather than a
-value with its own default, so this guards that both subcommands agree it
-is None (real model) unless the user asks otherwise -- the same "the two
-CLIs must agree" property the old test checked, updated for the new
-contract.
+"""CLI wiring for search/report/verify: the arrival npz files and --zfw are
+required (there is no flat-arrival fallback and TOW is an outcome of ZFW),
+and the options reach run_search/run_report/run_verify unchanged.
 """
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from concopt.cli import main as cli_main
 
+SEARCH_BASE = ["search", "--pln", "x.pln", "--npz", "x.npz",
+               "--surface-npz", "x_surface.npz", "--zfw", "92.0"]
+REPORT_BASE = ["report", "--pln", "x.pln", "--npz", "x.npz",
+               "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0"]
+ARRIVAL_NPZS = ["--subsonic-npz", "x_subsonic.npz", "--arrival-upper-npz", "x_upper.npz"]
 
-def test_search_report_decel_descent_defaults_agree():
+
+@pytest.mark.parametrize("base", [SEARCH_BASE, REPORT_BASE], ids=["search", "report"])
+@pytest.mark.parametrize("given", [[], ARRIVAL_NPZS[:2], ARRIVAL_NPZS[2:]],
+                          ids=["neither", "subsonic-only", "upper-only"])
+def test_search_and_report_require_both_arrival_npzs(base, given):
+    """The flat --decel-descent-min fallback is gone, so both arrival npz
+    files are always needed."""
+    with pytest.raises(SystemExit):
+        cli_main([*base, *given])
+
+
+@pytest.mark.parametrize("base", [SEARCH_BASE, REPORT_BASE], ids=["search", "report"])
+def test_decel_descent_min_is_no_longer_an_option(base):
+    with pytest.raises(SystemExit):
+        cli_main([*base, *ARRIVAL_NPZS, "--decel-descent-min", "35"])
+
+
+def test_search_report_pass_arrival_npzs_through():
     with patch("concopt.cli.run_search") as mock_search:
-        cli_main(["search", "--pln", "x.pln", "--npz", "x.npz",
-                  "--surface-npz", "x_surface.npz", "--zfw", "92.0"])
-    search_decel_descent_min = mock_search.call_args.kwargs["decel_descent_min"]
-
-    with patch("concopt.cli.run_report") as mock_report:
-        cli_main(["report", "--pln", "x.pln", "--npz", "x.npz",
-                  "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0"])
-    report_decel_descent_min = mock_report.call_args.kwargs["decel_descent_min"]
-
-    assert search_decel_descent_min is None
-    assert report_decel_descent_min is None
-
-
-def test_search_report_pass_subsonic_npz_through():
-    with patch("concopt.cli.run_search") as mock_search:
-        cli_main(["search", "--pln", "x.pln", "--npz", "x.npz",
-                  "--surface-npz", "x_surface.npz", "--zfw", "92.0",
-                  "--subsonic-npz", "x_subsonic.npz"])
+        cli_main([*SEARCH_BASE, *ARRIVAL_NPZS])
     assert mock_search.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
+    assert mock_search.call_args.kwargs["arrival_upper_npz_path"] == "x_upper.npz"
+    assert "decel_descent_min" not in mock_search.call_args.kwargs
 
     with patch("concopt.cli.run_report") as mock_report:
-        cli_main(["report", "--pln", "x.pln", "--npz", "x.npz",
-                  "--date", "2020-01-01", "--hour", "10", "--zfw", "92.0",
-                  "--subsonic-npz", "x_subsonic.npz"])
+        cli_main([*REPORT_BASE, *ARRIVAL_NPZS])
     assert mock_report.call_args.kwargs["subsonic_npz_path"] == "x_subsonic.npz"
+    assert mock_report.call_args.kwargs["arrival_upper_npz_path"] == "x_upper.npz"
+    assert "decel_descent_min" not in mock_report.call_args.kwargs
 
 
 def test_zfw_is_required_and_tow_is_optional():
     """TOW is an outcome of ZFW: every weight-taking subcommand refuses to
     run without --zfw, while --tow alone is no substitute for it."""
-    import pytest
-    for argv in (["search", "--surface-npz", "s.npz"],
-                 ["report", "--date", "2020-01-01", "--hour", "10"],
+    for argv in (["search", "--surface-npz", "s.npz", *ARRIVAL_NPZS],
+                 ["report", "--date", "2020-01-01", "--hour", "10", *ARRIVAL_NPZS],
                  ["verify", "--date", "2020-01-01", "--hour", "10"]):
         with pytest.raises(SystemExit):
             cli_main([argv[0], "--pln", "x.pln", "--npz", "x.npz", *argv[1:], "--tow", "150"])
