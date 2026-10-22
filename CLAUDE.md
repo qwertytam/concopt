@@ -407,7 +407,12 @@ for its own sake, no defensive error handling.
   (`route.project_along_route`), queries Active Sky there via
   `verify._as_atmosphere` (reused, not reimplemented), and feeds the result
   to `limits.best_level` **unchanged** -- same ceiling, same limits, same
-  code `search.march_legs` uses. `TOTAL WEIGHT` is read live and used
+  code `search.march_legs` uses -- except temperature: above the ISA
+  tropopause the grid takes the sim's own `AMBIENT_TEMPERATURE`
+  (`_advisor_temp_k`), since Active Sky's `GetAtmosphere` temperature
+  proved not to be what the sim flies in (4-5 °C off in cruise, jumping
+  5-17 °C tick to tick; the sim's own Mach/TAS matched its own temperature
+  to 2.5 kt). Winds and pressure agreed, so they still come from Active Sky. `TOTAL WEIGHT` is read live and used
   directly; there is no burn-off schedule here (contrast `search.py`'s
   state-variable weight). Prints the FL450-FL600 table with the current and
   recommended levels marked and which limit binds at the recommendation,
@@ -417,8 +422,10 @@ for its own sake, no defensive error handling.
   machine alongside it (brake release, detected as on-ground ground speed
   crossing 40 kt upward, through touchdown) writing one CSV row per interval
   and tracking each `.pln` waypoint's closest point of approach as it goes;
-  elapsed time is measured off `time.monotonic()`, not `ZULU_TIME` (which
-  wraps at 86,400 s and a flight can span midnight UTC). With `--compare`
+  elapsed time is SIM time, accumulated from `ZULU_TIME` tick to tick
+  (`_SimClock`, modulo a day for the midnight wrap) -- not wall-clock time,
+  which the first real recording (2026-10-21) showed P3D falling behind
+  (~87% speed for 12 minutes), and which keeps running through a pause. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release

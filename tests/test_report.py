@@ -278,3 +278,24 @@ def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
     assert "EGLL  27R/27L" in printed
     assert "runway penalty  : 0:07 (KJFK 31L, EGLL 27R/27L)" in printed
     assert "placeholder" not in printed
+
+
+def test_run_report_climb_waypoints_get_their_own_elapsed_time(tmp_path, capsys):
+    """Waypoints inside the climb used to all carry the top-of-climb time,
+    which inflight --compare read back as the brake-release -> accel
+    prediction. Each now gets its own time off the climb profile."""
+    import pandas as pd
+
+    out_path = tmp_path / "report.csv"
+    run_report(SAMPLE_PLN, _still_air_npz(tmp_path), dt.date(2016, 2, 12), 10,
+                decel_id=SAMPLE_DECEL_ID, out_path=out_path,
+                surface_npz_path=_surface_npz(tmp_path), zfw_t=92.0, min_landing_fuel_t=10.0,
+                **_arrival_kw(tmp_path))
+    capsys.readouterr()
+
+    table = pd.read_csv(out_path)
+    elapsed_s = table["elapsed"].map(lambda s: int(s.split(":")[0]) * 3600 + int(s.split(":")[1]) * 60)
+    climb_rows = table["binding"] == "climb"
+    assert climb_rows.sum() >= 2
+    assert elapsed_s.is_monotonic_increasing
+    assert elapsed_s[climb_rows].nunique() == climb_rows.sum()
