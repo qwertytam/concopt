@@ -902,3 +902,11 @@ def test_advisor_temp_stays_active_skys_below_the_tropopause_or_without_a_sim_re
         inflight._advisor_temp_k(as_temp_k, sim_temp_c=5.0, alt_ft=3_000.0), as_temp_k)
     np.testing.assert_array_equal(
         inflight._advisor_temp_k(as_temp_k, sim_temp_c=None, alt_ft=52_000.0), as_temp_k)
+
+
+def test_sim_paused_only_when_zulu_has_not_moved():
+    assert inflight._sim_paused(1000.0, 1000.0)
+    assert not inflight._sim_paused(1000.0, 1060.0)
+    assert not inflight._sim_paused(None, 1000.0)          # first row after brake release
+    assert not inflight._sim_paused(1000.0, None)          # missing read: still written
+    assert not inflight._sim_paused(1000.0, float("nan"))

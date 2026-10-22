@@ -425,7 +425,9 @@ for its own sake, no defensive error handling.
   elapsed time is SIM time, accumulated from `ZULU_TIME` tick to tick
   (`_SimClock`, modulo a day for the midnight wrap) -- not wall-clock time,
   which the first real recording (2026-10-21) showed P3D falling behind
-  (~87% speed for 12 minutes), and which keeps running through a pause. With `--compare`
+  (~87% speed for 12 minutes), and which keeps running through a pause.
+  While the sim is paused (`ZULU_TIME` unchanged since the last row,
+  `_sim_paused`) no rows are written at all. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release
