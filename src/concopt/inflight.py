@@ -2,8 +2,9 @@
 `concopt inflight`. Reads the sim over SimConnect (python-SimConnect,
 localhost -- P3D and Python are the same machine), projects --lookahead-nm
 ahead along the loaded route, queries Active Sky there exactly the way
-verify.py does (reuses verify._as_atmosphere, never reimplements it), and
-feeds the result to limits.best_level UNCHANGED -- same ceiling, same
+verify.py does (reuses verify._as_atmosphere, never reimplements it) --
+except temperature, which above the tropopause is the sim's own (see
+_advisor_temp_k) -- and feeds the result to limits.best_level UNCHANGED -- same ceiling, same
 limits, same code search.march_legs uses. Real weight (TOTAL_WEIGHT) is
 used directly; there is no burn-off schedule to integrate here.
 
@@ -20,11 +21,17 @@ Libraries\\SimConnect_P3D_v5.dll; Little Navmap's install directory has one
 too). Confirmed live: PLANE_LATITUDE read back correctly with that dll,
 hung indefinitely with the bundled one.
 
-RECORDER: elapsed-since-brake-release is measured off time.monotonic(), not
-ZULU_TIME -- ZULU_TIME (seconds since midnight GMT) wraps at 86400 and a
-flight can span that wrap; wall-clock elapsed time doesn't have that
-problem and is what the comparison actually needs. ZULU_TIME is still
-logged verbatim per row as the absolute reference.
+RECORDER: elapsed-since-brake-release is SIM time, accumulated from
+ZULU_TIME tick to tick (_SimClock) -- not time.monotonic(). The aircraft
+moves in sim time, and P3D does not always keep up with the wall clock:
+the first real recording (2026-10-21) ran at ~87% for its last 12 minutes
+(730 s wall, 639 s ZULU_TIME), which wall-clock elapsed time silently
+charged to the flight, as if the model had been slow. A pause stops the
+clock the same way. ZULU_TIME wraps at 86400 (seconds since midnight GMT)
+and a flight can span that, so each step is taken modulo a day; a tick
+whose ZULU_TIME read failed falls back to wall-clock time since the last
+good read. ZULU_TIME is still logged verbatim per row as the absolute
+reference.
 
 RECORDER SCHEMA (RECORD_COLUMNS / RECORD_SCHEMA_VERSION, written as a
 schema_version column on every row): one row per tick, flat, no nesting --
@@ -86,8 +93,8 @@ from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
                             BRAKE_RELEASE_GS_KT, C_TO_K,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, FASTEST_SCHEDULE_KT, FT_TO_M,
-                            INHG_TO_HPA, LB_TO_KG, LOW_ALT_FT, LOW_ALT_INTERVAL_S,
-                            NM_TO_M, SIMCONNECT_REQUEST_TIME_MS)
+                            INHG_TO_HPA, ISA_H1_M, LB_TO_KG, LOW_ALT_FT, LOW_ALT_INTERVAL_S,
+                            NM_TO_M, SIMCONNECT_REQUEST_TIME_MS, S_PER_DAY)
 from concopt.search import TARGET_FL, _format_hmm
 
 # --- Flight recorder schema --------------------------------------------------
@@ -206,6 +213,38 @@ def _read_state(aq):
     )
 
 
+class _SimClock:
+    """Sim seconds since construction (brake release), from ZULU_TIME --
+    see the module docstring's RECORDER note. elapsed_s is called once per
+    tick, in order: each good ZULU_TIME read adds its step since the last
+    good one (modulo a day, for the midnight wrap); a missing read
+    (None/NaN -- one dropped SimConnect read in the first real recording)
+    answers with wall-clock time since the last good read, scaled by
+    replay_speed like every other wall-clock use in run_inflight, and
+    doesn't move the reference, so the next good read covers the gap from
+    ZULU_TIME alone."""
+
+    def __init__(self, zulu_s, now_s, replay_speed=1.0):
+        self.replay_speed = replay_speed
+        self.base_s = 0.0
+        self.zulu_s = zulu_s if _zulu_ok(zulu_s) else None
+        self.now_s = now_s
+
+    def elapsed_s(self, zulu_s, now_s):
+        if not _zulu_ok(zulu_s):
+            return self.base_s + (now_s - self.now_s) * self.replay_speed
+        if self.zulu_s is None:
+            self.base_s += (now_s - self.now_s) * self.replay_speed
+        else:
+            self.base_s += (zulu_s - self.zulu_s) % S_PER_DAY
+        self.zulu_s, self.now_s = zulu_s, now_s
+        return self.base_s
+
+
+def _zulu_ok(zulu_s):
+    return zulu_s is not None and not np.isnan(zulu_s)
+
+
 def _live_weather_source(host, port):
     """THE SEAM's live weather_source: get_atmosphere_np bound to host/port,
     with get_atmosphere_np's own (lat, lon, alt_ft) -> (alt_ft, wind_dir_deg,
@@ -247,6 +286,28 @@ def _lookahead_atmosphere(weather_source, lat, lon):
     v_ms = -speed_ms * np.cos(dir_rad)
     temp_k = temp_c + C_TO_K
     return temp_k, u_ms, v_ms
+
+
+def _advisor_temp_k(as_temp_k, sim_temp_c, alt_ft):
+    """The FL450-FL600 temperature the advisor's level table runs on: the
+    sim's own AMBIENT_TEMPERATURE at the aircraft, held across the whole
+    grid, once the aircraft is above the ISA tropopause (ISA_H1_M);
+    Active Sky's grid (as_temp_k) below that, or when the sim read failed.
+
+    Active Sky's GetAtmosphere temperature is not what the sim flies in.
+    The first real recording (2026-10-21) had the two 4-5 C apart in
+    cruise, with Active Sky's jumping 5-17 C from one tick to the next
+    (an 11 C step between FL523 and FL528) while the sim's stayed smooth;
+    the sim's own Mach and TAS agreed with its own temperature to within
+    2.5 kt and missed Active Sky's by up to 17 kt. Winds and pressure
+    agreed to a fraction of a knot/hPa, so only temperature is swapped.
+    Holding it constant across the grid is ISA's isothermal layer
+    (11-20 km) -- the same constant ISA deviation at every level; the sim
+    actually cooled ~0.5-0.8 C per 1,000 ft up there, a few degrees off at
+    the far end of the grid, against Active Sky's 5-17 C."""
+    if sim_temp_c is None or alt_ft * FT_TO_M < ISA_H1_M:
+        return as_temp_k
+    return np.full_like(as_temp_k, sim_temp_c + C_TO_K)
 
 
 def _level_table(temp_k, u_ms, v_ms, track_deg, weight_t, cruise_mach, current_fl):
@@ -983,14 +1044,13 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
 
     replay_speed (default 1.0, a real flight) scales every wall-clock use in
     the loop below by the same factor: sleeps are divided by it (so a
-    replay can run faster than real time) and the two elapsed-time
-    measurements below (elapsed_s, touchdown_elapsed_s -- both otherwise
-    time.monotonic() since brake release, per the module docstring's
-    RECORDER note) are multiplied back up by it, so a compressed replay's
-    recording still reports true flight-equivalent seconds rather than the
-    compressed wall-clock duration it actually took to replay. This is a
-    plain scalar, not a third injectable source -- the two callables above
-    are the whole seam.
+    replay can run faster than real time) and _SimClock's wall-clock
+    fallback for a missing ZULU_TIME is multiplied back up by it. Elapsed
+    time itself is sim time from each state's zulu_s (see the module
+    docstring's RECORDER note), which a replay serves from the recorded
+    rows, so it is flight-equivalent seconds without any scaling. This is
+    a plain scalar, not a third injectable source -- the two callables
+    above are the whole seam.
 
     Covered by tests/test_replay.py via the seam above (a live SimConnect +
     Active Sky are never touched there); see compare_to_report and
@@ -1064,7 +1124,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     phase = "ground"
     prev_on_ground = None
     prev_gs_kt = None
-    t0_monotonic = None
+    sim_clock = None
     touchdown_elapsed_s = None
     recorder_note = None  # live panel only -- --no-live prints these as before
     # The live arrival estimate is refreshed at most every ARRIVAL_REFRESH_S
@@ -1091,6 +1151,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
             dist_to_next_nm = max(legs[leg_idx].dist_nm - along_nm, 0.0)
 
             temp_k, u_ms, v_ms = _lookahead_atmosphere(weather_source, la_lat, la_lon)
+            temp_k = _advisor_temp_k(temp_k, state.get("sim_temp_c"), state["alt_ft"])
             current_fl = state["alt_ft"] / 100.0
             table, best_idx, current_idx, binding_at_best = _level_table(
                 temp_k, u_ms, v_ms, track_deg, state["weight_t"], cruise_mach, current_fl)
@@ -1130,15 +1191,10 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                 # flight, replay_speed=1.0, is unaffected).
                 arrival_refresh_at = now_monotonic + ARRIVAL_REFRESH_S / replay_speed
 
-            # *replay_speed: elapsed_s/touchdown_elapsed_s are wall-clock
-            # (time.monotonic()) since brake release, per the module
-            # docstring's RECORDER note -- a replay compresses that wall
-            # clock by replay_speed to run faster than real time, so the
-            # measurement is scaled back up here to report true flight-
-            # equivalent seconds rather than the compressed replay duration
-            # (real flight, replay_speed=1.0, is unaffected).
-            elapsed_s = ((time.monotonic() - t0_monotonic) * replay_speed
-                         if phase in ("recording", "done") else None)
+            # Sim seconds since brake release, once per tick -- see
+            # _SimClock and the module docstring's RECORDER note.
+            elapsed_s = (sim_clock.elapsed_s(state["zulu_s"], time.monotonic())
+                         if sim_clock is not None else None)
             current_gs_kt = float(table["gs_kt"].iloc[current_idx])
             if current_cum_nm < decel_cum_nm:
                 # Still cruising: time to the decel waypoint at the current
@@ -1206,20 +1262,21 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                         or (prev_gs_kt is None and gs_kt >= BRAKE_RELEASE_GS_KT)
                 ):
                     phase = "recording"
-                    t0_monotonic = time.monotonic()
+                    sim_clock = _SimClock(state["zulu_s"], time.monotonic(), replay_speed)
+                    elapsed_s = 0.0
                     recorder_note = f"Brake release detected -- recording to {record_path}"
                     if live_display is None:
                         print(f"\n{recorder_note}")
                 elif phase == "recording" and prev_on_ground is False and state["on_ground"]:
                     phase = "done"
-                    touchdown_elapsed_s = (time.monotonic() - t0_monotonic) * replay_speed
+                    touchdown_elapsed_s = elapsed_s
                     recorder_note = (f"Touchdown detected, elapsed "
                                       f"{_format_hmm(touchdown_elapsed_s)} since brake release")
                     if live_display is None:
                         print(f"\n{recorder_note}")
 
                 if phase in ("recording", "done"):
-                    elapsed_row_s = (time.monotonic() - t0_monotonic) * replay_speed
+                    elapsed_row_s = elapsed_s
                     last_wp = _last_waypoint_passed(waypoint_cum_nm, current_cum_nm)
                     # Active Sky AT THE AIRCRAFT -- a different query from the
                     # lookahead grid above, and the only one comparable to

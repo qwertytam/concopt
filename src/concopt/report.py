@@ -72,7 +72,7 @@ def _weighted_mean(values, weights):
     return float(np.average(values, weights=weights)) if total_w > 0 else np.nan
 
 
-def _waypoint_table(cc_legs, departure_utc_ts, leg):
+def _waypoint_table(cc_legs, departure_utc_ts, leg, climb_cum_nm, climb_elapsed_s):
     """One row per original .pln waypoint spanned by cc_legs (brake release
     through decel point), aggregating each parent leg's subdivided sub-legs
     back up (build_legs gives every sub-leg of a parent the same
@@ -87,12 +87,16 @@ def _waypoint_table(cc_legs, departure_utc_ts, leg):
     returned, already squeezed to this one candidate (1-D arrays, length
     len(cc_legs)).
 
-    A named waypoint that falls entirely inside the climb (there's no
-    profile data below TOP_OF_CLIMB_FL to interpolate a real elapsed
-    time/level at it -- conc_climb.csv only gives the top-of-climb state)
-    shows elapsed_s pinned to the climb's own total time and NaN for
-    everything cruise-specific, with binding "climb" -- see run_report's
-    separate climb-segment printout for where top of climb actually falls."""
+    A named waypoint that falls inside the climb takes its elapsed_s from
+    the climb table's own cumulative ground distance/time
+    (climb_cum_nm/climb_elapsed_s, _climb_ground_profile), interpolated
+    linearly between table levels -- march_legs pins every climb-consumed
+    sub-leg to the top-of-climb time, which put the climb's total time on
+    every waypoint inside it, and inflight --compare's brake-release ->
+    accel check read that back as the prediction. Everything cruise-
+    specific stays NaN there, with binding "climb". leg_time_s is the
+    difference of consecutive elapsed_s, so the leg straddling top of
+    climb carries its climb part too."""
     origin_id = cc_legs[0].from_id
     origin_cum_nm = cc_legs[0].cum_nm - cc_legs[0].dist_nm
 
@@ -117,12 +121,15 @@ def _waypoint_table(cc_legs, departure_utc_ts, leg):
         idx = np.array(list(members))
         last = idx[-1]
         w = leg["eff_dist_nm"][idx]
+        dist_from_origin_nm = cc_legs[last].cum_nm - origin_cum_nm
+        elapsed_s = (float(np.interp(dist_from_origin_nm, climb_cum_nm, climb_elapsed_s))
+                     if dist_from_origin_nm < climb_cum_nm[-1] else float(leg["elapsed_s"][last]))
         rows.append({
             "waypoint": to_id,
             "cum_nm": cc_legs[last].cum_nm,
-            "elapsed_s": leg["elapsed_s"][last],
-            "clock_utc": departure_utc_ts + pd.Timedelta(seconds=float(leg["elapsed_s"][last])),
-            "leg_time_s": leg["leg_time_s"][idx].sum(),
+            "elapsed_s": elapsed_s,
+            "clock_utc": departure_utc_ts + pd.Timedelta(seconds=elapsed_s),
+            "leg_time_s": elapsed_s - rows[-1]["elapsed_s"],
             "chosen_fl": _weighted_mean(leg["chosen_fl"][idx], w),
             "mach": _weighted_mean(leg["mach"][idx], w),
             "tas_kt": _weighted_mean(leg["tas_kt"][idx], w),
@@ -345,7 +352,9 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     climb_time_s = climb_row["time_min"] * 60.0
     climb_ground_nm = climb_row["ground_dist_nm"]
 
-    waypoint_table = _waypoint_table(cc_legs, departure_utc_ts, leg)
+    tow_flown_t = climb_row["mass_t"] + climb_row["fuel_used_kg"] / 1000.0
+    climb_cum_nm, climb_elapsed_s, _alt, _weight = _climb_ground_profile(climb_row, tow_flown_t)
+    waypoint_table = _waypoint_table(cc_legs, departure_utc_ts, leg, climb_cum_nm, climb_elapsed_s)
 
     display = pd.DataFrame({
         "waypoint": waypoint_table["waypoint"],
@@ -487,24 +496,39 @@ def _point(cum_nm, elapsed_s, alt_ft, weight_t, cruise_mach, *, mach=np.nan, tas
                 binding=binding, speed_basis=speed_basis)
 
 
-def _climb_segments(climb_row, tow_t, linnd_nm, cruise_mach):
-    """(phase, p0, p1) tuples for brake release -> top of climb, from conc_climb.csv:
-    one segment per adjacent pair of table levels (the table is cumulative from
-    brake release, so brake release -> FL230 is one straight segment -- the shape
-    below the first row isn't tabulated). Air distance becomes ground distance
-    with the climb's own single proxy wind, the same correction _climb_profile
-    applies (recovered from its ground/air distance, not re-sampled). "climb" is
-    brake release -> LINND (the subsonic limit), "acceleration" LINND -> top of
-    climb; LINND is inserted as an interpolated breakpoint."""
+def _climb_wind_kt(climb_row):
+    """The climb's single proxy wind, recovered from _climb_profile's own
+    ground/air distance rather than re-sampled."""
+    return (climb_row["ground_dist_nm"] - climb_row["dist_nm"]) / (climb_row["time_min"] / 60.0)
+
+
+def _climb_ground_profile(climb_row, tow_t):
+    """(cum_nm, elapsed_s, alt_ft, weight_t) at brake release and each
+    conc_climb.csv level up to top of climb -- cumulative from brake
+    release, air distance turned into ground distance with
+    _climb_wind_kt, the same correction _climb_profile applies. Shared by
+    _climb_segments and _waypoint_table so the profile and the waypoint
+    table read the same climb."""
     levels = CLIMB_LEVELS_FL[CLIMB_LEVELS_FL <= TOP_OF_CLIMB_FL]
     _m, fuel_kg, air_nm, time_min = climb_to(levels, tow_t, climb_row["temp_band"])
-    wind_kt = (climb_row["ground_dist_nm"] - climb_row["dist_nm"]) / (climb_row["time_min"] / 60.0)
-    mean_gs_kt = climb_row["ground_dist_nm"] / (climb_row["time_min"] / 60.0)
-
+    wind_kt = _climb_wind_kt(climb_row)
     cum = np.concatenate([[0.0], air_nm + wind_kt * time_min / 60.0])
     elapsed = np.concatenate([[0.0], time_min * 60.0])
     alt = np.concatenate([[0.0], levels * 100.0])
     weight = np.concatenate([[tow_t], tow_t - fuel_kg / 1000.0])
+    return cum, elapsed, alt, weight
+
+
+def _climb_segments(climb_row, tow_t, linnd_nm, cruise_mach):
+    """(phase, p0, p1) tuples for brake release -> top of climb, from conc_climb.csv:
+    one segment per adjacent pair of table levels (the table is cumulative from
+    brake release, so brake release -> FL230 is one straight segment -- the shape
+    below the first row isn't tabulated; see _climb_ground_profile). "climb" is
+    brake release -> LINND (the subsonic limit), "acceleration" LINND -> top of
+    climb; LINND is inserted as an interpolated breakpoint."""
+    wind_kt = _climb_wind_kt(climb_row)
+    mean_gs_kt = climb_row["ground_dist_nm"] / (climb_row["time_min"] / 60.0)
+    cum, elapsed, alt, weight = _climb_ground_profile(climb_row, tow_t)
 
     if linnd_nm is not None and 0.0 < linnd_nm < cum[-1]:
         i = int(np.searchsorted(cum, linnd_nm))

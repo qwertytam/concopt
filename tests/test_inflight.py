@@ -868,3 +868,37 @@ def test_low_altitude_tick_can_resolve_the_approach_allowance():
 def test_round_or_none_passes_none_through():
     assert inflight._round_or_none(None, 2) is None
     assert inflight._round_or_none(1.23456, 2) == pytest.approx(1.23)
+
+
+def test_sim_clock_follows_zulu_not_the_wall_clock():
+    """The first real recording's sim ran at ~87% for 12 minutes -- elapsed
+    time has to follow the sim, not the wall clock (and stop when paused)."""
+    clock = inflight._SimClock(zulu_s=1000.0, now_s=0.0)
+    assert clock.elapsed_s(1043.0, 60.0) == pytest.approx(43.0)   # sim slower than wall
+    assert clock.elapsed_s(1043.0, 120.0) == pytest.approx(43.0)  # paused
+
+
+def test_sim_clock_crosses_midnight():
+    clock = inflight._SimClock(zulu_s=86_390.0, now_s=0.0)
+    assert clock.elapsed_s(20.0, 30.0) == pytest.approx(30.0)
+
+
+def test_sim_clock_bridges_a_missing_zulu_read_without_double_counting():
+    clock = inflight._SimClock(zulu_s=1000.0, now_s=0.0, replay_speed=2.0)
+    assert clock.elapsed_s(None, 5.0) == pytest.approx(10.0)         # wall clock, scaled
+    assert clock.elapsed_s(float("nan"), 6.0) == pytest.approx(12.0)
+    assert clock.elapsed_s(1014.0, 7.0) == pytest.approx(14.0)       # back on zulu, from 1000
+
+
+def test_advisor_temp_is_the_sims_above_the_tropopause():
+    as_temp_k = np.linspace(210.0, 220.0, len(TARGET_FL))
+    out = inflight._advisor_temp_k(as_temp_k, sim_temp_c=-58.0, alt_ft=52_000.0)
+    np.testing.assert_allclose(out, -58.0 + 273.15)
+
+
+def test_advisor_temp_stays_active_skys_below_the_tropopause_or_without_a_sim_read():
+    as_temp_k = np.linspace(210.0, 220.0, len(TARGET_FL))
+    np.testing.assert_array_equal(
+        inflight._advisor_temp_k(as_temp_k, sim_temp_c=5.0, alt_ft=3_000.0), as_temp_k)
+    np.testing.assert_array_equal(
+        inflight._advisor_temp_k(as_temp_k, sim_temp_c=None, alt_ft=52_000.0), as_temp_k)
