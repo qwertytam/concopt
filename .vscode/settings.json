@@ -20,5 +20,8 @@
   "files.watcherExclude": {
     "**/.venv/**": true,
     "**/data/era5*/**": true
+  },
+  "terminal.integrated.env.windows": {
+  "PATH": "${workspaceFolder}\\.venv\\Scripts;${env:PATH}"
   }
 }
