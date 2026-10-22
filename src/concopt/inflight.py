@@ -30,8 +30,8 @@ charged to the flight, as if the model had been slow. A pause stops the
 clock the same way. ZULU_TIME wraps at 86400 (seconds since midnight GMT)
 and a flight can span that, so each step is taken modulo a day; a tick
 whose ZULU_TIME read failed falls back to wall-clock time since the last
-good read. ZULU_TIME is still logged verbatim per row as the absolute
-reference.
+good read. While paused, no rows are written at all (_sim_paused). ZULU_TIME
+is still logged verbatim per row as the absolute reference.
 
 RECORDER SCHEMA (RECORD_COLUMNS / RECORD_SCHEMA_VERSION, written as a
 schema_version column on every row): one row per tick, flat, no nesting --
@@ -239,6 +239,16 @@ class _SimClock:
             self.base_s += (zulu_s - self.zulu_s) % S_PER_DAY
         self.zulu_s, self.now_s = zulu_s, now_s
         return self.base_s
+
+
+def _sim_paused(last_row_zulu_s, zulu_s):
+    """True when ZULU_TIME hasn't moved since the last recorded row: the
+    sim is paused, and the recorder skips the row rather than writing the
+    same frozen state once a tick for as long as the pause lasts (which
+    would count a 5-minute pause as five more advisor ticks in the
+    post-flight notebook's Q4). A missing read is not a pause -- that row
+    is still written, on _SimClock's wall-clock fallback."""
+    return _zulu_ok(zulu_s) and zulu_s == last_row_zulu_s
 
 
 def _zulu_ok(zulu_s):
@@ -1125,6 +1135,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     prev_on_ground = None
     prev_gs_kt = None
     sim_clock = None
+    last_row_zulu_s = None  # the ZULU_TIME of the last row written -- see _sim_paused
     touchdown_elapsed_s = None
     recorder_note = None  # live panel only -- --no-live prints these as before
     # The live arrival estimate is refreshed at most every ARRIVAL_REFRESH_S
@@ -1275,7 +1286,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                     if live_display is None:
                         print(f"\n{recorder_note}")
 
-                if phase in ("recording", "done"):
+                if phase in ("recording", "done") and not _sim_paused(last_row_zulu_s, state["zulu_s"]):
+                    last_row_zulu_s = state["zulu_s"]
                     elapsed_row_s = elapsed_s
                     last_wp = _last_waypoint_passed(waypoint_cum_nm, current_cum_nm)
                     # Active Sky AT THE AIRCRAFT -- a different query from the

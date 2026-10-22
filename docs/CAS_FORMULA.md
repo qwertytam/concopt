@@ -1,6 +1,9 @@
-### Symbols ###
-| Symbol           | Description                                    |
-|------------------|------------------------------------------------|
+# Calibrated Air Speed Formula
+
+## Symbols
+
+| Symbol | Description |
+| ------------------ | ------------------------------------------------ |
 | $p$ | static ambient pressure |
 | $p_0$ | sea level standard atmosphere pressure |
 | $p_t$ | total or stagnation pressure at mouth of pitot tube |
@@ -8,15 +11,16 @@
 | $\Delta p$ or $q_c$ | impact or dynamic pressure |
 | $\rho$ | air density |
 | $\gamma$ | ratio of specific heats aka adiabatic index; $1.400$ for standard atmosphere dry air |
-| $a$ | ambient speed of sound |
+| $a$  | ambient speed of sound |
 | $h$ | geopotential altitude above mean sea level; altitude as measured by altimeter; altimeter calibration is based on standard atmosphere for $p$ |
-| $a_0$ | sea level standard atmosphere speed of sound |
+| $a_0$  | sea level standard atmosphere speed of sound |
 | $V_c$ | calibrated air speed |
 | $V_t$ | true air speed |
 
-### Formula ###
-| Formula                 | Eq. | Description                     |
-|-------------------------|--------|---------------------------------|
+## Formula
+
+| Formula | Eq. | Description |
+| ------------------------- | -------- | --------------------------------- |
 | $p = \rho R T$ | (1) | Equation of state for atmosphere |
 | $\Delta p = p_t - p$ rearranged $p_t = \Delta p + p$ | (2) | pressure difference aka impact pressure which is what is measured by the airspeed indicator; see Eq. (16) for Mach meter equivalent |
 | $\frac{\gamma}{\gamma-1}\frac{p}{\rho}+\frac{1}{2}V^2 = constant = \frac{\gamma}{\gamma-1}\frac{p_t}{\rho_t}$ | (3) | from Bernouili's equation for compressible fluid flow; assumes air brought to rest at the stagnation point, where $V=0$ adiabatically; for subsonic speeds, stagation conditions are reached isentropically |
@@ -38,8 +42,10 @@
 | $\frac{\Delta p}{p_0} = [1 + 0.2(\frac{V_c}{a_0})^2]^{3.5} - 1$ | (19) | for subsonic speeds and $\gamma = 1.400$; rearrangement of Eq. (11) |
 | $\frac{\Delta p}{p_0} = \frac{166.92158 (V_c/a_0)^7}{[7 (V_c/a_0)^2 - 1]^{2.5}} - 1$ | (20) | for supersonic speeds and $\gamma = 1.400$ |
 
-### Calculation of Calibrated Air Speed and Mach number ###
-#### Example 1 ####
+## Calculation of Calibrated Air Speed and Mach number
+
+### Example 1
+
 For $h=36,089 ft$, $p/p_0 = 0.223361$ with $p_0 = 1.01325 \times 10^5 N/m^2$, for a known $Vc$ and $a_0$ $\Delta p$ can be calculated using Eq. (15) for subsonic speeds and (18) for supersonic.
 
 | $V_c (kt)$ | 200 | 400 | 600 | 800 | 1000 |
@@ -51,23 +57,25 @@ With $\Delta p$ known, the Mach number $M$ can be calculated from Eq. (15) for s
 In the standard atmosphere the temperature, speed of sound, pressure and density can all be calculated as follows.
 
 | Parameter | $h \lt 11,000m$ | $11,000m \leq h \lt 20,000m$ |
-|-----------|-----------------|-------------------------|
+| ----------- | ----------------- | ------------------------- |
 | Temperature | $\frac{T}{T_0} = 1 - \frac{6.5 \times 10^{-3}}{288.150}h$ | $T=T_*=216.650 deg K$ |
 | Speed of sound | $\frac{a}{a_0} = (\frac{T}{T_0})^{0.5}$ | $a=a_*=295.070 m/s$ |
 | Pressure | $\frac{p}{p_0} = (\frac{T}{T_0})^{5.2558774}$ | $\frac{p}{p_0} = 0.223361 \times exp(-\frac{h-11000}{6341.6184})$ |
 | Density | $\frac{\rho}{\rho_0} = (\frac{T}{T_0})^{4.2558774}$ | $\frac{\rho}{\rho_0} = 0.297076 \times exp(-\frac{h-11000}{6341.6184})$ |
 
-#### Example 2 ####
+### Example 2
+
 For $h=11,000m$, then $p = 22632 N/m^2$ and $a=295.070 m/s$
 
 | Parameter | $V_c=200 kt$ | $Vc=400 kt$ |
-|-----------|--------------|-------------|
+| ----------- | -------------- | ------------- |
 | $\Delta p$ | $6634 N/m^2$ | $28395 N/m^2$ |
 | $\frac{\Delta p}{p}$ | $\frac{6634}{22632}=0.293125$ | $\frac{28395}{22632}=1.254639$ |
 | $M$ | $0.617$ using Eq. (15) | $1.1458$ using Eq. (18) since $\frac{\Delta p}{p} \gt 0.893$ |
 | $V$ | $182.058 m/s$ | $338.09 m/s$ |
 
-#### General Algorithim for Calculating Mach number from Calibrated Air Speed ####
+## General Algorithim for Calculating Mach number from Calibrated Air Speed
+
 1. Get $Vc$, $T$ and $h$ for current conditions
 2. Calculate $a$ and $p$ based on above
 3. Use Eq. (19) to calculate $\Delta p/p_0$; if result is $\gt 0.893$ then use result from Eq. (20)
@@ -76,7 +84,8 @@ For $h=11,000m$, then $p = 22632 N/m^2$ and $a=295.070 m/s$
 6. If result from step 5 is $\gt 0.893$ then use Eq. (18) to calculate $M$; else use Eq. (15)
 7. To solve step 6 we need to iterate on values of $M$ to minimize $abs(p_{ratio} - [M_{15},M_{18}])$ where $[M_{15},M_{18}]$ are the outputs of Eq. (15) or (18) as appropiate
 
-#### General Algorithim for Calculating Calibrated Air Speed from Mach number from ####
+### General Algorithim for Calculating Calibrated Air Speed from Mach number from
+
 1. Get $M$, $T$ and $h$ for current conditions
 2. Calculate $a$ and $p$ based on above
 3. Use Eq. (15) to calculate $\Delta p/p$; if result is $\gt 0.893$ then use result from Eq. (18)
