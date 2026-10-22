@@ -51,8 +51,8 @@ poetry run concopt shortlist --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --sub
 ## 5. Generate full per-leg plan report for the selected winning day time
 
 ```bat
-SET DATE=2026-01-21
-SET LOCAL_HOUR=14
+SET DATE=2016-02-12
+SET LOCAL_HOUR=13
 ```
 
 ```bat
