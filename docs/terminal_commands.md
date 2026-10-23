@@ -57,13 +57,13 @@ poetry run python scripts/build_npz.py --pln %PLN% --decel %DECL%
 ## 3. Shortlist best departures
 
 ```bat
-poetry run concopt search --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --top %TOP_N% --out %RESULTS_FILE% --out-all %RESULTS_ALL_FILE%
+poetry run concopt search --pln %PLN% --decel %DECL% --thrust-reversers --npz %ROUTE_LEGS% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --top %TOP_N% --out %RESULTS_FILE% --out-all %RESULTS_ALL_FILE%
 ```
 
 ## 4. Verify against ActiveSky
 
 ```bat
-poetry run concopt shortlist --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --search-csv %RESULTS_FILE% --top %TOP_N%
+poetry run concopt shortlist --pln %PLN% --decel %DECL% --thrust-reversers --npz %ROUTE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --search-csv %RESULTS_FILE% --top %TOP_N%
 ```
 
 ## 5. Generate full per-leg plan report for the selected winning day time
@@ -77,11 +77,11 @@ SET LOCAL_HOUR=08
 ```
 
 ```bat
-poetry run concopt report --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --date %DEP_DATE% --hour %LOCAL_HOUR% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --out %REPORT_SELECTED_DAYTIME_FILE%
+poetry run concopt report --pln %PLN% --decel %DECL% --thrust-reversers --npz %ROUTE_LEGS% --date %DEP_DATE% --hour %LOCAL_HOUR% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --out %REPORT_SELECTED_DAYTIME_FILE%
 ```
 
 ## 6. Running in flight
 
 ```bat
-poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE%
+poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE%
 ```
