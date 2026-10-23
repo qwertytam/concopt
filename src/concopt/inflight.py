@@ -628,6 +628,8 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl,
     return dict(
         time_min=float(out["time_min"][0]),
         decel_nm=float(out["decel_nm"][0]),
+        level_nm=float(out["level_nm"][0]),
+        descent_nm=float(out["descent_nm"][0]),
         decel_time_min=float(out["decel_time_min"][0]),
         transition_time_min=float(out["transition_time_min"][0]),
         level_time_min=float(out["level_time_min"][0]),
@@ -665,11 +667,12 @@ def _build_arrival_text(arrival_info):
         )
     return Text(
         f"Arrival (to touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
-        f"  decel {arrival_info['decel_time_min']:.1f} min\n"
-        f"  level {arrival_info['level_time_min']:.1f} min  FL{arrival_info['level_fl']:.0f}, "
-        f"{arrival_info['level_wind_kt']:+.0f} kt\n"
-        f"  descent {arrival_info['descent_time_min']:.1f} min  /  approach "
-        f"{arrival.APPROACH_MIN:.1f} min"
+        f"  decel {arrival_info['decel_time_min']:.1f} min  {arrival_info['decel_nm']:.0f} nm "
+        f"(subsonic by the decel waypoint)\n"
+        f"  level {arrival_info['level_time_min']:.1f} min  {arrival_info['level_nm']:.0f} nm  "
+        f"FL{arrival_info['level_fl']:.0f}, {arrival_info['level_wind_kt']:+.0f} kt\n"
+        f"  descent {arrival_info['descent_time_min']:.1f} min  {arrival_info['descent_nm']:.0f} nm"
+        f"  /  approach {arrival.APPROACH_MIN:.1f} min  {arrival.APPROACH_NM:.0f} nm"
     )
 
 
