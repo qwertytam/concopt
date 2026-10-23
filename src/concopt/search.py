@@ -9,6 +9,7 @@ candidates at once and collapses the result to means, report.run_report
 calls it for a single candidate and keeps every per-leg quantity.
 """
 import datetime as dt
+import time
 from pathlib import Path
 
 import numpy as np
@@ -529,6 +530,7 @@ def resolve_tow_and_arrival(
     cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
     tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
     cruise_mach=limits.CRUISE_MACH, arrival_upper_data=None, thrust_reversers=False,
+    progress=None,
 ):
     """Shared by run_search/run_report/verify.run_verify: solves TOW (fixed
     point on zfw_t, or the flat tow_t override) and the arrival segment
@@ -578,7 +580,7 @@ def resolve_tow_and_arrival(
                 cc_legs, cc_idx, data, dep_i8, zfw_arr, arrival_nm, wind_fn_builder,
                 min_landing_fuel_t=min_landing_fuel_t,
                 march_legs_fn=march_legs, arrival_fn=arrival_fn, cruise_mach=cruise_mach,
-                thrust_reversers=thrust_reversers,
+                thrust_reversers=thrust_reversers, progress=progress,
             )
         )
     else:
@@ -655,6 +657,12 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
     arrival_legs = [legs[i] for i in arrival_idx]
     arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
 
+    t_start = time.monotonic()
+
+    def status(msg):
+        print(f"[{time.monotonic() - t_start:6.1f}s] {msg}", flush=True)
+
+    status("Loading ERA5 leg files...")
     data = load_legs_npz(npz_path)
     surface_data = load_surface_npz(surface_npz_path)
     subsonic_data = load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None
@@ -665,6 +673,9 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
+    how = ("fixed TOW override" if tow_t is not None
+           else f"solving TOW from ZFW, up to {fuel.DEFAULT_MAX_ITERATIONS} passes")
+    status(f"Marching {n_cand} candidate departures over {len(cc_legs)} legs ({how})...")
     tow_override_t = tow_t
     tow_t, _n_iterations, fuel_flags, legs_out, _weight_per_leg, climb, arrival_out = (
         resolve_tow_and_arrival(
@@ -673,8 +684,10 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
             cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
             thrust_reversers=thrust_reversers,
+            progress=lambda msg: status(msg.strip()),
         )
     )
+    status("Screening runways and ranking...")
     chosen_fl = legs_out["chosen_fl"]
     wind_kt = legs_out["wind_kt"]
     isa_dev_k = legs_out["isa_dev_k"]
