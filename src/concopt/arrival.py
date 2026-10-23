@@ -1,16 +1,26 @@
-"""Arrival model: decel waypoint (BARIX) to touchdown.
+"""Arrival model: the deceleration, then decel waypoint to touchdown.
 
-Replaces the flat 35 min / 2.0 t placeholder. Four segments
-covering a ground distance fixed by the route:
+The decel waypoint is where the aircraft must be SUBSONIC BY -- the
+deceleration ends there, it doesn't start there. So the decel is flown over
+the last decel_nm of the climb+cruise span, and the supersonic cruise the
+march credited over that stretch is backed out (march_tail, see arrival()).
+Four segments:
 
-  1. decel    cruise Mach -> M1.0, cruise_fl -> decel_end_fl  (conc_descent.csv)
+  1. decel    cruise Mach -> M1.0, cruise_fl -> decel_end_fl, ENDING at the
+              decel waypoint                                   (conc_descent.csv)
   2. level    M0.95 at decel_end_fl, for whatever distance is left over
               (conc_subsonic_cruise.csv, indexed by the mass actually
-              flying it -- mass_at_barix_t minus the decel burn, not TOW)
+              flying it -- the mass at decel start minus the decel burn, not TOW)
   3. descent  decel_end_fl -> 1,500 ft                        (conc_descent.csv)
   4. approach 1,500 ft -> touchdown, a fixed allowance
 
-      level_nm = arrival_nm - decel_nm - descent_nm - APPROACH_NM
+      level_nm = arrival_nm - descent_nm - APPROACH_NM
+
+where arrival_nm is the route distance from the decel waypoint to touchdown.
+time_min/fuel_t are NET of the replaced cruise -- measured from the march's
+own arrival at the decel waypoint -- so a caller's march total plus
+time_min is still brake release to touchdown, and the fuel split still adds
+up, without either caller knowing where the decel started.
 
 `conc_data.descent_direct_from_cruise` is deliberately NOT used: it reaches
 1,500 ft in ~194 nm and this route has ~307, which would leave ~113 nm of
@@ -39,10 +49,12 @@ _SEGMENT_KEYS = (
     "decel_time_min", "level_time_min", "descent_time_min",
     "decel_fuel_t", "level_fuel_t", "descent_fuel_t", "level_wind_kt",
     "decel_wind_kt", "descent_wind_kt",
+    "replaced_cruise_time_min", "replaced_cruise_fuel_t", "mass_at_decel_start_t",
+    "after_waypoint_time_min",
 )
 
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
-              "level_mass_outside_envelope", "wind_fl_clamped")
+              "level_mass_outside_envelope", "wind_fl_clamped", "decel_starts_before_cruise")
 
 
 def _band_is_warm(isa_dev_at_cruise):
@@ -92,7 +104,7 @@ def _table_by_band(fn, level_fl, speed_kt, warm, keys):
 
 
 def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand,
-                        mass_at_barix_t):
+                        mass_at_barix_t, march_tail):
     """One descent speed schedule, vectorised over every candidate at once."""
     cols = ("fuel_t", "time_min", "dist_zero_wind_nm")
 
@@ -111,6 +123,16 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         decel["dist_zero_wind_nm"], decel["time_min"], decel_wind
     )
 
+    # The decel ENDS at the waypoint, so it replaces the march's own last
+    # decel_nm of supersonic cruise -- per schedule, since decel_nm is.
+    mass_at_barix_t = np.broadcast_to(np.asarray(mass_at_barix_t, float), (n_cand,))
+    if march_tail is None:
+        replaced_s = np.zeros(n_cand)
+        mass_at_decel_start_t = mass_at_barix_t
+        decel_starts_before_cruise = np.zeros(n_cand, bool)
+    else:
+        replaced_s, mass_at_decel_start_t, decel_starts_before_cruise = march_tail(decel_nm)
+
     # --- 3. descent: decel_end_fl -> 1,500 ft ------------------------------
     # Computed before the level segment because level_nm is the leftover.
     descent = _table_by_band(
@@ -123,7 +145,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     )
 
     # --- 2. level: M0.95 at decel_end_fl for the leftover distance ---------
-    level_nm_raw = arrival_nm - APPROACH_NM - decel_nm - descent_nm
+    level_nm_raw = arrival_nm - APPROACH_NM - descent_nm
     level_nm_clamped = level_nm_raw < 0.0
     level_nm = np.maximum(level_nm_raw, 0.0)
 
@@ -145,13 +167,11 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     level_gs_nonpositive &= level_nm > 0.0
 
     # MASS IS THE TRAP: the subsonic table is indexed by aircraft mass, and
-    # the aircraft reaches the level segment at roughly mass_at_barix_t minus
-    # the decel burn (~105-120 t), not TOW (~160-185 t) and not
-    # mass_at_barix_t untouched either -- reading it at the wrong mass here
-    # silently halves the specific range and doubles level_fuel_t.
-    mass_at_level_t = np.broadcast_to(
-        np.asarray(mass_at_barix_t, float), (n_cand,)
-    ) - decel["fuel_t"]
+    # the aircraft reaches the level segment at the mass at decel start minus
+    # the decel burn (~105-120 t), not TOW (~160-185 t) and not that mass
+    # untouched either -- reading it at the wrong mass here silently halves
+    # the specific range and doubles level_fuel_t.
+    mass_at_level_t = mass_at_decel_start_t - decel["fuel_t"]
     isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * FT_TO_M)
     isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
     subsonic = conc_data.subsonic_cruise(decel_end_fl, mass_at_level_t, isa_dev_c_at_level)
@@ -212,21 +232,32 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         "level_mass_outside_envelope": level_mass_outside_envelope,
         "wind_fl_clamped": wind_fl_clamped,
         "descent_wind_clamped": descent_wind_clamped,
+        "replaced_cruise_time_min": replaced_s / 60.0,
+        "replaced_cruise_fuel_t": mass_at_decel_start_t - mass_at_barix_t,
+        "mass_at_decel_start_t": np.asarray(mass_at_decel_start_t, float),
+        "decel_starts_before_cruise": np.asarray(decel_starts_before_cruise, bool),
     }
+    out["after_waypoint_time_min"] = (
+        out["level_time_min"] + out["descent_time_min"] + APPROACH_MIN
+    )
     out["time_min"] = (
-        out["decel_time_min"] + out["level_time_min"]
-        + out["descent_time_min"] + APPROACH_MIN
+        out["decel_time_min"] + out["after_waypoint_time_min"]
+        - out["replaced_cruise_time_min"]
     )
     out["fuel_t"] = (
         out["decel_fuel_t"] + out["level_fuel_t"]
         + out["descent_fuel_t"] + APPROACH_FUEL_T
+        - out["replaced_cruise_fuel_t"]
     )
     return out
 
 
 def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-            mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=FASTEST_SCHEDULE_KT):
-    """Arrival time and fuel from the decel waypoint to touchdown.
+            mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=FASTEST_SCHEDULE_KT,
+            march_tail=None):
+    """Arrival time and fuel, net of the cruise the deceleration replaces:
+    measured from the march's own arrival at the decel waypoint to
+    touchdown (see the module docstring).
 
     Vectorised across candidates throughout: every argument is a (n_cand,)
     array (scalars broadcast) and every returned array is (n_cand,).
@@ -234,7 +265,8 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
     Args:
         cruise_fl: cruise flight level. Clamped to 470-600, the decel table's
             span, and flagged where clamping bit.
-        arrival_nm: ground distance from the decel waypoint to touchdown. Comes
+        arrival_nm: ground distance from the decel waypoint (where the
+            aircraft must be subsonic by) to touchdown. Comes
             from the route -- sum the post-decel legs; do NOT pass a constant,
             since the .pln is a command-line input and can change.
         wind_at_fl: callable taking a (n_cand,) array of flight levels and
@@ -249,8 +281,10 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
         isa_dev_at_cruise: ISA deviation in the arrival area at cruise level,
             °C. Picks the descent temperature band (two bands, not the climb
             table's three).
-        mass_at_barix_t: aircraft mass (t) AT THE DECEL WAYPOINT, before the
-            decel burn -- search.py's march calls this weight_at_barix.
+        mass_at_barix_t: aircraft mass (t) the march arrived at the decel
+            waypoint with -- search.py's march calls this weight_at_barix.
+            With march_tail, the mass at decel START comes from march_tail
+            instead and this only prices the replaced cruise fuel.
             MASS IS THE TRAP: the subsonic cruise table (conc_data.
             subsonic_cruise) that prices the level segment is indexed by the
             mass actually flying it, which is mass_at_barix_t minus that
@@ -281,13 +315,23 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             fuel._arrival_from_march) request "auto", not this default.
             325/350 force the other two. Use `by_schedule` to re-decide on
             *total* time instead of arrival time.
+        march_tail: callable(back_nm (n_cand,)) -> (time_s, mass_t,
+            beyond_cruise), the march's own time and mass back_nm before
+            the decel waypoint (fuel.march_tail). Each schedule's decel_nm
+            is backed out of the march with it. None means nothing is
+            backed out -- the decel is simply added on, at
+            mass_at_barix_t -- for tests that don't model a march.
 
     Returns:
         dict with (n_cand,) arrays:
-            time_min, fuel_t, schedule_kt, level_fl, level_nm,
-            decel_nm, descent_nm,
+            time_min, fuel_t (both NET of the replaced cruise),
+            schedule_kt, level_fl, level_nm, decel_nm, descent_nm,
             decel_time_min, level_time_min, descent_time_min,
             decel_fuel_t, level_fuel_t, descent_fuel_t,
+            replaced_cruise_time_min, replaced_cruise_fuel_t (the march's
+            own time/fuel over the decel_nm the decel replaces),
+            mass_at_decel_start_t, after_waypoint_time_min (level +
+            descent + approach: decel waypoint -> touchdown),
             flags (str, "" when clean; names joined by ";")
         plus per-flag booleans level_nm_clamped / cruise_fl_clamped /
         level_gs_nonpositive / level_mass_outside_envelope /
@@ -298,6 +342,10 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
     Flags rather than exceptions:
         level_nm_clamped      descent did not fit the available distance;
                               level_nm clamped to 0
+        decel_starts_before_cruise
+                              decel_nm is longer than the whole cruise
+                              (top of climb -> decel waypoint); the decel is
+                              backed out of the cruise only, not the climb
         cruise_fl_clamped     cruise_fl outside the decel table's 470-600
         level_gs_nonpositive  headwind >= M0.95 TAS; level_time_min AND
                               level_fuel_t (so fuel_t) are inf (B8 -- fuel
@@ -367,7 +415,7 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
 
     by_schedule = {
         spd: _arrival_for_speed(
-            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t
+            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t, march_tail
         )
         for spd in SCHEDULES_KT
     }
@@ -399,7 +447,7 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
 
     flags = {"cruise_fl_clamped": cruise_fl_clamped}
     for key in ("level_nm_clamped", "level_gs_nonpositive", "level_mass_outside_envelope",
-                "wind_fl_clamped", "descent_wind_clamped"):
+                "wind_fl_clamped", "descent_wind_clamped", "decel_starts_before_cruise"):
         picked = by_schedule[SCHEDULES_KT[0]][key]
         for spd in SCHEDULES_KT[1:]:
             picked = np.where(schedule_kt == spd, by_schedule[spd][key], picked)

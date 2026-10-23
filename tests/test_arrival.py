@@ -45,6 +45,28 @@ def _still_air(n=1, isa_dev_c=0.0):
 
 
 ROUTE_NM = 307.0  # JFK->LHR post-decel distance, for reference cases
+SHORT_NM = 50.0   # shorter than any descent: level_nm clamps to 0
+
+
+def _after_decel_nm(route_nm, cruise_fl, speed, band):
+    """route_nm less the zero-wind decel distance: the arrival_nm that
+    reproduces a reference case written when the decel STARTED at the decel
+    waypoint (and so came out of route_nm), now that it ends there."""
+    return route_nm - conc_data.decel_to_mach1(
+        np.array([cruise_fl]), speed, band)["dist_zero_wind_nm"][0]
+
+
+def _cruise_tail(gs_kt=1250.0, burn_t_per_h=22.0):
+    """A march_tail for a march cruising at a constant gs_kt and burn rate,
+    arriving at the decel waypoint at DEFAULT_MASS_AT_BARIX_T: each schedule
+    backs its own decel_nm out of the same cruise, so schedules compare on
+    net time and fuel the way real callers see them."""
+    def march_tail(back_nm):
+        back_nm = np.asarray(back_nm, float)
+        hours = back_nm / gs_kt
+        return (hours * 3600.0, arrival.DEFAULT_MASS_AT_BARIX_T + burn_t_per_h * hours,
+                np.zeros(back_nm.shape, bool))
+    return march_tail
 
 
 class TestSegmentsSum:
@@ -52,13 +74,14 @@ class TestSegmentsSum:
 
     @pytest.mark.parametrize("speed", arrival.SCHEDULES_KT)
     def test_distances_sum_to_arrival_less_approach(self, speed):
-        """decel_nm + level_nm + descent_nm == arrival_nm - APPROACH_NM."""
+        """level_nm + descent_nm == arrival_nm - APPROACH_NM: the decel ends
+        AT the decel waypoint, so it isn't part of arrival_nm."""
         arrival_nm = np.array([260.0, 307.0, 350.0])
         isa_dev = np.array([5.0, -15.0, 0.0])
         r = arrival.arrival(
             550.0, arrival_nm, Wind(np.zeros(3), isa_dev), isa_dev, speed=speed
         )
-        total = r["decel_nm"] + r["level_nm"] + r["descent_nm"]
+        total = r["level_nm"] + r["descent_nm"]
         assert np.allclose(total, arrival_nm - arrival.APPROACH_NM, atol=0.1)
 
     @pytest.mark.parametrize("speed", arrival.SCHEDULES_KT)
@@ -90,7 +113,8 @@ class TestZeroWindReference:
             np.array([600.0]), 380, arrival.BAND_WARM
         )["fuel_t"][0]
         mass_at_barix_t = 110.0 + decel_fuel_t  # -> 110 t at level-off
-        r = arrival.arrival(600.0, np.array([ROUTE_NM]), w, np.array([15.0]),
+        arrival_nm = _after_decel_nm(ROUTE_NM, 600.0, 380, arrival.BAND_WARM)
+        r = arrival.arrival(600.0, np.array([arrival_nm]), w, np.array([15.0]),
                             mass_at_barix_t=mass_at_barix_t, speed=380)
         assert 30.6 * 0.9 < r["time_min"][0] < 30.6 * 1.1
         assert 4.5 * 0.9 < r["fuel_t"][0] < 4.5 * 1.1
@@ -98,7 +122,8 @@ class TestZeroWindReference:
     def test_beats_the_placeholder_it_replaces(self):
         """The whole point: the old flat 2.0 t was ~4.8 t light."""
         w = _still_air(1, isa_dev_c=0.0)
-        r = arrival.arrival(580.0, np.array([ROUTE_NM]), w, np.array([0.0]))
+        arrival_nm = _after_decel_nm(ROUTE_NM, 580.0, 380, arrival.BAND_WARM)
+        r = arrival.arrival(580.0, np.array([arrival_nm]), w, np.array([0.0]))
         assert r["fuel_t"][0] > 4.0
         assert 25.0 < r["time_min"][0] < 40.0
 
@@ -215,11 +240,13 @@ class TestAutoSchedule:
 
     def test_faster_schedule_costs_fuel(self):
         """380 kt buys time and pays for it in fuel -- the trade the caller
-        has to resolve against the climb."""
+        has to resolve against the climb. Compared net of the cruise each
+        schedule's decel replaces (_cruise_tail), as real callers see it."""
         isa_dev = np.zeros(1)
         got = {
             s: arrival.arrival(
-                580.0, np.array([ROUTE_NM]), _still_air(1), isa_dev, speed=s
+                580.0, np.array([ROUTE_NM]), _still_air(1), isa_dev, speed=s,
+                march_tail=_cruise_tail(),
             )
             for s in arrival.SCHEDULES_KT
         }
@@ -236,7 +263,7 @@ class TestFlags:
     """Flags, never exceptions."""
 
     def test_short_arrival_clamps_level_nm_and_flags(self):
-        r = arrival.arrival(550.0, np.array([150.0]), _still_air(1),
+        r = arrival.arrival(550.0, np.array([SHORT_NM]), _still_air(1),
                             np.zeros(1), speed=325)
         assert r["level_nm"][0] == 0.0
         assert r["level_nm_clamped"][0]
@@ -285,7 +312,7 @@ class TestFlags:
         assert np.isinf(r["fuel_t"][0])
 
     def test_flags_can_combine(self):
-        r = arrival.arrival(650.0, np.array([150.0]), _still_air(1),
+        r = arrival.arrival(650.0, np.array([SHORT_NM]), _still_air(1),
                             np.zeros(1), speed=325)
         assert "cruise_fl_clamped" in r["flags"][0]
         assert "level_nm_clamped" in r["flags"][0]
@@ -403,7 +430,7 @@ class TestSubsonicMass:
         there's no level segment to price."""
         isa_dev = np.zeros(1)
         w = _still_air(1)
-        r = arrival.arrival(550.0, np.array([150.0]), w, isa_dev,
+        r = arrival.arrival(550.0, np.array([SHORT_NM]), w, isa_dev,
                             mass_at_barix_t=200.0, speed=325)
         assert r["level_nm_clamped"][0]
         assert r["level_fuel_t"][0] == 0.0
@@ -418,7 +445,7 @@ class TestSubsonicMass:
         contradicting level_fuel_t's own already-zeroed value."""
         isa_dev = np.zeros(1)
         w = _still_air(1)
-        r = arrival.arrival(550.0, np.array([150.0]), w, isa_dev,
+        r = arrival.arrival(550.0, np.array([SHORT_NM]), w, isa_dev,
                             mass_at_barix_t=200.0, speed=325)
         assert r["level_nm"][0] == 0.0
         assert not r["level_mass_outside_envelope"][0]

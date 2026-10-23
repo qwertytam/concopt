@@ -583,7 +583,8 @@ def resolve_tow_and_arrival(
     else:
         legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
                                                         tow_t, cruise_mach)
-        arrival_out = fuel._arrival_from_march(legs_out, arrival_nm, wind_fn_builder, arrival_fn)
+        arrival_out = fuel._arrival_from_march(legs_out, weight_per_leg, arrival_nm,
+                                               wind_fn_builder, arrival_fn)
         tow_out = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,)).copy()
         n_iterations = None
         # Loaded TOW vs what this ZFW's trip actually needs (zfw + trip fuel +

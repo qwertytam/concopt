@@ -365,16 +365,21 @@ def test_report_arrival_s_raises_on_missing_column():
 
 
 def test_live_arrival_returns_a_segment_breakdown():
+    gs_kt = 1250.0
     info = inflight._live_arrival(cruise_fl=550.0, arrival_nm=307.0, isa_dev_c=0.0,
-                                   mass_at_barix_t=118.0, wind_at_fl=_synthetic_wind_at_fl)
+                                   mass_at_barix_t=118.0, wind_at_fl=_synthetic_wind_at_fl,
+                                   gs_kt=gs_kt)
     assert info["source"] == "live"
     assert info["time_min"] > 0.0
     assert info["decel_time_min"] > 0.0
     assert info["level_time_min"] >= 0.0
     assert info["descent_time_min"] > 0.0
     assert info["level_fl"] > 0.0
+    # The decel ends at the decel waypoint, so its distance at the current
+    # ground speed comes back out of the time to get there.
+    replaced_min = info["decel_nm"] / gs_kt * 60.0
     assert (info["decel_time_min"] + info["level_time_min"] + info["descent_time_min"]
-            + inflight.arrival.APPROACH_MIN) == pytest.approx(info["time_min"])
+            + inflight.arrival.APPROACH_MIN - replaced_min) == pytest.approx(info["time_min"])
 
 
 def test_build_arrival_text_renders_the_segment_breakdown():

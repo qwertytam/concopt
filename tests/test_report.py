@@ -171,8 +171,9 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     printed = capsys.readouterr().out
     arrival_block = printed.split("\n\n")[1]
 
-    assert arrival_block.startswith("Arrival (decel -> touchdown,")
+    assert arrival_block.startswith(f"Arrival (decel to M1.0 by {SAMPLE_DECEL_ID},")
     assert "decel to M1.0" in arrival_block
+    assert "cruise replaced" in arrival_block
     assert "level at M0.95" in arrival_block
     assert "descent" in arrival_block
     assert "approach" in arrival_block

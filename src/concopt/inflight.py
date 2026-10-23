@@ -518,19 +518,29 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     return wind_at_fl
 
 
-def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl):
+def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl, gs_kt):
     """arrival.arrival() at the CURRENT state -- n_cand is 1 throughout, so
     every input is a scalar and the (1,)-shaped output arrays are squeezed
-    back to floats. speed=380 matches arrival()'s own default (the call
+    back to floats. The decel ends at the decel waypoint, so arrival()
+    backs the cruise it replaces out of the time to get there; with no march
+    to read that from, it's the current ground speed (gs_kt) at the current
+    weight -- what the time-to-waypoint estimate it is subtracted from
+    assumes too. speed=380 matches arrival()'s own default (the call
     signature this was speced against); real pre-flight callers
     (fuel._arrival_from_march) use speed="auto" instead, to dodge 380 kt's
     NaN-fuel gap at low decel_end_fl mass -- but that gap is in
     level_fuel_t, not level_time_min, and only time feeds the live panel's
     predicted-remaining clock, so it doesn't matter here."""
+    def march_tail(back_nm):
+        back_nm = np.asarray(back_nm, dtype=float)
+        time_s = back_nm / gs_kt * 3600.0 if gs_kt > 0 else np.full_like(back_nm, np.nan)
+        return time_s, np.full_like(back_nm, mass_at_barix_t), np.zeros(back_nm.shape, bool)
+
     out = arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_c,
-                           mass_at_barix_t, speed=FASTEST_SCHEDULE_KT)
+                           mass_at_barix_t, speed=FASTEST_SCHEDULE_KT, march_tail=march_tail)
     return dict(
         time_min=float(out["time_min"][0]),
+        decel_nm=float(out["decel_nm"][0]),
         decel_time_min=float(out["decel_time_min"][0]),
         level_time_min=float(out["level_time_min"][0]),
         descent_time_min=float(out["descent_time_min"][0]),
@@ -1190,7 +1200,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                     # which understates specific range slightly on the subsonic
                     # table lookup.
                     arrival_info = _live_arrival(current_fl, arrival_nm, isa_dev_at_cruise,
-                                                  state["weight_t"], arrival_wind_fn)
+                                                  state["weight_t"], arrival_wind_fn,
+                                                  float(table["gs_kt"].iloc[current_idx]))
                 elif preflight_arrival_s is not None:
                     arrival_info = dict(time_min=preflight_arrival_s / 60.0, source="fallback")
                 else:

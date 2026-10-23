@@ -119,17 +119,22 @@ def _synthetic_march_legs(
     chosen_fl = np.full((n_cand, n_legs), 550.0)
     isa_dev_k = np.tile(isa_dev_variation[:, None], (1, n_legs))
 
+    # fuel.march_tail reads these to back the decel out of the end of the
+    # march: ~2,500 nm of cruise at ~1,250 kt, spread evenly over the legs.
+    eff_dist_nm = np.full((n_cand, n_legs), 2500.0 / n_legs)
     legs_out = {
         "weight_at_barix": weight_at_barix,
         "accumulated_s": np.full(n_cand, 25200.0),  # ~7 hours in seconds
         "chosen_fl": chosen_fl,
         "isa_dev_k": isa_dev_k,
+        "eff_dist_nm": eff_dist_nm,
+        "leg_time_s": eff_dist_nm / 1250.0 * 3600.0,
     }
 
     # weight_per_leg: (n_cand, n_legs), weight at start of each leg
     weight_per_leg = np.tile(climb_mass_t[:, None], (1, n_legs))
     for i in range(1, n_legs):
-        weight_per_leg[:, i] = weight_per_leg[:, i - 1] - (cruise_fuel_per_leg_kg.mean() / 1000.0)
+        weight_per_leg[:, i] = weight_per_leg[:, i - 1] - cruise_fuel_per_leg_kg[:, 0] / 1000.0
 
     return legs_out, weight_per_leg, climb
 
@@ -332,7 +337,7 @@ def test_zfw_boundary_high_clamp():
 
 
 def _arrival_fn_always_infeasible(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-                                   mass_at_barix_t=None, speed="auto"):
+                                   mass_at_barix_t=None, speed="auto", march_tail=None):
     """A stand-in for arrival.arrival() that always reports a
     level_gs_nonpositive-style inf trip fuel (B8: level_fuel_t can now be
     inf, not just level_time_min), regardless of TOW -- for exercising
@@ -603,3 +608,32 @@ def test_not_converged_returns_tow_consistent_with_returned_march():
     tow_expected = np.clip(zfw_t + trip_fuel + 10.0, CLIMB_TOW_MIN_T, MTOW_T)
     assert np.allclose(tow_t, tow_expected), \
         f"returned TOW {tow_t} inconsistent with returned march's own trip fuel {tow_expected}"
+
+
+def test_march_tail_backs_out_the_end_of_the_march():
+    """The decel ends at the decel waypoint, so arrival() backs the march's
+    own last decel_nm out of it: exact at sub-leg boundaries, linear inside
+    one, nothing at all for back_nm = 0, and clamped (flagged) past the
+    whole cruise rather than reaching into the climb."""
+    from concopt.fuel import march_tail
+
+    # One candidate: a climb-only leg (eff 0), then three 100 nm cruise
+    # sub-legs of 300, 300 and 600 s, burning 1, 1 and 2 t.
+    legs_out = {
+        "eff_dist_nm": np.array([[0.0, 100.0, 100.0, 100.0]]),
+        "leg_time_s": np.array([[0.0, 300.0, 300.0, 600.0]]),
+        "weight_at_barix": np.array([96.0]),
+    }
+    weight_per_leg = np.array([[100.0, 100.0, 99.0, 98.0]])
+    tail = march_tail(legs_out, weight_per_leg)
+
+    time_s, mass_t, beyond = tail(np.array([0.0]))
+    assert time_s[0] == pytest.approx(0.0) and mass_t[0] == pytest.approx(96.0)
+    time_s, mass_t, beyond = tail(np.array([100.0]))
+    assert time_s[0] == pytest.approx(600.0) and mass_t[0] == pytest.approx(98.0)
+    time_s, mass_t, beyond = tail(np.array([150.0]))
+    assert time_s[0] == pytest.approx(750.0) and mass_t[0] == pytest.approx(98.5)
+    assert not beyond[0]
+    time_s, mass_t, beyond = tail(np.array([400.0]))
+    assert time_s[0] == pytest.approx(1200.0) and mass_t[0] == pytest.approx(100.0)
+    assert beyond[0]
