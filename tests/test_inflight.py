@@ -385,6 +385,7 @@ def test_live_arrival_returns_a_segment_breakdown():
 
 def test_build_arrival_text_renders_the_segment_breakdown():
     info = dict(time_min=30.6, decel_time_min=6.2, level_time_min=12.4,
+                decel_nm=98.0, level_nm=120.0, descent_nm=75.0,
                 descent_time_min=10.5, level_fl=350.0, level_wind_kt=-18.0,
                 flags="", source="live")
     console = Console(width=120, record=True)
@@ -396,6 +397,7 @@ def test_build_arrival_text_renders_the_segment_breakdown():
     assert "descent" in text
     assert "approach" in text
     assert "30.6 min total" in text
+    assert "98 nm" in text and "120 nm" in text and "75 nm" in text and "5 nm" in text
     assert "LIVE" in text  # D2: a visible marker, not just the absence of a fallback note
 
 
@@ -428,6 +430,7 @@ def test_render_screen_includes_the_arrival_breakdown_and_live_vs_preflight():
         temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
     state = _synthetic_state()
     arrival_info = dict(time_min=30.6, decel_time_min=6.2, level_time_min=12.4,
+                decel_nm=98.0, level_nm=120.0, descent_nm=75.0,
                          descent_time_min=10.5, level_fl=350.0, level_wind_kt=-18.0,
                          flags="", source="live")
 
@@ -957,7 +960,8 @@ def test_sim_clock_resumes_from_a_base():
 
 
 def test_check_sim_state_rejects_nan_position():
-    good = dict(lat_deg=40.0, lon_deg=-70.0, alt_ft=50000.0, gs_kt=1200.0, weight_t=120.0)
+    good = dict(lat_deg=40.0, lon_deg=-70.0, alt_ft=50000.0, mach=2.0, tas_kt=1150.0,
+                gs_kt=1200.0, weight_t=120.0)
     inflight._check_sim_state(good)
     for key in good:
         with pytest.raises(inflight._BadSimData):
@@ -1024,3 +1028,16 @@ def test_prepare_recording_append_refuses_a_different_schema(tmp_path):
     _write_rows(path, columns=inflight.RECORD_COLUMNS[:-1])
     with pytest.raises(SystemExit, match="different columns"):
         inflight._prepare_recording(path, "append")
+
+
+def test_a_dropped_required_read_is_a_skipped_tick_not_a_crash():
+    """TOTAL_WEIGHT came back None mid-cruise (2026-10-23) and _read_state's
+    arithmetic on it ended the run."""
+    class _Aq:
+        def get(self, name):
+            return None if name == "TOTAL_WEIGHT" else 1.0
+
+    state = inflight._read_state(_Aq())
+    assert state["weight_t"] is None
+    with pytest.raises(inflight._BadSimData, match="weight_t"):
+        inflight._check_sim_state(state)

@@ -176,19 +176,20 @@ def _get_optional(aq, name, scale=1.0):
 
 
 def _read_state(aq):
-    """One poll of the sim variables the advisor/recorder need. No
-    reconnect/None-handling for the REQUIRED ones -- if Prepar3D stops
-    responding mid-flight that should surface as a plain crash, not be
-    swallowed. The optional block below (everything via _get_optional) is
-    recorder-only telemetry that degrades to an empty CSV cell instead."""
+    """One poll of the sim variables the advisor/recorder need. A required
+    read can come back None (a dropped SimConnect read -- TOTAL_WEIGHT did,
+    mid-cruise, 2026-10-23); run_inflight's _check_sim_state turns that into
+    a skipped tick with a notice rather than a crash, so nothing here does
+    arithmetic on a raw read. The optional block below is recorder-only
+    telemetry that degrades to an empty CSV cell instead."""
     return dict(
         lat_deg=aq.get("PLANE_LATITUDE"),
         lon_deg=aq.get("PLANE_LONGITUDE"),
         alt_ft=aq.get("PLANE_ALTITUDE"),
         mach=aq.get("AIRSPEED_MACH"),
         tas_kt=aq.get("AIRSPEED_TRUE"),
-        gs_kt=aq.get("GPS_GROUND_SPEED") / KT_TO_MS,
-        weight_t=aq.get("TOTAL_WEIGHT") * LB_TO_KG / 1000.0,
+        gs_kt=_get_optional(aq, "GPS_GROUND_SPEED", 1.0 / KT_TO_MS),
+        weight_t=_get_optional(aq, "TOTAL_WEIGHT", LB_TO_KG / 1000.0),
         on_ground=bool(aq.get("SIM_ON_GROUND")),
         zulu_s=aq.get("ZULU_TIME"),
         # --- optional, recorder only ---
@@ -271,7 +272,7 @@ class _BadSimData(ValueError):
 
 def _check_sim_state(state):
     """Raise _BadSimData if the required reads aren't finite numbers."""
-    for key in ("lat_deg", "lon_deg", "alt_ft", "gs_kt", "weight_t"):
+    for key in ("lat_deg", "lon_deg", "alt_ft", "mach", "tas_kt", "gs_kt", "weight_t"):
         value = state[key]
         if value is None or not np.isfinite(value):
             raise _BadSimData(f"the sim returned {value!r} for {key}")
@@ -627,6 +628,8 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl,
     return dict(
         time_min=float(out["time_min"][0]),
         decel_nm=float(out["decel_nm"][0]),
+        level_nm=float(out["level_nm"][0]),
+        descent_nm=float(out["descent_nm"][0]),
         decel_time_min=float(out["decel_time_min"][0]),
         transition_time_min=float(out["transition_time_min"][0]),
         level_time_min=float(out["level_time_min"][0]),
@@ -664,11 +667,12 @@ def _build_arrival_text(arrival_info):
         )
     return Text(
         f"Arrival (to touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
-        f"  decel {arrival_info['decel_time_min']:.1f} min\n"
-        f"  level {arrival_info['level_time_min']:.1f} min  FL{arrival_info['level_fl']:.0f}, "
-        f"{arrival_info['level_wind_kt']:+.0f} kt\n"
-        f"  descent {arrival_info['descent_time_min']:.1f} min  /  approach "
-        f"{arrival.APPROACH_MIN:.1f} min"
+        f"  decel {arrival_info['decel_time_min']:.1f} min  {arrival_info['decel_nm']:.0f} nm "
+        f"(subsonic by the decel waypoint)\n"
+        f"  level {arrival_info['level_time_min']:.1f} min  {arrival_info['level_nm']:.0f} nm  "
+        f"FL{arrival_info['level_fl']:.0f}, {arrival_info['level_wind_kt']:+.0f} kt\n"
+        f"  descent {arrival_info['descent_time_min']:.1f} min  {arrival_info['descent_nm']:.0f} nm"
+        f"  /  approach {arrival.APPROACH_MIN:.1f} min  {arrival.APPROACH_NM:.0f} nm"
     )
 
 
