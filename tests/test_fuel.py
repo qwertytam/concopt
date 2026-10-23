@@ -337,7 +337,8 @@ def test_zfw_boundary_high_clamp():
 
 
 def _arrival_fn_always_infeasible(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-                                   mass_at_barix_t=None, speed="auto", march_tail=None):
+                                   mass_at_barix_t=None, speed="auto", march_tail=None,
+                                   thrust_reversers=False):
     """A stand-in for arrival.arrival() that always reports a
     level_gs_nonpositive-style inf trip fuel (B8: level_fuel_t can now be
     inf, not just level_time_min), regardless of TOW -- for exercising

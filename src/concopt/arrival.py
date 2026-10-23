@@ -42,7 +42,11 @@ from . import atmos
 from .data import conc_data
 from .params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM, BAND_COLD, BAND_WARM,  # noqa: F401
                      CRUISE_FL_MAX, CRUISE_FL_MIN, DEFAULT_MASS_AT_BARIX_T, DESCENT_END_FL,
-                     FASTEST_SCHEDULE_KT, FT_TO_M, LEVEL_MACH, SCHEDULES_KT)
+                     DESCENT_END_FT, DESCENT_GRID_STEP_FT, DESCENT_GRID_TOP_FT,
+                     DESCENT_RATE_SCHEDULE_KT, FASTEST_SCHEDULE_KT, FT_TO_M, GATE_KIAS,
+                     LEVEL_MACH, REVERSER_FACTOR, REVERSER_MAX_MIN, SCHEDULES_KT,
+                     SLOWDOWN_TO_GATE_KT_PER_MIN, SLOWDOWN_TO_LIMIT_KT_PER_MIN,
+                     SPEED_LIMIT_FL, SPEED_LIMIT_KIAS, SUBSONIC_LEVELS_FL)
 
 _SEGMENT_KEYS = (
     "time_min", "fuel_t", "level_fl", "level_nm", "decel_nm", "descent_nm",
@@ -50,7 +54,9 @@ _SEGMENT_KEYS = (
     "decel_fuel_t", "level_fuel_t", "descent_fuel_t", "level_wind_kt",
     "decel_wind_kt", "descent_wind_kt",
     "replaced_cruise_time_min", "replaced_cruise_fuel_t", "mass_at_decel_start_t",
-    "after_waypoint_time_min",
+    "after_waypoint_time_min", "decel_end_fl", "level_gs_kt",
+    "transition_nm", "transition_time_min", "transition_fuel_t",
+    "reverser_min", "slowdown_time_min", "approach_time_min",
 )
 
 _FLAG_KEYS = ("level_nm_clamped", "cruise_fl_clamped", "level_gs_nonpositive",
@@ -103,12 +109,261 @@ def _table_by_band(fn, level_fl, speed_kt, warm, keys):
     return {k: np.where(warm, hot[k], cold[k]) for k in keys}
 
 
+def _to_1500ft(level_fl, band):
+    """conc_descent.csv's subsonic descent (DESCENT_RATE_SCHEDULE_KT) from
+    level_fl down to 1,500 ft: cumulative (time_min, fuel_t). The table's
+    lowest row (FL30 warm, FL50 cold) still has time to go; below it this is
+    linear down to exactly zero at 1,500 ft, instead of the clamp that would
+    leave FL15 reading that row's 0.8-1.4 min."""
+    level_fl = np.asarray(level_fl, float)
+    floor_fl = conc_data.descent_to_1500ft_floor_fl(DESCENT_RATE_SCHEDULE_KT, band)
+    row = conc_data.descent_to_1500ft(np.maximum(level_fl, floor_fl),
+                                       DESCENT_RATE_SCHEDULE_KT, band)
+    f = np.clip((level_fl - DESCENT_END_FL) / (floor_fl - DESCENT_END_FL), 0.0, 1.0)
+    below = level_fl < floor_fl
+    return (np.where(below, row["time_min"] * f, row["time_min"]),
+            np.where(below, row["fuel_t"] * f, row["fuel_t"]))
+
+
+def _tas_kt(cas_kt, p_pa, temp_k):
+    mach = atmos.mach_from_cas_subsonic(np.asarray(cas_kt, float) * atmos.KT_TO_MS, p_pa)
+    return mach * atmos.speed_of_sound(temp_k) / atmos.KT_TO_MS
+
+
+def _max_cas_kt(alt_ft, p_pa, weight_t):
+    """The fastest the airframe allows: M0.95 until that meets the CAS limit
+    (conc_cas_limit.csv, by weight), the CAS limit below."""
+    mach_cas_kt = atmos.cas_from_mach(LEVEL_MACH, p_pa) / atmos.KT_TO_MS
+    return np.minimum(mach_cas_kt, conc_data.cas_limit_kt(alt_ft, weight_t))
+
+
+def _descent_grid(wind_at_fl, warm, isa_dev_c, weight_t, n_cand):
+    """The subsonic descent on a fixed altitude grid, DESCENT_GRID_TOP_FT down
+    to DESCENT_END_FT in DESCENT_GRID_STEP_FT steps, for every candidate:
+    T/F (n_cand, K), the table's cumulative time/fuel from each grid
+    altitude down to 1,500 ft at the normal descent rate, and cum_nm
+    (n_cand, K), ground distance from the top of the grid, at the descent
+    speed (_max_cas_kt above SPEED_LIMIT_FL, SPEED_LIMIT_KIAS below) plus
+    wind, both taken at each step's midpoint. Temperature is ISA + the
+    cruise ISA deviation -- the stitched wind profile clamps below ~FL183
+    and its temperature with it. Built once per arrival() call; every
+    schedule and level reads its own stretch of it (_at)."""
+    alt_ft = np.arange(DESCENT_GRID_TOP_FT, DESCENT_END_FT - 1.0, -DESCENT_GRID_STEP_FT)
+    mid_ft = (alt_ft[:-1] + alt_ft[1:]) / 2.0
+    p_mid = atmos.fl_to_pressure(mid_ft / 100.0)
+    isa_t_mid, _ = atmos.isa(mid_ft * FT_TO_M)
+    temp_mid = isa_t_mid[None, :] + isa_dev_c[:, None]
+    cas_kt = np.where(mid_ft[None, :] > SPEED_LIMIT_FL * 100.0,
+                      _max_cas_kt(mid_ft[None, :], p_mid[None, :], weight_t[:, None]),
+                      SPEED_LIMIT_KIAS)
+    tas_kt = _tas_kt(cas_kt, p_mid[None, :], temp_mid)
+
+    wind_kt = np.empty((n_cand, len(mid_ft)))
+    clamped = np.zeros(n_cand, bool)
+    for j, ft in enumerate(mid_ft):
+        wind_kt[:, j], _, fl_clamped = _wind_temp(wind_at_fl, ft / 100.0, n_cand)
+        clamped |= fl_clamped
+
+    time_min, fuel_t = {}, {}
+    for band in (BAND_WARM, BAND_COLD):
+        time_min[band], fuel_t[band] = _to_1500ft(alt_ft / 100.0, band)
+    t = np.where(warm[:, None], time_min[BAND_WARM][None, :], time_min[BAND_COLD][None, :])
+    f = np.where(warm[:, None], fuel_t[BAND_WARM][None, :], fuel_t[BAND_COLD][None, :])
+    step_nm = (tas_kt + wind_kt) * (t[:, :-1] - t[:, 1:]) / 60.0
+    cum_nm = np.concatenate([np.zeros((n_cand, 1)), np.cumsum(step_nm, axis=1)], axis=1)
+    return dict(T=t, F=f, cum_nm=cum_nm, clamped=clamped)
+
+
+def _at(values, alt_ft):
+    """values (n_cand, K) on the descent grid, linearly interpolated at
+    alt_ft -- a scalar, or (n_cand,) for a per-candidate altitude."""
+    idx = (DESCENT_GRID_TOP_FT - np.asarray(alt_ft, float)) / DESCENT_GRID_STEP_FT
+    if idx.ndim == 0:  # one altitude for every candidate: two plain columns
+        i0 = int(np.clip(np.floor(idx), 0, values.shape[1] - 2))
+        return values[:, i0] + (idx - i0) * (values[:, i0 + 1] - values[:, i0])
+    i0 = np.clip(np.floor(idx).astype(int), 0, values.shape[1] - 2)
+    frac = idx - i0
+    lo = np.take_along_axis(values, i0[:, None], axis=1)[:, 0]
+    hi = np.take_along_axis(values, i0[:, None] + 1, axis=1)[:, 0]
+    return lo + frac * (hi - lo)
+
+
+def _alt_where_t(t, target):
+    """Per candidate, the grid altitude (ft) at which T (n_cand, K, falling
+    down the grid) reaches target (n_cand,)."""
+    i0 = np.clip((t > target[:, None]).sum(axis=1) - 1, 0, t.shape[1] - 2)
+    lo = np.take_along_axis(t, i0[:, None], axis=1)[:, 0]
+    hi = np.take_along_axis(t, i0[:, None] + 1, axis=1)[:, 0]
+    frac = np.clip(np.where(lo > hi, (lo - target) / np.where(lo > hi, lo - hi, 1.0), 0.0), 0.0, 1.0)
+    return DESCENT_GRID_TOP_FT - (i0 + frac) * DESCENT_GRID_STEP_FT
+
+
+def _descend(g, top_ft, bottom_ft, budget_min):
+    """top_ft -> bottom_ft at the normal rate, with the thrust reversers
+    taking up to budget_min (n_cand,) of it from the top: REVERSER_FACTOR x
+    the rate while they're in, at the same speed. Returns (nm, time_min,
+    fuel_t, reverser_min); fuel is the table's per-minute burn, over the
+    time actually taken."""
+    t_top, t_bot = _at(g["T"], top_ft), _at(g["T"], bottom_ft)
+    normal_min = np.maximum(t_top - t_bot, 0.0)
+    reverser_min = np.minimum(budget_min, normal_min / REVERSER_FACTOR)
+    time_min = normal_min - (REVERSER_FACTOR - 1.0) * reverser_min
+    nm_top = _at(g["cum_nm"], top_ft)
+    nm_reversed = 0.0
+    if np.any(reverser_min > 0.0):
+        nm_reversed = _at(g["cum_nm"], _alt_where_t(g["T"], t_top - REVERSER_FACTOR * reverser_min)) - nm_top
+    nm = _at(g["cum_nm"], bottom_ft) - nm_top - (1.0 - 1.0 / REVERSER_FACTOR) * nm_reversed
+    fuel_t = (_at(g["F"], top_ft) - _at(g["F"], bottom_ft)) * np.where(
+        normal_min > 0.0, time_min / np.where(normal_min > 0.0, normal_min, 1.0), 0.0)
+    return nm, time_min, fuel_t, reverser_min
+
+
+def _slow_down(g, alt_ft, from_kias, to_kias, kt_per_min, budget_min, wind_kt, temp_k):
+    """Level-flight slow-down at alt_ft, from_kias -> to_kias at kt_per_min,
+    halved in time (REVERSER_FACTOR) for whatever reverser budget is left.
+    Ground speed at the mean of the two speeds; fuel at the descent table's
+    own per-minute burn at that altitude."""
+    normal_min = np.maximum(from_kias - to_kias, 0.0) / kt_per_min
+    reverser_min = np.minimum(budget_min, normal_min / REVERSER_FACTOR)
+    time_min = normal_min - (REVERSER_FACTOR - 1.0) * reverser_min
+    p_pa = atmos.fl_to_pressure(alt_ft / 100.0)
+    gs_kt = _tas_kt((from_kias + to_kias) / 2.0, p_pa, temp_k) + wind_kt
+    step = DESCENT_GRID_STEP_FT
+    burn_t_per_min = ((_at(g["F"], alt_ft + step) - _at(g["F"], alt_ft))
+                      / np.maximum(_at(g["T"], alt_ft + step) - _at(g["T"], alt_ft), 1e-9))
+    return gs_kt * time_min / 60.0, time_min, burn_t_per_min * time_min, reverser_min
+
+
+def _after_waypoint(level_fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c,
+                    mass_after_decel_t, reverser_budget_min, n_cand):
+    """Decel waypoint (M1.0 at decel_end_fl) -> touchdown, at one subsonic
+    cruise level_fl <= decel_end_fl:
+
+      transition  decel_end_fl -> level_fl, normal rate (none if equal)
+      level       M0.95 at level_fl, for whatever distance is left over
+      descent     level_fl -> SPEED_LIMIT_FL at maximum speed, the reversers
+                  from the top; slow to SPEED_LIMIT_KIAS there; on down to
+                  DESCENT_END_FT; slow to GATE_KIAS there
+      approach    the last APPROACH_NM at GATE_KIAS
+
+      level_nm = arrival_nm - transition_nm - descent_nm - APPROACH_NM"""
+    tr_nm, tr_min, tr_fuel_t, _ = _descend(g, decel_end_fl * 100.0, level_fl * 100.0,
+                                           np.zeros(n_cand))
+
+    budget = np.full(n_cand, reverser_budget_min)
+    d1 = _descend(g, level_fl * 100.0, SPEED_LIMIT_FL * 100.0, budget)
+    budget = budget - d1[3]
+    limit_ft = SPEED_LIMIT_FL * 100.0
+    limit_wind, _, _ = _wind_temp(wind_at_fl, SPEED_LIMIT_FL, n_cand)
+    limit_temp_k = atmos.isa(limit_ft * FT_TO_M)[0] + isa_dev_c
+    above_limit_kias = _max_cas_kt(limit_ft, atmos.fl_to_pressure(SPEED_LIMIT_FL),
+                                   mass_after_decel_t)
+    s1 = _slow_down(g, limit_ft, above_limit_kias, SPEED_LIMIT_KIAS,
+                    SLOWDOWN_TO_LIMIT_KT_PER_MIN, budget, limit_wind, limit_temp_k)
+    budget = budget - s1[3]
+    d2 = _descend(g, limit_ft, DESCENT_END_FT, budget)
+    budget = budget - d2[3]
+    low_wind, _, _ = _wind_temp(wind_at_fl, DESCENT_END_FL, n_cand)
+    low_temp_k = atmos.isa(DESCENT_END_FT * FT_TO_M)[0] + isa_dev_c
+    s2 = _slow_down(g, DESCENT_END_FT, SPEED_LIMIT_KIAS, GATE_KIAS,
+                    SLOWDOWN_TO_GATE_KT_PER_MIN, budget, low_wind, low_temp_k)
+    pieces = (d1, s1, d2, s2)
+    descent_nm = sum(p[0] for p in pieces)
+    descent_min = sum(p[1] for p in pieces)
+    descent_fuel_t = sum(p[2] for p in pieces)
+    reverser_min = sum(p[3] for p in pieces)
+    slowdown_min = s1[1] + s2[1]
+
+    gate_gs_kt = _tas_kt(GATE_KIAS, atmos.fl_to_pressure(DESCENT_END_FL), low_temp_k) + low_wind
+    approach_min = np.where(gate_gs_kt > 0.0, APPROACH_NM / np.where(gate_gs_kt > 0.0, gate_gs_kt, 1.0) * 60.0,
+                            np.inf)
+
+    level_nm_raw = arrival_nm - tr_nm - descent_nm - APPROACH_NM
+    level_nm_clamped = level_nm_raw < 0.0
+    level_nm = np.maximum(level_nm_raw, 0.0)
+
+    level_wind, level_temp_k, level_wind_clamped = _wind_temp(wind_at_fl, level_fl, n_cand)
+    # atmos.py is the single validated speed-of-sound path -- do not add another.
+    level_tas_kt = atmos.speed_of_sound(level_temp_k) * LEVEL_MACH / atmos.KT_TO_MS
+    level_gs_kt = level_tas_kt + level_wind
+
+    # A headwind exceeding TAS means the aircraft never arrives. Flag it rather
+    # than dividing by a non-positive ground speed.
+    level_gs_nonpositive = level_gs_kt <= 0.0
+    safe_gs = np.where(level_gs_nonpositive, np.nan, level_gs_kt)
+    with np.errstate(invalid="ignore"):
+        level_time_min = np.where(
+            level_gs_nonpositive, np.inf, level_nm / safe_gs * 60.0
+        )
+    # Zero leftover distance costs no time even at a non-positive ground speed.
+    level_time_min = np.where(level_nm == 0.0, 0.0, level_time_min)
+    level_gs_nonpositive &= level_nm > 0.0
+
+    # MASS IS THE TRAP: the subsonic table is indexed by aircraft mass, and
+    # the aircraft reaches the level segment at the mass at decel start less
+    # the decel and transition burns (~105-120 t), not TOW (~160-185 t) and
+    # not that mass untouched either -- reading it at the wrong mass here
+    # silently halves the specific range and doubles level_fuel_t.
+    mass_at_level_t = mass_after_decel_t - tr_fuel_t
+    isa_t_k_at_level, _ = atmos.isa(level_fl * 100.0 * FT_TO_M)
+    isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
+    fuel_total_kgh = conc_data.subsonic_cruise(level_fl, mass_at_level_t, isa_dev_c_at_level)["fuel_total_kgh"]
+
+    # B8: level_fuel_t is flow x time, NOT ground_nm / specific_range_nm_per_t
+    # -- specific_range_nm_per_t is TAS-based (still-air) nm/t, so dividing a
+    # GROUND distance by it silently dropped the wind term. level_time_min
+    # already carries the wind, so flow x time is wind-correct for free, and
+    # mirrors its conventions exactly:
+    #   level_nm == 0          -> time is already 0 -> fuel 0 too
+    #   level_gs_nonpositive   -> time is already inf -> fuel inf too
+    with np.errstate(invalid="ignore"):
+        level_fuel_t = fuel_total_kgh / 1000.0 * level_time_min / 60.0
+    level_fuel_t = np.where(level_nm == 0.0, 0.0, level_fuel_t)
+    level_fuel_t = np.where(level_gs_nonpositive, np.inf, level_fuel_t)
+
+    # Envelope flag off fuel_total_kgh: zero leftover distance burns no fuel
+    # even where the table has no entry for this mass/level/ISA (B7).
+    level_mass_outside_envelope = ~np.isfinite(fuel_total_kgh) & (level_nm > 0.0)
+
+    descent_mid_fl = (level_fl + DESCENT_END_FL) / 2.0
+    descent_wind, _, _ = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
+
+    out = {
+        "level_fl": np.full(n_cand, float(level_fl)),
+        "level_nm": level_nm,
+        "level_time_min": level_time_min,
+        "level_fuel_t": level_fuel_t,
+        "level_wind_kt": np.asarray(level_wind, float),
+        "level_gs_kt": level_gs_kt,
+        "transition_nm": tr_nm,
+        "transition_time_min": tr_min,
+        "transition_fuel_t": tr_fuel_t,
+        "descent_nm": descent_nm,
+        "descent_time_min": descent_min,
+        "descent_fuel_t": descent_fuel_t,
+        "descent_wind_kt": np.asarray(descent_wind, float),
+        "reverser_min": reverser_min,
+        "slowdown_time_min": slowdown_min,
+        "approach_time_min": approach_min,
+        "level_nm_clamped": level_nm_clamped,
+        "level_gs_nonpositive": level_gs_nonpositive,
+        "level_mass_outside_envelope": level_mass_outside_envelope,
+        "level_wind_clamped": level_wind_clamped,
+    }
+    out["after_waypoint_time_min"] = tr_min + level_time_min + descent_min + approach_min
+    out["after_waypoint_fuel_t"] = tr_fuel_t + level_fuel_t + descent_fuel_t + APPROACH_FUEL_T
+    return out
+
+
 def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand,
-                        mass_at_barix_t, march_tail):
-    """One descent speed schedule, vectorised over every candidate at once."""
+                        mass_at_barix_t, march_tail, g, isa_dev_c, reverser_budget_min):
+    """One descent speed schedule, vectorised over every candidate at once.
+    The schedule only picks conc_descent.csv's decel (its distance and the
+    level it ends at); after the decel waypoint every candidate flies the
+    fastest of the subsonic levels at or below that (_after_waypoint)."""
     cols = ("fuel_t", "time_min", "dist_zero_wind_nm")
 
-    # --- 1. decel: cruise_fl -> decel_end_fl -------------------------------
+    # --- decel: cruise_fl -> decel_end_fl, ending at the waypoint ----------
     decel = _table_by_band(conc_data.decel_to_mach1, cruise_fl, speed_kt, warm, cols)
     # decel_end_fl is constant within a speed schedule AND identical in both
     # bands (325 -> FL383, 350 -> FL350, 380 -> FL312), so it is a true scalar.
@@ -132,121 +387,48 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
         decel_starts_before_cruise = np.zeros(n_cand, bool)
     else:
         replaced_s, mass_at_decel_start_t, decel_starts_before_cruise = march_tail(decel_nm)
+    mass_after_decel_t = mass_at_decel_start_t - decel["fuel_t"]
 
-    # --- 3. descent: decel_end_fl -> 1,500 ft ------------------------------
-    # Computed before the level segment because level_nm is the leftover.
-    descent = _table_by_band(
-        conc_data.descent_to_1500ft, decel_end_fl, speed_kt, warm, cols
-    )
-    descent_mid_fl = (decel_end_fl + DESCENT_END_FL) / 2.0
-    descent_wind, _, descent_wind_clamped = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
-    descent_nm = conc_data.dist_with_wind(
-        descent["dist_zero_wind_nm"], descent["time_min"], descent_wind
-    )
+    # --- after the waypoint: the fastest feasible subsonic level -------------
+    levels = [decel_end_fl] + [fl for fl in SUBSONIC_LEVELS_FL if fl < decel_end_fl]
+    per_level = [
+        _after_waypoint(fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c,
+                        mass_after_decel_t, reverser_budget_min, n_cand)
+        for fl in levels
+    ]
+    # Same rule as the schedule choice: a level with no fuel number (outside
+    # the subsonic table's envelope at this mass) can't be the fastest.
+    times = np.stack([p["after_waypoint_time_min"] for p in per_level], axis=-1)
+    fuels = np.stack([p["after_waypoint_fuel_t"] for p in per_level], axis=-1)
+    best = np.argmin(np.where(np.isfinite(fuels), times, np.inf), axis=-1)
+    out = {key: np.choose(best, [p[key] for p in per_level]) for key in per_level[0]}
 
-    # --- 2. level: M0.95 at decel_end_fl for the leftover distance ---------
-    level_nm_raw = arrival_nm - APPROACH_NM - descent_nm
-    level_nm_clamped = level_nm_raw < 0.0
-    level_nm = np.maximum(level_nm_raw, 0.0)
+    # The decel midpoint and the level segment itself are the reads B6 was
+    # written to extend coverage for. The descent's own reads clamp at the
+    # BOTTOM on every candidate (below the stitched profile's ~FL183 floor --
+    # see search._build_arrival_wind_fn); OR-ing those in would saturate
+    # wind_fl_clamped into meaningless, so they're kept in their own key.
+    wind_fl_clamped = decel_wind_clamped | out.pop("level_wind_clamped")
 
-    level_wind, level_temp_k, level_wind_clamped = _wind_temp(wind_at_fl, decel_end_fl, n_cand)
-    # atmos.py is the single validated speed-of-sound path -- do not add another.
-    level_tas_kt = atmos.speed_of_sound(level_temp_k) * LEVEL_MACH / atmos.KT_TO_MS
-    level_gs_kt = level_tas_kt + level_wind
-
-    # A headwind exceeding TAS means the aircraft never arrives. Flag it rather
-    # than dividing by a non-positive ground speed.
-    level_gs_nonpositive = level_gs_kt <= 0.0
-    safe_gs = np.where(level_gs_nonpositive, np.nan, level_gs_kt)
-    with np.errstate(invalid="ignore"):
-        level_time_min = np.where(
-            level_gs_nonpositive, np.inf, level_nm / safe_gs * 60.0
-        )
-    # Zero leftover distance costs no time even at a non-positive ground speed.
-    level_time_min = np.where(level_nm == 0.0, 0.0, level_time_min)
-    level_gs_nonpositive &= level_nm > 0.0
-
-    # MASS IS THE TRAP: the subsonic table is indexed by aircraft mass, and
-    # the aircraft reaches the level segment at the mass at decel start minus
-    # the decel burn (~105-120 t), not TOW (~160-185 t) and not that mass
-    # untouched either -- reading it at the wrong mass here silently halves
-    # the specific range and doubles level_fuel_t.
-    mass_at_level_t = mass_at_decel_start_t - decel["fuel_t"]
-    isa_t_k_at_level, _ = atmos.isa(decel_end_fl * 100.0 * FT_TO_M)
-    isa_dev_c_at_level = level_temp_k - isa_t_k_at_level
-    subsonic = conc_data.subsonic_cruise(decel_end_fl, mass_at_level_t, isa_dev_c_at_level)
-    fuel_total_kgh = subsonic["fuel_total_kgh"]
-
-    # B8: level_fuel_t is flow x time, NOT ground_nm / specific_range_nm_per_t
-    # -- specific_range_nm_per_t is TAS-based (still-air) nm/t, so dividing a
-    # GROUND distance by it silently dropped the wind term (the level segment
-    # came out burning the same fuel regardless of wind, which is wrong: a
-    # headwind lengthens the time spent at a fixed fuel flow and so must burn
-    # MORE, not the same). level_time_min already carries the wind (it's
-    # level_nm / level_gs_kt), so multiplying flow by time is wind-correct
-    # for free. Mirror level_time_min's own conventions exactly so time and
-    # fuel never disagree about what happened to a candidate:
-    #   level_nm == 0          -> time is already 0 -> fuel 0 too
-    #   level_gs_nonpositive   -> time is already inf -> fuel inf too
-    with np.errstate(invalid="ignore"):
-        level_fuel_t = fuel_total_kgh / 1000.0 * level_time_min / 60.0
-    level_fuel_t = np.where(level_nm == 0.0, 0.0, level_fuel_t)
-    level_fuel_t = np.where(level_gs_nonpositive, np.inf, level_fuel_t)
-
-    # Envelope flag off fuel_total_kgh (not specific_range_nm_per_t) -- both
-    # are NaN in exactly the same table cells, but fuel_total_kgh is what
-    # level_fuel_t is now actually built from. Zero leftover distance burns
-    # no fuel even where the table has no entry for this mass/level/ISA --
-    # same convention as level_time_min/level_gs_nonpositive above (B7 found
-    # this flag firing on a genuinely-zero-fuel candidate; guarded here).
-    level_mass_outside_envelope = ~np.isfinite(fuel_total_kgh) & (level_nm > 0.0)
-
-    # The decel midpoint and the level segment itself are the two reads B6
-    # was actually written to extend coverage for (up to ~FL491). The
-    # descent segment's own midpoint clamps at the BOTTOM on nearly every
-    # candidate (as low as FL163.5 on the 380 kt schedule, against the
-    # stitched profile's ~FL183 floor -- see search._build_arrival_wind_fn)
-    # and is accepted there as immaterial (~60 nm, well under 0.3 min); OR-ing
-    # it in here saturated wind_fl_clamped to true on nearly every row, so it
-    # reads as "which schedule was picked" rather than "this rests on a
-    # clamped read". Kept as its own key (descent_wind_clamped) so it stays
-    # inspectable, but out of the flag that reaches the search CSV.
-    wind_fl_clamped = decel_wind_clamped | level_wind_clamped
-
-    out = {
+    out.update({
         "decel_nm": decel_nm,
-        "descent_nm": descent_nm,
-        "level_nm": level_nm,
-        "level_fl": np.full(n_cand, decel_end_fl),
-        "level_wind_kt": np.broadcast_to(level_wind, (n_cand,)).astype(float),
+        "decel_end_fl": np.full(n_cand, decel_end_fl),
         "decel_wind_kt": np.broadcast_to(decel_wind, (n_cand,)).astype(float),
-        "descent_wind_kt": np.broadcast_to(descent_wind, (n_cand,)).astype(float),
         "decel_time_min": decel["time_min"],
-        "level_time_min": level_time_min,
-        "descent_time_min": descent["time_min"],
         "decel_fuel_t": decel["fuel_t"],
-        "level_fuel_t": level_fuel_t,
-        "descent_fuel_t": descent["fuel_t"],
-        "level_nm_clamped": level_nm_clamped,
-        "level_gs_nonpositive": level_gs_nonpositive,
-        "level_mass_outside_envelope": level_mass_outside_envelope,
         "wind_fl_clamped": wind_fl_clamped,
-        "descent_wind_clamped": descent_wind_clamped,
+        "descent_wind_clamped": g["clamped"],
         "replaced_cruise_time_min": replaced_s / 60.0,
         "replaced_cruise_fuel_t": mass_at_decel_start_t - mass_at_barix_t,
         "mass_at_decel_start_t": np.asarray(mass_at_decel_start_t, float),
         "decel_starts_before_cruise": np.asarray(decel_starts_before_cruise, bool),
-    }
-    out["after_waypoint_time_min"] = (
-        out["level_time_min"] + out["descent_time_min"] + APPROACH_MIN
-    )
+    })
     out["time_min"] = (
         out["decel_time_min"] + out["after_waypoint_time_min"]
         - out["replaced_cruise_time_min"]
     )
     out["fuel_t"] = (
-        out["decel_fuel_t"] + out["level_fuel_t"]
-        + out["descent_fuel_t"] + APPROACH_FUEL_T
+        out["decel_fuel_t"] + out.pop("after_waypoint_fuel_t")
         - out["replaced_cruise_fuel_t"]
     )
     return out
@@ -254,7 +436,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
 
 def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=FASTEST_SCHEDULE_KT,
-            march_tail=None):
+            march_tail=None, thrust_reversers=False):
     """Arrival time and fuel, net of the cruise the deceleration replaces:
     measured from the march's own arrival at the decel waypoint to
     touchdown (see the module docstring).
@@ -413,9 +595,16 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
 
     warm = _band_is_warm(isa_dev_at_cruise)
 
+    # The descent below the waypoint is the same airspace for every schedule
+    # and level -- built once. The CAS limit it reads is weight-dependent;
+    # mass_at_barix_t stands in for the (slightly lighter) descent weight.
+    g = _descent_grid(wind_at_fl, warm, isa_dev_at_cruise, mass_at_barix_t, n_cand)
+    reverser_budget_min = REVERSER_MAX_MIN if thrust_reversers else 0.0
+
     by_schedule = {
         spd: _arrival_for_speed(
-            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t, march_tail
+            cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t, march_tail,
+            g, isa_dev_at_cruise, reverser_budget_min,
         )
         for spd in SCHEDULES_KT
     }

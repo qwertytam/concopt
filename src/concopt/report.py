@@ -21,8 +21,8 @@ from concopt.era5 import load_legs_npz, load_surface_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
 from concopt.params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
                             ARRIVAL_PROFILE_STEPS, C_TO_K, DESCENT_END_FT,
-                            FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SUBSONIC_LIMIT_MACH,
-                            TOTAL_TEMP_MAX_K)
+                            FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SPEED_LIMIT_FL,
+                            SPEED_LIMIT_KIAS, SUBSONIC_LIMIT_MACH, TOTAL_TEMP_MAX_K)
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
                              _format_hmm, local_to_departure_utc, march_legs,
                              resolve_tow_and_arrival)
@@ -217,22 +217,28 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl, decel_id):
     schedule_kt = int(a["schedule_kt"])
     header = (f"Arrival (decel to M1.0 by {decel_id}, then {arrival_nm:.0f} nm to touchdown)")
 
-    total_nm = a["level_nm"] + a["descent_nm"] + arrival.APPROACH_NM
+    total_nm = a["transition_nm"] + a["level_nm"] + a["descent_nm"] + arrival.APPROACH_NM
+    reversers = f", reversers {a['reverser_min']:.1f} min" if a["reverser_min"] > 0.0 else ""
     lines = [
         header,
         f"  {'decel to M1.0':<16}{a['decel_nm']:6.0f} nm  {a['decel_time_min']:5.1f} min  "
-        f"{a['decel_fuel_t']:5.2f} t   FL{cruise_fl:.0f} -> FL{a['level_fl']:.0f}, "
+        f"{a['decel_fuel_t']:5.2f} t   FL{cruise_fl:.0f} -> FL{a['decel_end_fl']:.0f}, "
         f"ending at {decel_id}",
         f"  {'cruise replaced':<16}{-a['decel_nm']:6.0f} nm  {-a['replaced_cruise_time_min']:5.1f} min  "
         f"{-a['replaced_cruise_fuel_t']:5.2f} t   (supersonic cruise the decel flies instead)",
+        *([f"  {'down to level':<16}{a['transition_nm']:6.0f} nm  {a['transition_time_min']:5.1f} min  "
+           f"{a['transition_fuel_t']:5.2f} t   FL{a['decel_end_fl']:.0f} -> FL{a['level_fl']:.0f}"]
+          if a["transition_nm"] > 0.0 else []),
         f"  {'level at M0.95':<16}{a['level_nm']:6.0f} nm  {a['level_time_min']:5.1f} min  "
-        f"{a['level_fuel_t']:5.2f} t*  FL{a['level_fl']:.0f}, {a['level_wind_kt']:+.0f} kt",
+        f"{a['level_fuel_t']:5.2f} t*  FL{a['level_fl']:.0f}, {a['level_wind_kt']:+.0f} kt "
+        f"(fastest level)",
         f"  {'descent':<16}{a['descent_nm']:6.0f} nm  {a['descent_time_min']:5.1f} min  "
-        f"{a['descent_fuel_t']:5.2f} t   FL{a['level_fl']:.0f} -> 1500 ft",
-        f"  {'approach':<16}{arrival.APPROACH_NM:6.0f} nm  {arrival.APPROACH_MIN:5.1f} min  "
-        f"{arrival.APPROACH_FUEL_T:5.2f} t",
+        f"{a['descent_fuel_t']:5.2f} t   FL{a['level_fl']:.0f} -> 1500 ft at max speed, "
+        f"slow-downs {a['slowdown_time_min']:.1f} min{reversers}",
+        f"  {'approach':<16}{arrival.APPROACH_NM:6.0f} nm  {a['approach_time_min']:5.1f} min  "
+        f"{arrival.APPROACH_FUEL_T:5.2f} t   from the gate at {arrival.GATE_KIAS:.0f} KIAS",
         f"  {'total':<16}{total_nm:6.0f} nm  {a['time_min']:5.1f} min  "
-        f"{a['fuel_t']:5.2f} t   ({schedule_kt} kt schedule; net of the cruise replaced)",
+        f"{a['fuel_t']:5.2f} t   ({schedule_kt} kt decel schedule; net of the cruise replaced)",
     ]
     if a["flags"]:
         lines.append(f"  !! {a['flags']}")
@@ -277,7 +283,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
                 tow_t=None, zfw_t=None, surface_npz_path=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, cruise_mach=limits.CRUISE_MACH,
-                arrival_upper_npz_path=None):
+                arrival_upper_npz_path=None, thrust_reversers=False):
     """The full breakdown for one candidate departure (local_date,
     local_hour, America/New_York). Reruns march_legs -- the same march
     run_search uses -- for this single candidate, then prints the fuel plan,
@@ -331,6 +337,7 @@ def run_report(pln_path, npz_path, local_date, local_hour,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
+            thrust_reversers=thrust_reversers,
         )
     )
     tow_t = float(tow_arr[0])
@@ -618,16 +625,27 @@ def _cruise_segments(cc_legs, leg, weight_per_leg, weight_at_barix_t, cruise_mac
     return segments
 
 
+def _descent_mach(alt_ft, weight_t):
+    """The arrival descent's speed rule (arrival._max_cas_kt): M0.95 until the
+    CAS limit, the CAS limit below, SPEED_LIMIT_KIAS below SPEED_LIMIT_FL."""
+    p_pa = float(isa(alt_ft * FT_TO_M)[1])
+    if alt_ft <= SPEED_LIMIT_FL * 100.0:
+        return float(mach_from_cas(SPEED_LIMIT_KIAS * KT_TO_MS, p_pa))
+    cas_kt = float(arrival._max_cas_kt(alt_ft, p_pa, weight_t))
+    return float(mach_from_cas(cas_kt * KT_TO_MS, p_pa))
+
+
 def _arrival_segments(a, start, cruise_fl, cruise_mach_at_barix, isa_dev_k, cruise_mach):
     """decel / subsonic cruise / descent / approach, from arrival.arrival()'s
     per-segment totals. Distance, time, fuel and weight are linear within a
     segment (only the totals are tabulated); altitude is linear in distance.
-    Decel Mach is linear from the cruise Mach down to M1.0; the level segment is
-    M0.95; the descent flies the schedule CAS (325/350/380 kt), so its Mach is
-    solved from CAS at each altitude. Temperature is ISA + the last cruise leg's
-    ISA deviation throughout (arrival.py doesn't return its own). The approach
-    allowance has no speed model -- only its mean ground speed."""
-    schedule_ms = a["schedule_kt"] * KT_TO_MS
+    Decel Mach is linear from the cruise Mach down to M1.0; the subsonic
+    cruise is M0.95 (with the descent down to its level, if any, at the
+    descent's speed); the descent flies arrival.py's own speed rule
+    (_descent_mach) -- its slow-downs and reversers are inside its totals,
+    not drawn separately. Temperature is ISA + the last cruise leg's ISA
+    deviation throughout (arrival.py doesn't return its own). The approach
+    has no speed model -- only its mean ground speed."""
     n = ARRIVAL_PROFILE_STEPS
     cursor = dict(cum_nm=start["cum_nm"], elapsed_s=start["elapsed_s"], weight_t=start["weight_t"])
     segments = []
@@ -646,16 +664,22 @@ def _arrival_segments(a, start, cruise_fl, cruise_mach_at_barix, isa_dev_k, crui
         cursor.update(cum_nm=pts[-1]["cum_nm"], elapsed_s=pts[-1]["elapsed_s"], weight_t=pts[-1]["weight_t"])
 
     level_ft = a["level_fl"] * 100.0
-    ramp("deceleration", n, a["decel_nm"], a["decel_time_min"], a["decel_fuel_t"], cruise_fl * 100.0, level_ft,
+    decel_end_ft = a["decel_end_fl"] * 100.0
+    ramp("deceleration", n, a["decel_nm"], a["decel_time_min"], a["decel_fuel_t"], cruise_fl * 100.0, decel_end_ft,
          lambda alt, f: cruise_mach_at_barix + f * (SUBSONIC_LIMIT_MACH - cruise_mach_at_barix),
          a["decel_wind_kt"], False)
+    if a["transition_nm"] > 0.0:
+        ramp("subsonic cruise", n, a["transition_nm"], a["transition_time_min"], a["transition_fuel_t"],
+             decel_end_ft, level_ft, lambda alt, f: _descent_mach(alt, cursor["weight_t"]),
+             a["level_wind_kt"], True)
     ramp("subsonic cruise", 1, a["level_nm"], a["level_time_min"], a["level_fuel_t"], level_ft, level_ft,
          lambda alt, f: LEVEL_MACH, a["level_wind_kt"], True)
     ramp("descent", n, a["descent_nm"], a["descent_time_min"], a["descent_fuel_t"], level_ft, DESCENT_END_FT,
-         lambda alt, f: mach_from_cas(schedule_ms, float(isa(alt * FT_TO_M)[1])), a["descent_wind_kt"], True)
+         lambda alt, f: _descent_mach(alt, cursor["weight_t"]), a["descent_wind_kt"], True)
 
-    mean_gs_kt = APPROACH_NM / (APPROACH_MIN / 60.0)
-    pts = [_point(cursor["cum_nm"] + f * APPROACH_NM, cursor["elapsed_s"] + f * APPROACH_MIN * 60.0,
+    approach_min = a["approach_time_min"]
+    mean_gs_kt = APPROACH_NM / (approach_min / 60.0)
+    pts = [_point(cursor["cum_nm"] + f * APPROACH_NM, cursor["elapsed_s"] + f * approach_min * 60.0,
                   DESCENT_END_FT * (1.0 - f), cursor["weight_t"] - f * APPROACH_FUEL_T, cruise_mach,
                   gs_kt=mean_gs_kt, subsonic=True, speed_basis="mean") for f in (0.0, 1.0)]
     segments.append(("approach", pts[0], pts[1]))
@@ -728,7 +752,8 @@ class FlightProfile(NamedTuple):
 def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, accel_id, decel_id, tow_t=None,
                    subsonic_npz_path=None, arrival_upper_npz_path=None,
                    cruise_mach=limits.CRUISE_MACH,
-                   min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T, runway_penalties_s=(0.0, 0.0)):
+                   min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T, runway_penalties_s=(0.0, 0.0),
+                   thrust_reversers=False):
     """The whole flight, brake release -> touchdown, for ONE candidate departure
     -- run_report's model (resolve_tow_and_arrival, so TOW is solved from zfw_t
     or is the tow_t override) laid out as data instead of printed text.
@@ -769,7 +794,8 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, accel_id, 
             load_legs_npz(subsonic_npz_path) if subsonic_npz_path is not None else None, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t, cruise_mach=cruise_mach,
             arrival_upper_data=(load_legs_npz(arrival_upper_npz_path)
-                                if arrival_upper_npz_path is not None else None)))
+                                if arrival_upper_npz_path is not None else None),
+            thrust_reversers=thrust_reversers))
     plan = fuel.fuel_plan(climb, legs_out, arrival_out, zfw_t=np.array([zfw_t], dtype=float),
                           min_landing_fuel_t=min_landing_fuel_t, tow_t=tow_arr,
                           n_iterations=n_iterations, flags=plan_flags)

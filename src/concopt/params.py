@@ -100,11 +100,41 @@ INITIAL_TOW_T = 150.0
 # =============================================================================
 # Arrival model (arrival.py): BARIX -> touchdown
 # =============================================================================
-# --- Approach allowance, 1,500 ft to touchdown -------------------------------
+# --- Approach: the gate 5 nm out at 175 KIAS, then touchdown ----------------
 # ASSUMPTIONS, not table values. The Phase C flight recorder measures these.
+# APPROACH_MIN is only the nominal figure the recorder's low-altitude tick is
+# sized against -- arrival.py times the final APPROACH_NM itself, at
+# GATE_KIAS plus wind.
 APPROACH_NM = 5.0
 APPROACH_MIN = 1.5
 APPROACH_FUEL_T = 0.3
+GATE_KIAS = 175.0
+
+# --- Subsonic descent after the decel waypoint ----------------------------------
+# Flown as fast as the airframe allows: M0.95 (LEVEL_MACH) until that reaches
+# the CAS limit (conc_cas_limit.csv), the CAS limit below, SPEED_LIMIT_KIAS
+# below SPEED_LIMIT_FL. The descent RATE is conc_descent.csv's own, for this
+# schedule's subsonic descent table (the fastest -- user-confirmed as close
+# enough to a descent at maximum speed); its fuel is that table's too.
+DESCENT_RATE_SCHEDULE_KT = 380
+SPEED_LIMIT_FL = 100.0
+SPEED_LIMIT_KIAS = 250.0
+# Level-flight slow-downs, normal configuration (user-supplied): 350 -> 250 kt
+# takes ~3 min, so 100/3 kt/min (at SPEED_LIMIT_FL); 250 -> 175 kt takes
+# ~90 s, so 50 kt/min (at DESCENT_END_FT, before the gate).
+SLOWDOWN_TO_LIMIT_KT_PER_MIN = 100.0 / 3.0
+SLOWDOWN_TO_GATE_KT_PER_MIN = 50.0
+# In-flight thrust reversers (--thrust-reversers), subsonic only: roughly
+# double the descent rate and halve the time a slow-down takes, for at most
+# REVERSER_MAX_MIN in all, used from the top of the descent onward.
+REVERSER_FACTOR = 2.0
+REVERSER_MAX_MIN = 2.0
+# Altitude grid the descent is integrated on (arrival._descent_grid).
+DESCENT_GRID_TOP_FT = 41000.0
+DESCENT_GRID_STEP_FT = 500.0
+# Levels the subsonic cruise may be flown at (conc_subsonic_cruise.csv's own),
+# at or below where the decel ends -- the fastest one, per candidate.
+SUBSONIC_LEVELS_FL = (290.0, 310.0, 330.0, 350.0, 370.0, 390.0, 410.0)
 
 # Altitude the descent segment ends at (and the approach allowance starts at).
 # DESCENT_END_FL is the same height in FL units, for the descent segment's

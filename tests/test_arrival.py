@@ -74,14 +74,14 @@ class TestSegmentsSum:
 
     @pytest.mark.parametrize("speed", arrival.SCHEDULES_KT)
     def test_distances_sum_to_arrival_less_approach(self, speed):
-        """level_nm + descent_nm == arrival_nm - APPROACH_NM: the decel ends
-        AT the decel waypoint, so it isn't part of arrival_nm."""
+        """transition_nm + level_nm + descent_nm == arrival_nm - APPROACH_NM:
+        the decel ends AT the decel waypoint, so it isn't part of arrival_nm."""
         arrival_nm = np.array([260.0, 307.0, 350.0])
         isa_dev = np.array([5.0, -15.0, 0.0])
         r = arrival.arrival(
             550.0, arrival_nm, Wind(np.zeros(3), isa_dev), isa_dev, speed=speed
         )
-        total = r["level_nm"] + r["descent_nm"]
+        total = r["transition_nm"] + r["level_nm"] + r["descent_nm"]
         assert np.allclose(total, arrival_nm - arrival.APPROACH_NM, atol=0.1)
 
     @pytest.mark.parametrize("speed", arrival.SCHEDULES_KT)
@@ -91,10 +91,10 @@ class TestSegmentsSum:
         r = arrival.arrival(
             550.0, arrival_nm, Wind(np.zeros(3), isa_dev), isa_dev, speed=speed
         )
-        t = (r["decel_time_min"] + r["level_time_min"] + r["descent_time_min"]
-             + arrival.APPROACH_MIN)
-        f = (r["decel_fuel_t"] + r["level_fuel_t"] + r["descent_fuel_t"]
-             + arrival.APPROACH_FUEL_T)
+        t = (r["decel_time_min"] + r["transition_time_min"] + r["level_time_min"]
+             + r["descent_time_min"] + r["approach_time_min"])
+        f = (r["decel_fuel_t"] + r["transition_fuel_t"] + r["level_fuel_t"]
+             + r["descent_fuel_t"] + arrival.APPROACH_FUEL_T)
         assert np.allclose(t, r["time_min"], atol=1e-9)
         assert np.allclose(f, r["fuel_t"], atol=1e-9)
 
@@ -389,16 +389,19 @@ class TestSubsonicMass:
     def test_level_mass_outside_envelope_flags_rather_than_lies(self):
         """A mass the aircraft could never hold at FL350 (its own published
         max there is 160-165 t, well under the table's global 180 t axis
-        bound) must come back flagged NaN, not a wrong-but-plausible number
+        bound) must come back NaN there, not a wrong-but-plausible number
         silently clamped to 180 t -- reading the table at the wrong mass
-        is exactly the trap this whole task is about."""
+        is exactly the trap this whole task is about. So FL350 is never the
+        level chosen: a lower one the table does cover at that mass is."""
         isa_dev = np.zeros(1)
         w = _still_air(1)
         r = arrival.arrival(550.0, np.array([ROUTE_NM]), w, isa_dev,
-                            mass_at_barix_t=170.0, speed=350)  # -> FL350
-        assert r["level_mass_outside_envelope"][0]
-        assert "level_mass_outside_envelope" in r["flags"][0]
-        assert np.isnan(r["fuel_t"][0])
+                            mass_at_barix_t=170.0, speed=350)  # decel ends FL350
+        at_fl350 = arrival.conc_data.subsonic_cruise(350.0, 170.0 - r["decel_fuel_t"][0], 0.0)
+        assert np.isnan(at_fl350["fuel_total_kgh"])
+        assert r["level_fl"][0] < 350.0
+        assert not r["level_mass_outside_envelope"][0]
+        assert np.isfinite(r["fuel_t"][0])
 
     def test_level_mass_outside_envelope_absent_at_real_arrival_masses(self):
         """The caller's own promise: at 110-120 t at LEVEL-OFF (i.e. after
@@ -509,7 +512,7 @@ class TestLevelFuelWindDependence:
         # exactly (see _isa_temp_k): temp_k = isa_t_k(queried_fl) + isa_dev,
         # so subtracting isa_t_k(decel_end_fl) back out (as _arrival_for_
         # speed does) returns isa_dev unchanged, at any level.
-        mass_at_level_t = mass_at_barix_t - r["decel_fuel_t"]
+        mass_at_level_t = mass_at_barix_t - r["decel_fuel_t"] - r["transition_fuel_t"]
         expected_fuel_total_kgh = conc_data.subsonic_cruise(
             r["level_fl"], mass_at_level_t, isa_dev
         )["fuel_total_kgh"]
@@ -542,3 +545,92 @@ class TestWindFlClampedSaturation:
             mass_at_barix_t=115.0, speed=380,
         )
         assert r["descent_wind_clamped"][0]
+
+
+class _LevelWind:
+    """Along-track wind that varies with level: wind_kt at FL350, changing
+    by per_kft for every 1,000 ft up (so a negative per_kft is a headwind
+    easing lower down) -- the best subsonic level depends on the profile,
+    not just the Mach."""
+
+    def __init__(self, wind_kt, per_kft, isa_dev_c=0.0):
+        self.wind_kt, self.per_kft, self.isa_dev_c = wind_kt, per_kft, isa_dev_c
+
+    def __call__(self, level_fl):
+        level_fl = np.asarray(level_fl, float)
+        return {"wind_kt": self.wind_kt + self.per_kft * (level_fl - 350.0) / 10.0,
+                "temp_k": _isa_temp_k(level_fl, self.isa_dev_c)}
+
+
+class TestSubsonicLevel:
+    """After the decel waypoint, M0.95 at the fastest feasible level at or
+    below where the decel ends."""
+
+    def test_never_above_where_the_decel_ends(self):
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _LevelWind(0.0, 30.0), np.zeros(1), speed=350)
+        assert r["level_fl"][0] <= r["decel_end_fl"][0]
+
+    def test_still_air_takes_the_lowest_level(self):
+        """At a fixed M0.95 the TAS is higher in the warmer air lower down
+        (~571 kt at FL290 against ~547 at FL350, ISA) and the descent from
+        there is shorter, so without a wind reason to stay high the lowest
+        level the subsonic table covers is the fastest."""
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _LevelWind(0.0, 0.0), np.zeros(1), speed=350)
+        assert r["level_fl"][0] == min(arrival.SUBSONIC_LEVELS_FL)
+        assert r["transition_nm"][0] > 0.0
+
+    def test_tailwind_aloft_keeps_it_high(self):
+        """A tailwind growing by 40 kt per 1,000 ft up outweighs that: the
+        level stays where the decel ends, with no transition descent."""
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _LevelWind(0.0, 40.0), np.zeros(1), speed=350)
+        assert r["level_fl"][0] == r["decel_end_fl"][0]
+        assert r["transition_nm"][0] == 0.0
+
+    def test_picks_the_fastest_level(self):
+        """Whatever it picks is no slower than forcing any other level --
+        checked by comparing against each level's own after-waypoint time."""
+        w = _LevelWind(-60.0, 15.0)
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), w, np.zeros(1), speed=350)
+        n = 1
+        g = arrival._descent_grid(w, np.array([True]), np.zeros(1), np.array([118.0]), n)
+        mass = np.array([118.0]) - r["decel_fuel_t"]
+        for fl in [350.0] + [l for l in arrival.SUBSONIC_LEVELS_FL if l < 350.0]:
+            other = arrival._after_waypoint(fl, 350.0, np.array([ROUTE_NM]), g, w, np.zeros(1),
+                                            mass, 0.0, n)
+            assert r["after_waypoint_time_min"][0] <= other["after_waypoint_time_min"][0] + 1e-9
+
+
+class TestDescentModel:
+    def test_reversers_off_by_default_and_capped_when_on(self):
+        off = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350)
+        on = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350,
+                             thrust_reversers=True)
+        assert off["reverser_min"][0] == 0.0
+        assert on["reverser_min"][0] == pytest.approx(arrival.REVERSER_MAX_MIN)
+        # Same distance flown in less time, the difference going to the level segment.
+        assert on["descent_time_min"][0] < off["descent_time_min"][0]
+        assert on["descent_nm"][0] < off["descent_nm"][0]
+        assert on["level_nm"][0] > off["level_nm"][0]
+        assert on["time_min"][0] <= off["time_min"][0] + 1e-9
+
+    def test_slow_downs_take_the_given_times(self):
+        """250 -> 175 kt at 1,500 ft is 90 s, and the FL100 slow-down runs
+        from the CAS limit down to 250 kt at 100 kt per 3 min."""
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350,
+                            mass_at_barix_t=118.0)
+        cas_at_fl100 = arrival._max_cas_kt(10000.0, atmos.fl_to_pressure(100.0), 118.0 - r["decel_fuel_t"])
+        expected = (cas_at_fl100 - 250.0) / (100.0 / 3.0) + 1.5
+        assert r["slowdown_time_min"][0] == pytest.approx(expected[0])
+
+    def test_approach_is_the_last_5_nm_at_175_kias(self):
+        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350)
+        tas_kt = arrival._tas_kt(175.0, atmos.fl_to_pressure(15.0), _isa_temp_k(15.0, 0.0))
+        assert r["approach_time_min"][0] == pytest.approx(5.0 / tas_kt * 60.0)
+
+    @pytest.mark.parametrize("band", [arrival.BAND_WARM, arrival.BAND_COLD])
+    def test_descent_table_reaches_zero_at_1500_ft(self, band):
+        """The table's lowest row (FL30/FL50) still has time to go; below it
+        the descent runs linearly to exactly zero at 1,500 ft, not clamped."""
+        t, f = arrival._to_1500ft(np.array([15.0, 20.0, 60.0]), band)
+        assert t[0] == 0.0 and f[0] == 0.0
+        assert 0.0 < t[1] < t[2]

@@ -159,7 +159,8 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
                             tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                             cruise_mach=limits.CRUISE_MACH,
                             sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
-                            seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT):
+                            seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT,
+                            thrust_reversers=False):
     """A synthetic flight-shaped DataFrame (same columns a --record CSV has,
     a valid replay_sources profile) for JFK->LHR on pln_path, built from
     the SAME model concopt report runs (search.resolve_tow_and_arrival:
@@ -205,7 +206,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             cruise_mach=cruise_mach,
-            arrival_upper_data=arrival_upper_data,
+            arrival_upper_data=arrival_upper_data, thrust_reversers=thrust_reversers,
         )
     )
     tow_t_val = float(tow_arr[0])
@@ -274,6 +275,15 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
     cursor_elapsed_s += a["decel_time_min"] * 60.0
     cursor_cum_nm = decel_cum_nm
     cursor_weight_t -= a["decel_fuel_t"]
+    points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["decel_end_fl"] * 100.0,
+                        mach=REPLAY_DECEL_END_MACH, tas_kt=float(a["schedule_kt"]),
+                        gs_kt=float(a["schedule_kt"]) + a["level_wind_kt"],
+                        weight_t=cursor_weight_t, on_ground=False))
+
+    # Down to the subsonic cruise level, when it's below where the decel ends.
+    cursor_elapsed_s += a["transition_time_min"] * 60.0
+    cursor_cum_nm += a["transition_nm"]
+    cursor_weight_t -= a["transition_fuel_t"]
     points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["level_fl"] * 100.0,
                         mach=REPLAY_DECEL_END_MACH, tas_kt=float(a["schedule_kt"]),
                         gs_kt=float(a["schedule_kt"]) + a["level_wind_kt"],
@@ -295,7 +305,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
                         gs_kt=REPLAY_DESCENT_END_TAS_KT,
                         weight_t=cursor_weight_t, on_ground=False))
 
-    touchdown_elapsed_s = cursor_elapsed_s + arrival.APPROACH_MIN * 60.0
+    touchdown_elapsed_s = cursor_elapsed_s + a["approach_time_min"] * 60.0
     cursor_weight_t -= arrival.APPROACH_FUEL_T
     points.append(dict(elapsed_s=touchdown_elapsed_s, cum_nm=touchdown_cum_nm, alt_ft=0.0,
                         mach=REPLAY_TOUCHDOWN_MACH, tas_kt=REPLAY_TOUCHDOWN_TAS_KT,

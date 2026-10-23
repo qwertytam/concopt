@@ -160,7 +160,12 @@ def test_synthetic_flight_replays_end_to_end_with_phases_in_order(tmp_path):
     assert recorded["schema_version"].iloc[0] == 2
 
     phases = recorded["phase"].tolist()
-    canonical_order = ["ground", "climb", "cruise", "decel", "descent", "approach"]
+    # "ground" is left out: it is legitimately both first (brake release)
+    # and last (touchdown), and at this replay speed the brake-release tick
+    # can land just after liftoff (~13 s of flight time per Windows timer
+    # tick), so a recording may open in "climb". Ending on the ground is
+    # checked below.
+    canonical_order = ["climb", "cruise", "decel", "descent", "approach"]
     seen_in_canonical_order = [p for p in canonical_order if p in phases]
     first_seen_at = [phases.index(p) for p in seen_in_canonical_order]
     assert first_seen_at == sorted(first_seen_at), (

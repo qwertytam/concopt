@@ -450,3 +450,20 @@ def test_report_total_block_time_agrees_with_search(tmp_path, monkeypatch, capsy
     printed = capsys.readouterr().out
 
     assert f"total block time: {search._format_hmm(row['total_time_s'])}" in printed
+
+
+def test_run_shortlist_emits_thrust_reversers_only_when_the_search_used_them(tmp_path, capsys):
+    """verify's TOW comes from the same arrival model the search ranked
+    with, so a --thrust-reversers search's verify commands carry it too."""
+    csv_path = tmp_path / "results.csv"
+    df = _sample_results_csv(csv_path, n=1, zfw_t=92.0)
+
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1,
+                  subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
+    assert "--thrust-reversers" not in capsys.readouterr().out
+
+    df["thrust_reversers"] = True
+    df.to_csv(csv_path, index=False)
+    run_shortlist(csv_path, "route.pln", "route_legs.npz", SAMPLE_DECEL_ID, top=1,
+                  subsonic_npz_path="s.npz", arrival_upper_npz_path="u.npz")
+    assert "--thrust-reversers" in capsys.readouterr().out

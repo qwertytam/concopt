@@ -378,8 +378,9 @@ def test_live_arrival_returns_a_segment_breakdown():
     # The decel ends at the decel waypoint, so its distance at the current
     # ground speed comes back out of the time to get there.
     replaced_min = info["decel_nm"] / gs_kt * 60.0
-    assert (info["decel_time_min"] + info["level_time_min"] + info["descent_time_min"]
-            + inflight.arrival.APPROACH_MIN - replaced_min) == pytest.approx(info["time_min"])
+    assert (info["decel_time_min"] + info["transition_time_min"] + info["level_time_min"]
+            + info["descent_time_min"] + info["approach_time_min"]
+            - replaced_min) == pytest.approx(info["time_min"])
 
 
 def test_build_arrival_text_renders_the_segment_breakdown():
@@ -915,3 +916,26 @@ def test_sim_paused_only_when_zulu_has_not_moved():
     assert not inflight._sim_paused(None, 1000.0)          # first row after brake release
     assert not inflight._sim_paused(1000.0, None)          # missing read: still written
     assert not inflight._sim_paused(1000.0, float("nan"))
+
+
+def test_flight_phase_decel_starts_before_the_decel_waypoint():
+    """The decel waypoint is where the aircraft must be subsonic BY: the
+    decel phase runs from decel_start_cum_nm up to it, supersonic or not."""
+    kw = dict(accel_cum_nm=200.0, decel_cum_nm=3000.0, agl_ft=55000.0, on_ground=False,
+              decel_start_cum_nm=2900.0)
+    assert inflight._flight_phase(2850.0, mach=2.0, **kw) == "cruise"
+    assert inflight._flight_phase(2950.0, mach=1.6, **kw) == "decel"
+    assert inflight._flight_phase(2990.0, mach=0.98, **kw) == "decel"
+
+
+def test_compare_reports_mach_at_the_decel_waypoint():
+    """The decel waypoint is where the aircraft must be subsonic by --
+    --compare reports the Mach it actually crossed it at."""
+    cpa = {
+        "LINND": dict(dist_nm=0.1, elapsed_s=1250.0, fl=500.0, mach=2.0, tas_kt=1140.0, gs_kt=1105.0),
+        "MID": dict(dist_nm=0.2, elapsed_s=2760.0, fl=530.0, mach=2.0, tas_kt=1150.0, gs_kt=1140.0),
+        "BARIX": dict(dist_nm=0.1, elapsed_s=4260.0, fl=350.0, mach=0.98, tas_kt=560.0, gs_kt=540.0),
+    }
+    _, constants = inflight.compare_to_report(_sample_report_df(), cpa, 4260.0 + REPORT_ARRIVAL_S,
+                                              accel_id="LINND", decel_id="BARIX")
+    assert constants["mach_at_decel_waypoint"] == pytest.approx(0.98)

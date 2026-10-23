@@ -166,7 +166,8 @@ def march_tail(legs_out, weight_per_leg):
     return tail
 
 
-def _arrival_from_march(legs_out, weight_per_leg, arrival_nm, arrival_wind_fn, arrival_fn):
+def _arrival_from_march(legs_out, weight_per_leg, arrival_nm, arrival_wind_fn, arrival_fn,
+                        thrust_reversers=False):
     """arrival_fn's output for this march's own end-of-cruise state: FL and
     ISA deviation at the last cruise leg (arriving at the decel point), the
     weight at BARIX (mass_at_barix_t -- MASS IS THE TRAP, see
@@ -191,7 +192,8 @@ def _arrival_from_march(legs_out, weight_per_leg, arrival_nm, arrival_wind_fn, a
     wind_at_fl = arrival_wind_fn(legs_out["accumulated_s"])
     return arrival_fn(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
                        mass_at_barix_t, speed="auto",
-                       march_tail=march_tail(legs_out, weight_per_leg))
+                       march_tail=march_tail(legs_out, weight_per_leg),
+                       thrust_reversers=thrust_reversers)
 
 
 def fixed_point_fuel_iteration(
@@ -199,6 +201,7 @@ def fixed_point_fuel_iteration(
     min_landing_fuel_t=MIN_LANDING_FUEL_T, march_legs_fn=None, arrival_fn=None,
     cruise_mach=None, damping=DEFAULT_DAMPING,
     tolerance_t=DEFAULT_TOLERANCE_T, max_iterations=DEFAULT_MAX_ITERATIONS,
+    thrust_reversers=False,
 ):
     """Solve TOW = ZFW + trip_fuel(TOW) + reserve, for every candidate at once.
 
@@ -260,7 +263,7 @@ def fixed_point_fuel_iteration(
             cc_legs, cc_idx, data, dep_i8, tow_t=tow_t, cruise_mach=cruise_mach
         )
         arrival_out = _arrival_from_march(legs_out, weight_per_leg, arrival_nm,
-                                          arrival_wind_fn, arrival_fn)
+                                          arrival_wind_fn, arrival_fn, thrust_reversers)
         tow_calc = zfw_t + calculate_trip_fuel(climb, legs_out, arrival_out) + min_landing_fuel_t
 
         # A trial TOW light enough to put mass_at_barix_t below
