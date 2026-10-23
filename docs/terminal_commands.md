@@ -30,13 +30,23 @@ SET TOP_N=50
 `Get-Date` doesn't depend on the Windows date format, unlike `%DATE%`. Pasted at the prompt it's
 `%i`; inside a `.bat` file it would be `%%i`.
 
+Paste this block on its own. It lists the existing results folders, newest
+first, then asks which one to use. Press Enter for a new timestamped folder,
+or type an existing one (e.g. `data\results\20261023_0630`) to carry on with
+it. The prompt must be the last line you paste, or the next pasted line
+becomes its answer.
+
 ```bat
 for /f %i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmm"') do SET STAMP=%i
 SET RESULTS_DIR=data\results\%STAMP%
+dir /b /ad /o-n data\results
+SET /P RESULTS_DIR=Results folder [Enter = new %RESULTS_DIR%, or type an existing one]: 
 ```
 
+Then this block uses that folder if it exists, or creates it, and says which:
+
 ```bat
-if not exist "%RESULTS_DIR%\" mkdir "%RESULTS_DIR%"
+if exist "%RESULTS_DIR%\" (echo Using existing folder %RESULTS_DIR%) else (mkdir "%RESULTS_DIR%" && echo Created folder %RESULTS_DIR%)
 SET RESULTS_FILE=%RESULTS_DIR%\results.csv
 SET RESULTS_ALL_FILE=%RESULTS_DIR%\results_all.csv
 SET REPORT_SELECTED_DAYTIME_FILE=%RESULTS_DIR%\report_selected_daytime.csv
