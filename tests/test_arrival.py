@@ -592,7 +592,7 @@ class TestSubsonicLevel:
         w = _LevelWind(-60.0, 15.0)
         r = arrival.arrival(550.0, np.array([ROUTE_NM]), w, np.zeros(1), speed=350)
         n = 1
-        g = arrival._descent_grid(w, np.array([True]), np.zeros(1), np.array([118.0]), n)
+        g = arrival._descent_grid(w, np.array([True]), n)
         mass = np.array([118.0]) - r["decel_fuel_t"]
         for fl in [350.0] + [l for l in arrival.SUBSONIC_LEVELS_FL if l < 350.0]:
             other = arrival._after_waypoint(fl, 350.0, np.array([ROUTE_NM]), g, w, np.zeros(1),
@@ -613,14 +613,24 @@ class TestDescentModel:
         assert on["level_nm"][0] > off["level_nm"][0]
         assert on["time_min"][0] <= off["time_min"][0] + 1e-9
 
-    def test_slow_downs_take_the_given_times(self):
-        """250 -> 175 kt at 1,500 ft is 90 s, and the FL100 slow-down runs
-        from the CAS limit down to 250 kt at 100 kt per 3 min."""
-        r = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350,
-                            mass_at_barix_t=118.0)
-        cas_at_fl100 = arrival._max_cas_kt(10000.0, atmos.fl_to_pressure(100.0), 118.0 - r["decel_fuel_t"])
-        expected = (cas_at_fl100 - 250.0) / (100.0 / 3.0) + 1.5
-        assert r["slowdown_time_min"][0] == pytest.approx(expected[0])
+    def test_descent_is_the_tables_time_with_no_level_slow_downs(self):
+        """FL290 -> 1,500 ft is conc_descent.csv's own 7.3 min (380 kt
+        schedule, warm band) -- slowing down is inside that, not added on.
+        With a 40 kt tailwind that is the table's 56 nm + 40 kt x 7.3 min = ~61 nm, against the sim's own ~65 nm to
+        2,000 ft (2026-10-23); level slow-downs on top made it ~88."""
+        def tail40(fl):
+            fl = np.asarray(fl, float)
+            return {"wind_kt": np.full(1, 40.0), "temp_k": np.full(1, _isa_temp_k(fl, 0.0))}
+
+        n = 1
+        g = arrival._descent_grid(tail40, np.ones(n, bool), n)
+        out = arrival._after_waypoint(290.0, 290.0, ROUTE_NM, g, tail40, np.zeros(n),
+                                      np.full(n, 105.0), 0.0, n)
+        assert out["descent_time_min"][0] == pytest.approx(7.3)
+        assert out["descent_nm"][0] == pytest.approx(56.0 + 40.0 * 7.3 / 60.0, abs=0.5)
+        # M0.95 at FL290 is ~376 KIAS, just under the 380 kt CAS limit
+        m095_kias = atmos.cas_from_mach(0.95, atmos.fl_to_pressure(290.0)) / atmos.KT_TO_MS
+        assert out["descent_top_kias"][0] == pytest.approx(min(m095_kias, 380.0))
 
     def test_approach_is_the_last_5_nm_at_175_kias(self):
         r = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350)
@@ -631,6 +641,6 @@ class TestDescentModel:
     def test_descent_table_reaches_zero_at_1500_ft(self, band):
         """The table's lowest row (FL30/FL50) still has time to go; below it
         the descent runs linearly to exactly zero at 1,500 ft, not clamped."""
-        t, f = arrival._to_1500ft(np.array([15.0, 20.0, 60.0]), band)
+        t, f, _ = arrival._to_1500ft(np.array([15.0, 20.0, 60.0]), band)
         assert t[0] == 0.0 and f[0] == 0.0
         assert 0.0 < t[1] < t[2]

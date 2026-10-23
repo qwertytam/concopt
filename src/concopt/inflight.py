@@ -635,6 +635,8 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl,
         level_time_min=float(out["level_time_min"][0]),
         descent_time_min=float(out["descent_time_min"][0]),
         approach_time_min=float(out["approach_time_min"][0]),
+        descent_top_kias=float(out["descent_top_kias"][0]),
+        reverser_min=float(out["reverser_min"][0]),
         level_fl=float(out["level_fl"][0]),
         level_wind_kt=float(out["level_wind_kt"][0]),
         flags=str(out["flags"][0]),
@@ -665,14 +667,20 @@ def _build_arrival_text(arrival_info):
             "Arrival (to touchdown) [PRE-FLIGHT]: Active Sky unavailable "
             f"this far ahead -- pre-flight figure {arrival_info['time_min']:.1f} min total"
         )
+    a = arrival_info
+    reversers = f", reversers {a['reverser_min']:.1f} min" if a["reverser_min"] > 0.0 else ""
     return Text(
-        f"Arrival (to touchdown) [LIVE], {arrival_info['time_min']:.1f} min total:\n"
-        f"  decel {arrival_info['decel_time_min']:.1f} min  {arrival_info['decel_nm']:.0f} nm "
-        f"(subsonic by the decel waypoint)\n"
-        f"  level {arrival_info['level_time_min']:.1f} min  {arrival_info['level_nm']:.0f} nm  "
-        f"FL{arrival_info['level_fl']:.0f}, {arrival_info['level_wind_kt']:+.0f} kt\n"
-        f"  descent {arrival_info['descent_time_min']:.1f} min  {arrival_info['descent_nm']:.0f} nm"
-        f"  /  approach {arrival.APPROACH_MIN:.1f} min  {arrival.APPROACH_NM:.0f} nm"
+        f"Arrival (to touchdown) [LIVE], {a['time_min']:.1f} min total:\n"
+        f"  decel    {a['decel_time_min']:4.1f} min {a['decel_nm']:4.0f} nm   "
+        f"to M1.0, subsonic by the decel waypoint\n"
+        f"  level    {a['level_time_min']:4.1f} min {a['level_nm']:4.0f} nm   "
+        f"FL{a['level_fl']:.0f} at M{arrival.LEVEL_MACH:.2f}, {a['level_wind_kt']:+.0f} kt\n"
+        f"  descent  {a['descent_time_min']:4.1f} min {a['descent_nm']:4.0f} nm   "
+        f"M{arrival.LEVEL_MACH:.2f}/{a['descent_top_kias']:.0f} KIAS -> "
+        f"{arrival.SPEED_LIMIT_KIAS:.0f} KIAS at FL{arrival.SPEED_LIMIT_FL:.0f} -> "
+        f"{arrival.GATE_KIAS:.0f} KIAS at 1,500 ft{reversers}\n"
+        f"  approach {a['approach_time_min']:4.1f} min {arrival.APPROACH_NM:4.0f} nm   "
+        f"at {arrival.GATE_KIAS:.0f} KIAS"
     )
 
 
