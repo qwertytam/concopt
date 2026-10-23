@@ -265,6 +265,23 @@ def _zulu_ok(zulu_s):
     return zulu_s is not None and not np.isnan(zulu_s)
 
 
+def _parse_utc_s(text):
+    """'HH:MM' or 'HH:MM:SS' (UTC, sim time) -> seconds since midnight."""
+    parts = [int(p) for p in text.split(":")]
+    if len(parts) not in (2, 3) or not (0 <= parts[0] < 24 and all(0 <= p < 60 for p in parts[1:])):
+        raise ValueError(f"expected HH:MM or HH:MM:SS, got {text!r}")
+    return parts[0] * 3600 + parts[1] * 60 + (parts[2] if len(parts) == 3 else 0)
+
+
+def _late_start_elapsed_s(zulu_s, brake_release_utc_s):
+    """Elapsed time to start a late-started recording at: sim time since
+    brake_release_utc_s (modulo a day, for a flight across midnight), or 0
+    when that isn't given or ZULU_TIME wasn't read."""
+    if brake_release_utc_s is None or not _zulu_ok(zulu_s):
+        return 0.0
+    return float((zulu_s - brake_release_utc_s) % S_PER_DAY)
+
+
 class _BadSimData(ValueError):
     """The sim answered, but with a position/state that can't be flown on
     (NaN while P3D reloads scenery or Active Sky changes the time)."""
@@ -464,7 +481,7 @@ def _wind_along_track_kt(wind_kt, wind_dir_deg, track_deg):
 
 
 def _flight_phase(cum_nm, accel_cum_nm, decel_cum_nm, mach, agl_ft, on_ground,
-                  decel_start_cum_nm=None):
+                  decel_start_cum_nm=None, prev_phase=None):
     """climb / cruise / decel / descent / approach / ground for one sample,
     so a notebook can cut segments without re-inferring them from the
     altitude trace.
@@ -477,9 +494,17 @@ def _flight_phase(cum_nm, accel_cum_nm, decel_cum_nm, mach, agl_ft, on_ground,
     it; the waypoint itself when unknown) up to the waypoint -- and past it
     only while still supersonic, an overrun. approach needs agl_ft; where
     that read was unavailable the sample stays "descent" rather than
-    guessing -- the empty agl_ft column is what says so."""
+    guessing -- the empty agl_ft column is what says so.
+
+    Once "approach", it stays "approach" until the ground (prev_phase, the
+    previous row's phase): levelling off around APPROACH_AGL_FT otherwise
+    flips it approach/descent row to row, as the 2026-10-23 recording did
+    for 2 minutes at ~1,500 ft. A go-around stays "approach" too -- rare
+    enough not to model."""
     if on_ground:
         return "ground"
+    if prev_phase == "approach":
+        return "approach"
     if decel_start_cum_nm is None:
         decel_start_cum_nm = decel_cum_nm
     if cum_nm >= decel_cum_nm:
@@ -699,8 +724,16 @@ def _advisory(table, best_idx, current_idx, remaining_nm, gain_threshold_kt):
 
     Returns dict(action, current_fl, rec_fl, gain_kt, gain_s); gain_s is
     None (-> an empty CSV cell) where a ground speed is non-positive rather
-    than a divide-by-zero."""
+    than a divide-by-zero.
+
+    remaining_nm <= 0 means the aircraft is past the decel start: the
+    supersonic cruise the FL450-FL600 table is about is over, so there is
+    no advice -- action "NONE", rec_fl/gain_kt/gain_s None. (The first
+    full recording, 2026-10-23, said "CLIMB to FL530" all the way down to
+    the runway.)"""
     current_fl = float(table["fl"].iloc[current_idx])
+    if remaining_nm <= 0.0:
+        return dict(action="NONE", current_fl=current_fl, rec_fl=None, gain_kt=None, gain_s=None)
     rec_fl = float(table["fl"].iloc[best_idx])
     gs_current_kt = float(table["gs_kt"].iloc[current_idx])
     gs_best_kt = float(table["gs_kt"].iloc[best_idx])
@@ -729,6 +762,8 @@ def _recommendation_line(table, best_idx, current_idx, remaining_nm,
     Pure formatting of _advisory's numbers; the decision lives there."""
     adv = _advisory(table, best_idx, current_idx, remaining_nm, gain_threshold_kt)
 
+    if adv["action"] == "NONE":
+        return "No level advice -- past decel start"
     if adv["action"] == "HOLD":
         return f"HOLD FL{adv['current_fl']:.0f}"
 
@@ -795,7 +830,7 @@ def _recommendation_text(line):
     can't drift out of step with _recommendation_line's actual wording or
     thresholds -- that function is untouched and still the only place the
     advisory decision is made."""
-    style = "dim" if line.startswith("HOLD") else "bold white on dark_green"
+    style = "dim" if line.startswith(("HOLD", "No level advice")) else "bold white on dark_green"
     return Text(line, style=style, justify="center")
 
 
@@ -968,7 +1003,7 @@ def _record_row(elapsed_s, state, cum_nm, last_waypoint, leg_track_deg, flight_p
         "rec_action": advisory["action"],
         "rec_gain_kt": _round_or_none(advisory["gain_kt"], 2),
         "rec_gain_s": _round_or_none(advisory["gain_s"], 1),
-        "binding": binding_at_best,
+        "binding": binding_at_best if advisory["action"] != "NONE" else None,
         "predicted_remaining_s": _round_or_none(predicted_remaining_s, 1),
         "predicted_total_s": _round_or_none(predicted_total_s, 1),
         "arrival_time_min": _round_or_none(arrival_info.get("time_min"), 2),
@@ -1140,7 +1175,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                   host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
                   state_source=None, weather_source=None, replay_speed=1.0,
-                  thrust_reversers=False, record_mode="ask"):
+                  thrust_reversers=False, record_mode="ask", brake_release_utc_s=None):
     """The live advisor loop, every interval_s: read the sim, project
     lookahead_nm ahead along the route, query Active Sky there, show the
     level table and recommendation. If record_path is given, also runs the
@@ -1190,7 +1225,16 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     waypoint's closest approach are rebuilt from its rows, and new rows go on
     the end) or "new" (the old file is renamed to a .bak copy). A tick the
     sim or Active Sky can't answer (NaN position, Active Sky not loaded with
-    a date) shows a notice and retries rather than ending the run."""
+    a date) shows a notice and retries rather than ending the run.
+
+    brake_release_utc_s (seconds since midnight UTC, sim time; --brake-
+    release-utc) is for a recorder started after the takeoff roll: the first
+    reading is then already past BRAKE_RELEASE_GS_KT, and without it elapsed
+    time would count from that first reading instead -- the 2026-10-23
+    recording started 16.4 min late and its elapsed_s ran 16.4 min short
+    all flight. Given, elapsed starts at the time since then; not given, a
+    late start is warned about on the panel. Ignored when brake release is
+    actually seen (a ground-speed crossing)."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
@@ -1266,6 +1310,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     prev_gs_kt = None
     sim_clock = None
     last_row_zulu_s = None  # the ZULU_TIME of the last row written -- see _sim_paused
+    last_flight_phase = None  # the last row's phase -- see _flight_phase's prev_phase
     touchdown_elapsed_s = None
     recorder_note = None  # live panel only -- --no-live prints these as before
     if resume:
@@ -1276,6 +1321,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         prev_on_ground = resume["on_ground"]
         prev_gs_kt = resume["gs_kt"]
         last_row_zulu_s = resume["zulu_s"]
+        last_flight_phase = resume["rows"]["phase"].iloc[-1]
         for r in resume["rows"].itertuples():
             if pd.notna(r.lat_deg) and pd.notna(r.lon_deg):
                 _update_cpa(cpa, wp_positions, r.lat_deg, r.lon_deg, r.elapsed_s,
@@ -1450,9 +1496,23 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                         or (prev_gs_kt is None and gs_kt >= BRAKE_RELEASE_GS_KT)
                 ):
                     phase = "recording"
-                    sim_clock = _SimClock(state["zulu_s"], time.monotonic(), replay_speed)
-                    elapsed_s = 0.0
-                    recorder_note = f"Brake release detected -- recording to {record_path}"
+                    started_late = prev_gs_kt is None
+                    elapsed_s = (_late_start_elapsed_s(state["zulu_s"], brake_release_utc_s)
+                                 if started_late else 0.0)
+                    sim_clock = _SimClock(state["zulu_s"], time.monotonic(), replay_speed,
+                                          base_s=elapsed_s)
+                    # Already rolling but still on the ground: seconds late, not worth a warning.
+                    if not started_late or (brake_release_utc_s is None and state["on_ground"]):
+                        recorder_note = f"Brake release detected -- recording to {record_path}"
+                    elif brake_release_utc_s is not None:
+                        recorder_note = (f"Started after brake release -- elapsed counted from "
+                                         f"--brake-release-utc ({_format_hmm(elapsed_s)} so far), "
+                                         f"recording to {record_path}")
+                    else:
+                        recorder_note = ("WARNING: started after brake release -- elapsed time counts "
+                                         "from now, not brake release. Restart with --record-mode "
+                                         "append --brake-release-utc HH:MM to fix it. Recording to "
+                                         f"{record_path}")
                     if live_display is None:
                         print(f"\n{recorder_note}")
                 elif phase == "recording" and prev_on_ground is False and state["on_ground"]:
@@ -1476,13 +1536,14 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                         legs[leg_idx].track_deg,
                         _flight_phase(current_cum_nm, accel_cum_nm, decel_cum_nm,
                                        state["mach"], state.get("agl_ft"), state["on_ground"],
-                                       decel_start_cum_nm),
+                                       decel_start_cum_nm, last_flight_phase),
                         as_point,
                         _advisory(table, best_idx, current_idx, remaining_nm, gain_threshold_kt),
                         binding_at_best, arrival_info,
                         predicted_remaining_s, predicted_total_s)
                     csv_writer.writerow(_row_values(row))
                     csv_file.flush()
+                    last_flight_phase = row["phase"]
                     _update_cpa(cpa, wp_positions, lat, lon, elapsed_row_s, current_fl,
                                 state["mach"], state["tas_kt"], gs_kt)
 

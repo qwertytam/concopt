@@ -275,6 +275,19 @@ on from the last row) or start a **new** one (the old file is renamed to a
 If Active Sky or the sim has no usable data for a tick (e.g. while you correct
 Active Sky's date/time) it shows a notice and retries instead of exiting.
 
+**Started recording after takeoff?** Note the sim's UTC time at brake release
+and pass `--brake-release-utc HH:MM` (or `HH:MM:SS`): elapsed time then counts
+from brake release, not from when the recorder started. Without it the panel
+warns that elapsed time counts from the first reading.
+
+Once past the decel start the panel says "No level advice -- past decel
+start": the FL450–FL600 table only applies to the supersonic cruise.
+
+**Climb timing is an assumption.** The model adds 3 min to the climb table
+for KJFK noise abatement (`CLIMB_NOISE_ABATEMENT_MIN` in `params.py`), based on
+three flights running ~3 min behind the climb table. `report` prints a note
+under its climb block.
+
 **Dry-run first** against a previous recording instead of the real sim:
 
 ```

@@ -139,6 +139,22 @@ for its own sake, no defensive error handling.
   warmer than ISA+10 clamp into the warmest band and are flagged
   (`climb_warm_clamped`/`flags` column) — clamping warm is optimistic.
 
+  **Noise-abatement allowance (an ASSUMPTION, user-agreed 2026-10-23):**
+  `CLIMB_NOISE_ABATEMENT_MIN` (3 min, `params.py`) is added to the climb
+  table's time at every level, so to top of climb too. `search._climb_profile`
+  and `report._climb_ground_profile` both add it; `conc_data.climb_to` stays
+  the table as published. Why: after takeoff from KJFK the throttles come
+  back for noise abatement until further from the coast, which the clean
+  climb table doesn't include, and three flown flights ran ~3 min behind
+  the model by the first waypoints and then held that gap: the first trial
+  (+3.5 min at 40N073W), the 2015-12-30 flight (+3.5 min) and the
+  2026-01-21 12:00 flight flown 2026-10-23 (+2.7 min at 405270N; 2:55
+  brake release to touchdown against a 2:49 plan). Time only: fuel and air
+  distance stay the table's; the extra minutes pick up wind in the
+  ground-distance correction like the rest of the climb. `report` prints a
+  note under its climb block. Revisit once a fully recorded climb shows
+  where the time actually goes (set it to 0 for the table as published).
+
   Since the climb's ground distance varies per candidate (TOW is fixed for
   a run, but temp band and the wind correction vary day to day), so does
   where the cruise starts along the route — a leg wholly inside one
@@ -470,7 +486,16 @@ for its own sake, no defensive error handling.
   already exists, `--record-mode ask|append|new` (default ask, prompted before
   connecting): append resumes it (phase, elapsed time and each waypoint's
   closest approach rebuilt from its rows), new renames it to a `.bak` copy --
-  it is never overwritten. With `--compare`
+  it is never overwritten. A recorder started after the takeoff roll sees
+  its first reading already past 40 kt: `--brake-release-utc HH:MM[:SS]`
+  (sim UTC) makes elapsed count from then (`_late_start_elapsed_s`);
+  without it elapsed counts from the first reading and the panel warns
+  (the 2026-10-23 recording started 16.4 min late and ran that short all
+  flight). Past decel start the advisor gives no level advice
+  (`_advisory` action `NONE`, empty `rec_fl`/`binding`) -- the FL450-600
+  table means nothing in the descent. The recorder's `approach` phase is
+  sticky (`_flight_phase`'s `prev_phase`) until the ground, so levelling at
+  ~1,500 ft doesn't flip it approach/descent row to row. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release

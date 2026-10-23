@@ -20,7 +20,8 @@ from concopt.data.conc_data import CLIMB_LEVELS_FL, cas_limit_kt, climb_to
 from concopt.era5 import load_legs_npz, load_surface_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
 from concopt.params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
-                            ARRIVAL_PROFILE_STEPS, C_TO_K, DESCENT_END_FT,
+                            ARRIVAL_PROFILE_STEPS, C_TO_K, CLIMB_NOISE_ABATEMENT_MIN,
+                            DESCENT_END_FT,
                             FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SPEED_LIMIT_FL,
                             SPEED_LIMIT_KIAS, SUBSONIC_LIMIT_MACH, TOTAL_TEMP_MAX_K)
 from concopt.search import (NY_TZ, TOP_OF_CLIMB_FL,
@@ -427,6 +428,9 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     print(f"  top of climb: FL{TOP_OF_CLIMB_FL:.0f} at {climb_ground_nm:.1f} nm "
           f"(between {climb_between}), {_format_hmm(climb_time_s)}, "
           f"{climb_row['fuel_used_kg']:.0f} kg fuel, mass {climb_row['mass_t']:.1f} t")
+    if CLIMB_NOISE_ABATEMENT_MIN:
+        print(f"  (time includes an assumed {CLIMB_NOISE_ABATEMENT_MIN:.0f} min noise-abatement "
+              f"allowance on top of conc_climb.csv -- see params.CLIMB_NOISE_ABATEMENT_MIN)")
 
     # Cruise-only sub-legs (eff_dist_nm > 0) -- climb-consumed ones carry a
     # climb-altitude chosen_fl that was never actually flown at cruise, so
@@ -548,9 +552,13 @@ def _climb_ground_profile(climb_row, tow_t):
     release, air distance turned into ground distance with
     _climb_wind_kt, the same correction _climb_profile applies. Shared by
     _climb_segments and _waypoint_table so the profile and the waypoint
-    table read the same climb."""
+    table read the same climb. Every level's time carries
+    CLIMB_NOISE_ABATEMENT_MIN, as _climb_profile's top-of-climb time does
+    (an assumption, see params.py) -- the reduced-thrust minutes come before
+    the table's first level, so they stretch brake release -> FL230."""
     levels = CLIMB_LEVELS_FL[CLIMB_LEVELS_FL <= TOP_OF_CLIMB_FL]
     _m, fuel_kg, air_nm, time_min = climb_to(levels, tow_t, climb_row["temp_band"])
+    time_min = time_min + CLIMB_NOISE_ABATEMENT_MIN
     wind_kt = _climb_wind_kt(climb_row)
     cum = np.concatenate([[0.0], air_nm + wind_kt * time_min / 60.0])
     elapsed = np.concatenate([[0.0], time_min * 60.0])

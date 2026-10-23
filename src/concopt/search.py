@@ -22,7 +22,8 @@ from concopt.era5 import ARCHIVE_START, load_legs_npz, load_surface_npz
 from concopt.params import (CLIMB_BAND_SAMPLE_NM, C_TO_K,  # noqa: F401
                             DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N, DEFAULT_TOW_T,
                             DEPARTURE_LOCAL_HOURS, FT_TO_M, NM_TO_M, NS_PER_S, NY_TZ,
-                            S_PER_HOUR, TARGET_FL, TOP_OF_CLIMB_FL, WINTER_MONTHS)
+                            S_PER_HOUR, TARGET_FL, TOP_OF_CLIMB_FL, WINTER_MONTHS,
+                            CLIMB_NOISE_ABATEMENT_MIN)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 
 
@@ -130,7 +131,10 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
     current TOW estimate, so this has to accept a per-candidate vector, not
     just one shared weight. temp_band varies per candidate, so
     conc_data.climb_to (one temp_band at a time) is called once per band
-    (CLIMB_BANDS has only 3) rather than per candidate."""
+    (CLIMB_BANDS has only 3) rather than per candidate.
+
+    time_min includes CLIMB_NOISE_ABATEMENT_MIN on top of the table's own
+    time (an assumption, see params.py); fuel and air distance don't."""
     n_cand = len(dep_i8)
     temp_band, warm_flag, wind_component_kt = _climb_conditions(data, dep_i8, cc_legs, cc_idx)
 
@@ -150,7 +154,7 @@ def _climb_profile(data, dep_i8, cc_legs, cc_idx, tow_t):
         _m, f, d, t = climb_to(TOP_OF_CLIMB_FL, tow_per_cand[band_mask], band)
         fuel_used_kg[band_mask] = f
         dist_nm[band_mask] = d
-        time_min[band_mask] = t
+        time_min[band_mask] = t + CLIMB_NOISE_ABATEMENT_MIN  # see params.py: an assumption
 
     # mass_t derived from fuel burned, not read off the table's own mass_t
     # column: conc_climb.csv's mass_t and fuel_used_kg are rounded

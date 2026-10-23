@@ -381,3 +381,30 @@ def test_append_resumes_a_recording_part_way_through_the_flight(tmp_path, capsys
     assert new["elapsed_s"].iloc[0] > last_elapsed_s + 300.0 - 1.0  # carried on, not restarted at 0
     assert resumed["elapsed_s"].is_monotonic_increasing
     assert resumed["on_ground"].iloc[-1] == 1
+
+
+@pytest.mark.parametrize("given", [True, False])
+def test_recorder_started_in_the_air(tmp_path, capsys, given):
+    """Started after takeoff: with --brake-release-utc, elapsed counts from
+    it; without, it counts from the first reading and the panel says so."""
+    profile_df = _synthetic_flight_df(seed=6)
+    first_zulu = profile_df["zulu_s"].iloc[0]  # brake release is at the profile's first row
+    later = profile_df[profile_df["elapsed_s"] > 1200.0].reset_index(drop=True)
+    late_by_s = later["zulu_s"].iloc[0] - first_zulu
+    later = later.assign(elapsed_s=later["elapsed_s"] - later["elapsed_s"].iloc[0])
+    state_source, weather_source = replay_sources(later, replay_speed=_FAST_REPLAY_SPEED)
+    record_path = tmp_path / "recording.csv"
+
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
+                 state_source=state_source, weather_source=weather_source,
+                 replay_speed=_FAST_REPLAY_SPEED, live=False,
+                 brake_release_utc_s=first_zulu if given else None)
+
+    out = capsys.readouterr().out
+    first_elapsed_s = pd.read_csv(record_path)["elapsed_s"].iloc[0]
+    if given:
+        assert first_elapsed_s == pytest.approx(late_by_s, abs=60.0)
+        assert "elapsed counted from --brake-release-utc" in out
+    else:
+        assert first_elapsed_s == pytest.approx(0.0, abs=60.0)
+        assert "WARNING: started after brake release" in out
