@@ -201,9 +201,13 @@ def fixed_point_fuel_iteration(
     min_landing_fuel_t=MIN_LANDING_FUEL_T, march_legs_fn=None, arrival_fn=None,
     cruise_mach=None, damping=DEFAULT_DAMPING,
     tolerance_t=DEFAULT_TOLERANCE_T, max_iterations=DEFAULT_MAX_ITERATIONS,
-    thrust_reversers=False,
+    thrust_reversers=False, progress=None,
 ):
     """Solve TOW = ZFW + trip_fuel(TOW) + reserve, for every candidate at once.
+
+    progress, if given, is called with one status line per pass (iteration,
+    candidates still outside tolerance, worst residual) -- for run_search's
+    ~31,000-candidate solve, which takes minutes.
 
     cc_legs/cc_idx/data/dep_i8 are march_legs' own arguments (the climb+cruise
     span and the candidate departure timestamps); zfw_t is (n_cand,) tonnes.
@@ -297,6 +301,10 @@ def fixed_point_fuel_iteration(
         tow_next = np.clip(tow_calc, CLIMB_TOW_MIN_T, MTOW_T)
 
         converged = np.abs(tow_next - tow_t) < tolerance_t
+        if progress is not None:
+            progress(f"  TOW solve pass {iteration}/{max_iterations}: "
+                     f"{int((~converged).sum())} of {n_cand} candidates not yet converged "
+                     f"(worst residual {np.abs(tow_next - tow_t).max():.3f} t)")
         if converged.all():
             flags = _boundary_flags(tow_calc)
             flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"

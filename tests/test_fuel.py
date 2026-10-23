@@ -189,6 +189,22 @@ def test_fixed_point_converges():
     assert non_converged == 0, f"Expected 0 flagged candidates, got {non_converged}"
 
 
+def test_fixed_point_reports_progress_per_pass():
+    """progress gets one status line per pass, the last showing 0 not converged."""
+    n_cand = 10
+    dep_i8 = np.arange(n_cand, dtype="int64")
+    lines = []
+
+    _, n_iter, _, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, np.full(n_cand, 90.0), _ARRIVAL_NM, _still_air_wind_fn,
+        min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs, progress=lines.append
+    )
+
+    assert len(lines) == n_iter
+    assert f"pass {n_iter}/" in lines[-1]
+    assert f"0 of {n_cand} candidates not yet converged" in lines[-1]
+
+
 def test_tow_above_zfw():
     """TOW must always be > ZFW (by definition: TOW = ZFW + uplift, uplift > 0)."""
     for zfw in [80.0, 85.0, 90.0, 95.0]:
