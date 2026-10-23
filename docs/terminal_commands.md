@@ -63,7 +63,7 @@ poetry run concopt search --pln %PLN% --decel %DECL% --thrust-reversers --npz %R
 ## 4. Verify against ActiveSky
 
 ```bat
-poetry run concopt shortlist --pln %PLN% --decel %DECL% --thrust-reversers --npz %ROUTE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --search-csv %RESULTS_FILE% --top %TOP_N%
+poetry run concopt shortlist --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --search-csv %RESULTS_FILE% --top %TOP_N%
 ```
 
 ## 5. Generate full per-leg plan report for the selected winning day time
@@ -72,8 +72,8 @@ poetry run concopt shortlist --pln %PLN% --decel %DECL% --thrust-reversers --npz
 rest of the session (`SET DATE=` with nothing after it undoes that).
 
 ```bat
-SET DEP_DATE=2015-12-30
-SET LOCAL_HOUR=08
+SET DEP_DATE=2026-01-21
+SET LOCAL_HOUR=12
 ```
 
 ```bat
