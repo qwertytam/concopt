@@ -209,24 +209,53 @@ for its own sake, no defensive error handling.
   a per-segment march. There is no flat fallback: the old `--decel-descent-min`
   (a fixed 35 min / 2.0 t arrival, kept only to compare against the real
   model) has been removed, and omitting either npz raises.
-- `arrival.py` — the arrival segment, BARIX → touchdown, replacing the old
-  flat 35 min / 2.0 t placeholder search/report used to carry. Four segments
-  over a *route-provided* `arrival_nm` (summed
-  post-decel leg distance, not a hardcoded constant — search/report compute
-  it as `legs[-1].cum_nm - cc_legs[-1].cum_nm`): decel to Mach 1
-  (`data.conc_data.decel_to_mach1`), level cruise at M0.95 for whatever
-  distance is left over (`data.conc_data.subsonic_cruise`, B5 — see below),
-  descent to 1,500 ft (`data.conc_data.descent_to_1500ft`), then a fixed
-  approach allowance (`APPROACH_NM`/`APPROACH_MIN`/`APPROACH_FUEL_T`).
-  `descent_direct_from_cruise` is deliberately unused — it reaches 1,500 ft
-  in ~194 nm and this route has ~307, which would leave ~113 nm
-  unaccounted for. All three descent speed schedules (325/350/380 kt) are
-  evaluated as whole-array table lookups; `speed=380` (the default since
-  B5) forces the fastest schedule — with the real subsonic table it wins
-  on both time AND fuel in every temperature band (buys ~1.6 min for
-  ~0.44 t, not the old placeholder's ~1.4 t), so the old cold/warm climb-
-  time trade-off that used to make `speed="auto"` the default is no longer
-  close. BUT 380 kt's decel_end_fl (FL312) only has subsonic-table coverage
+- `arrival.py` — the arrival: the deceleration, then decel waypoint →
+  touchdown. **The `--decel` waypoint is where the aircraft must be
+  SUBSONIC BY** — the decel (`data.conc_data.decel_to_mach1`, cruise Mach →
+  M1.0, cruise FL → the schedule's `decel_end_fl`) *ends* there. It's flown
+  over the last `decel_nm` of the climb+cruise span, so the march's own
+  supersonic cruise over that stretch is backed out (`fuel.march_tail`: the
+  march's time and mass `back_nm` before the waypoint, linear within a
+  sub-leg; per schedule, since `decel_nm` is). `time_min`/`fuel_t` are NET of
+  that replaced cruise, so `accumulated_s + time_min` is still brake release
+  → touchdown and the fuel split still adds up; `after_waypoint_time_min` is
+  waypoint → touchdown (what report's CSV `arrival_s` carries). After the
+  waypoint, over a *route-provided* `arrival_nm` (summed post-decel leg
+  distance — `legs[-1].cum_nm - cc_legs[-1].cum_nm`): an optional descent
+  from `decel_end_fl` to the subsonic cruise level, level cruise at M0.95
+  for whatever distance is left over (`data.conc_data.subsonic_cruise`, B5
+  — see below), the descent, then the last `APPROACH_NM` (5 nm) from the
+  gate at `GATE_KIAS` (175), timed from that speed plus wind.
+
+  Subsonic cruise level: the fastest of `decel_end_fl` and the
+  `SUBSONIC_LEVELS_FL` (the subsonic table's FL290–410) below it, per
+  candidate, on whole after-waypoint time, a level with no fuel number at
+  that mass disqualified first (same rule as the schedule choice). M0.95's
+  TAS is higher in the warmer air lower down, so without a wind reason to
+  stay high the lowest level, FL290, wins.
+
+  Descent (`_descent_grid`/`_descend`, integrated on a 500 ft grid built once
+  per call): as fast as the airframe allows — M0.95 until that meets the CAS
+  limit (`conc_cas_limit.csv`), the CAS limit below, 250 KIAS below FL100 —
+  at `conc_descent.csv`'s own subsonic descent rate and fuel for the
+  380 kt schedule (`DESCENT_RATE_SCHEDULE_KT`, user-confirmed as close
+  enough); that table stops at FL30 (warm)/FL50 (cold), so `_to_1500ft`
+  runs it linearly to zero at 1,500 ft rather than clamping. Two level
+  slow-downs (user-supplied rates): to 250 kt at FL100 (100 kt per 3 min),
+  and 250 → 175 kt at 1,500 ft (90 s). `--thrust-reversers` (`thrust_reversers`,
+  off by default; same setting on every step, like `--cruise-mach`)
+  doubles the descent rate and halves slow-down time for at most
+  `REVERSER_MAX_MIN` (2) minutes in all, from the top of the descent
+  (user-specified placement). Note what that buys: at the top the aircraft
+  is already at ~M0.95, the level cruise's own speed, so a steeper descent
+  there only moves the top of descent later — ~0.06 min on the
+  2016-02-12 13:00 day. The same 2 min at FL100 and below (250 kt, the
+  slow-downs) would be worth ~1.4 min.
+
+  `descent_direct_from_cruise` is deliberately unused. The three decel
+  schedules (325/350/380 kt) now only pick the decel itself (its distance
+  and the level it ends at — FL383/FL350/FL312), evaluated as whole-array
+  table lookups; `speed=380` forces the fastest. BUT 380 kt's decel_end_fl (FL312) only has subsonic-table coverage
   down to 110 t, which real BARIX mass undercuts for a good chunk of the
   160-185 t TOW range — so real callers (`fuel.py`'s
   `_arrival_from_march`, the only production call site) explicitly request
@@ -254,10 +283,11 @@ for its own sake, no defensive error handling.
   computed from `atmos.py` directly rather than read off the table, since
   it doesn't depend on mass at all and matches the transcribed column to
   within 0.5 kt). `arrival()` takes `mass_at_barix_t` (the march's
-  `weight_at_barix`, BEFORE the decel burn); `_arrival_for_speed`
-  subtracts that schedule's own `decel_fuel_t` internally to get the mass
-  actually flying the level segment (roughly 105-120 t, not TOW's
-  160-185 t) before indexing the table — reading it at the wrong mass
+  `weight_at_barix`); `_arrival_for_speed` reads the mass at decel START
+  from `march_tail` and subtracts that schedule's own `decel_fuel_t` (and
+  any descent to the cruise level) to get the mass actually flying the
+  level segment (roughly 105-120 t, not TOW's 160-185 t) before indexing
+  the table — reading it at the wrong mass
   roughly halves the specific range and doubles the level fuel, and the
   result looks entirely plausible. `level_mass_outside_envelope` flags a
   NaN level_fuel_t (zero leftover distance costs no fuel regardless); at
@@ -273,10 +303,11 @@ for its own sake, no defensive error handling.
   `wind_fl_clamped` (B6): `_wind_temp` reads an optional `fl_clamped`
   key/tuple-slot out of whatever `wind_at_fl` returns (missing means never
   clamped, so every pre-B6 test mock stays valid) and `_arrival_for_speed`
-  ORs the decel/descent/level segments' three reads into one flag — see
+  ORs the decel and level reads into one flag — see
   `era5.py`/`search.py` above for what actually sets it
-  (`search._build_arrival_wind_fn`'s stitched FL183-FL605 profile still
-  clamps below FL183 on the descent segment's own midpoint).
+  (`search._build_arrival_wind_fn`'s stitched FL183-FL605 profile clamps
+  below FL183, which the descent always reaches — its reads go to their own
+  `descent_wind_clamped` key instead, so they don't saturate the flag).
 - `runways.py` — runway selection and crosswind/tailwind screen (Phase 4),
   `--surface-npz` from `era5.reduce_surface_to_npz`. `RUNWAYS` is the
   geometry: JFK 22R/31L only (not 04L/13R), EGLL's parallel 09L/09R and
@@ -422,6 +453,10 @@ for its own sake, no defensive error handling.
   machine alongside it (brake release, detected as on-ground ground speed
   crossing 40 kt upward, through touchdown) writing one CSV row per interval
   and tracking each `.pln` waypoint's closest point of approach as it goes;
+  the recorder's `decel` phase runs from the live arrival model's own
+  decel start (`decel_nm` before the decel waypoint) up to the waypoint,
+  where `--compare` also reports the Mach actually crossed at (subsonic by
+  there, or not); the advisor's level gains count only to decel start;
   elapsed time is SIM time, accumulated from `ZULU_TIME` tick to tick
   (`_SimClock`, modulo a day for the midnight wrap) -- not wall-clock time,
   which the first real recording (2026-10-21) showed P3D falling behind
@@ -484,8 +519,10 @@ for its own sake, no defensive error handling.
   `<ATCWaypoint id="...">` in the `.pln` (`route.parse_pln` reads that
   attribute; `Leg.from_id`/`to_id` are those same strings — the ids are not
   fields in the file itself). `--decel` is on every subcommand that takes
-  `--pln` and on `scripts/build_npz.py`: the climb+cruise span ends at the leg
-  arriving there (`route.climb_cruise_segment`) and the arrival model starts
+  `--pln` and on `scripts/build_npz.py`: it is where the aircraft must be
+  SUBSONIC BY. The climb+cruise span ends at the leg arriving there
+  (`route.climb_cruise_segment`), the deceleration ends there (backed out of
+  the end of that span — see `arrival.py`), and the subsonic arrival starts
   from it. `--accel` (where supersonic flight begins) is only on `route` and
   `inflight`, and `report.flight_profile` takes `accel_id` for its
   climb/acceleration split and Mach limit; `search`/`report`/`verify` don't

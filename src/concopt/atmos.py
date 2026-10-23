@@ -95,6 +95,16 @@ def cas_from_mach(M, p_Pa):
     return A0 * np.sqrt(2.0 / (GAMMA - 1.0) * ((qc / P0 + 1.0) ** ((GAMMA - 1.0) / GAMMA) - 1.0))
 
 
+def mach_from_cas_subsonic(cas_ms, p_Pa):
+    """Mach for CAS (m/s) at ambient pressure p_Pa (Pa), vectorised -- the
+    closed-form inverse of cas_from_mach, valid below M1 only (the arrival's
+    subsonic descent). mach_from_cas covers any Mach, one value at a time."""
+    qc = P0 * ((1.0 + (GAMMA - 1.0) / 2.0 * (np.asarray(cas_ms, dtype=float) / A0) ** 2)
+               ** (GAMMA / (GAMMA - 1.0)) - 1.0)
+    return np.sqrt(2.0 / (GAMMA - 1.0)
+                   * ((qc / np.asarray(p_Pa, dtype=float) + 1.0) ** ((GAMMA - 1.0) / GAMMA) - 1.0))
+
+
 def mach_from_total_temp(T_K, total_temp_max_K):
     """Mach number at which static temperature T_K reaches total_temp_max_K
     (inverse of Tt = T*(1 + 0.2*M^2))."""

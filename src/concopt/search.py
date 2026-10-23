@@ -528,7 +528,7 @@ def _build_arrival_wind_fn(subsonic_data, arrival_upper_data, dep_i8, arrival_le
 def resolve_tow_and_arrival(
     cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
     tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
-    cruise_mach=limits.CRUISE_MACH, arrival_upper_data=None,
+    cruise_mach=limits.CRUISE_MACH, arrival_upper_data=None, thrust_reversers=False,
 ):
     """Shared by run_search/run_report/verify.run_verify: solves TOW (fixed
     point on zfw_t, or the flat tow_t override) and the arrival segment
@@ -578,12 +578,14 @@ def resolve_tow_and_arrival(
                 cc_legs, cc_idx, data, dep_i8, zfw_arr, arrival_nm, wind_fn_builder,
                 min_landing_fuel_t=min_landing_fuel_t,
                 march_legs_fn=march_legs, arrival_fn=arrival_fn, cruise_mach=cruise_mach,
+                thrust_reversers=thrust_reversers,
             )
         )
     else:
         legs_out, weight_per_leg, climb = march_legs(cc_legs, cc_idx, data, dep_i8,
                                                         tow_t, cruise_mach)
-        arrival_out = fuel._arrival_from_march(legs_out, arrival_nm, wind_fn_builder, arrival_fn)
+        arrival_out = fuel._arrival_from_march(legs_out, weight_per_leg, arrival_nm,
+                                               wind_fn_builder, arrival_fn, thrust_reversers)
         tow_out = np.broadcast_to(np.asarray(tow_t, dtype=float), (n_cand,)).copy()
         n_iterations = None
         # Loaded TOW vs what this ZFW's trip actually needs (zfw + trip fuel +
@@ -601,7 +603,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
                 tow_t=None, zfw_t=None,
                 min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                 subsonic_npz_path=None, cruise_mach=limits.CRUISE_MACH,
-                arrival_upper_npz_path=None):
+                arrival_upper_npz_path=None, thrust_reversers=False):
     """Builds legs from pln_path (same max_leg_nm default as
     `route`/reduce_to_legs, so the leg axis lines up with npz_path's), takes
     the climb+cruise span (brake release through decel_id -- see
@@ -670,6 +672,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             cruise_mach=cruise_mach,
             arrival_upper_data=arrival_upper_data,
+            thrust_reversers=thrust_reversers,
         )
     )
     chosen_fl = legs_out["chosen_fl"]
@@ -744,6 +747,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
     # exact verify command from the CSV output
     candidates["zfw_t"] = zfw_t
     candidates["tow_override_t"] = np.nan if tow_override_t is None else tow_override_t
+    candidates["thrust_reversers"] = bool(thrust_reversers)
 
     display = pd.DataFrame({
         "date": candidates["local_date"],
@@ -762,6 +766,7 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
         "tow_t": candidates["tow_t"],
         "zfw_t": candidates["zfw_t"],
         "tow_override_t": candidates["tow_override_t"],
+        "thrust_reversers": candidates["thrust_reversers"],
     })
 
     print(display.head(10).to_string(index=False))
@@ -885,6 +890,9 @@ def run_shortlist(search_csv_path, pln_path, npz_path, decel_id, top=DEFAULT_SHO
             tow_override_t = row.get("tow_override_t")
             if pd.notna(tow_override_t):
                 cmd_parts.append(f"--tow {float(tow_override_t):.1f}")
+            # Likewise the arrival: verify's TOW has to come from the same model.
+            if bool(row.get("thrust_reversers", False)):
+                cmd_parts.append("--thrust-reversers")
             print(f"    {' '.join(cmd_parts)}\n")
         else:
             # Fallback for CSV without zfw_t column (shouldn't happen with current search.py)

@@ -62,9 +62,10 @@ ls data/era5/era5_sfc_*.nc | wc -l        # complete at 25 per airport (50 total
 are the `id` attribute of an `<ATCWaypoint id="...">` in your `.pln` (e.g.
 `50N009W`, `BARIX`), passed as `--decel <id>` / `--accel <id>`.
 
-- `--decel` — where the deceleration to subsonic starts. The climb + cruise
-  span ends at the leg *arriving* at it; everything after is the arrival
-  model. Needed by every command below, and by `build_npz.py`. It can't be
+- `--decel` — where the aircraft must be **subsonic by**. The deceleration
+  ends there, starting however far before it the decel table needs from
+  that day's cruise level (~100 nm from FL510); everything after it is the
+  subsonic arrival. Needed by every command below, and by `build_npz.py`. It can't be
   the first waypoint (no leg arrives there).
 - `--accel` — where supersonic flight begins (the point from which the
   aircraft is free to go above Mach 1). Only `route` and `inflight` take it
@@ -338,6 +339,24 @@ decel segment's fuel/time always assumes decelerating from the manual's
 own M2.00 baseline, regardless of `--cruise-mach`. Neither gap is tracked
 as a bug in `docs/IMPLEMENTATION-PLAN.md` — `--cruise-mach 2.04` is an
 exploratory lever on cruise TAS, not a re-validated Mmo flight profile.
+
+---
+
+## In-flight thrust reversers (`--thrust-reversers`)
+
+Off by default. On `search`/`report`/`verify`/`inflight` it lets the
+subsonic descent use the in-flight reversers: about double the descent
+rate and half the time a slow-down takes, for at most 2 minutes in all,
+from the top of the descent. Like `--cruise-mach`, use the **same setting
+on every step** — `search` stamps it in its CSV (`thrust_reversers`) and
+`shortlist` carries it into the verify commands, but `report` and
+`inflight` have to be given it by hand.
+
+Used from the top of the descent they buy almost nothing (~0.06 min on
+2016-02-12 13:00): the aircraft is already at ~M0.95 there, the level
+cruise's own speed, so descending faster only moves the top of descent
+later. The same two minutes at FL100 and below — 250 kt, and the two
+slow-downs — would be worth ~1.4 min; see CLAUDE.md's `arrival.py` notes.
 
 ---
 

@@ -159,7 +159,8 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
                             tow_t=None, zfw_t=None, min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T,
                             cruise_mach=limits.CRUISE_MACH,
                             sample_interval_s=REPLAY_SAMPLE_INTERVAL_S,
-                            seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT):
+                            seed=REPLAY_SEED, as_wind_bias_kt=REPLAY_AS_WIND_BIAS_KT,
+                            thrust_reversers=False):
     """A synthetic flight-shaped DataFrame (same columns a --record CSV has,
     a valid replay_sources profile) for JFK->LHR on pln_path, built from
     the SAME model concopt report runs (search.resolve_tow_and_arrival:
@@ -205,7 +206,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
             tow_t=tow_t, zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t,
             cruise_mach=cruise_mach,
-            arrival_upper_data=arrival_upper_data,
+            arrival_upper_data=arrival_upper_data, thrust_reversers=thrust_reversers,
         )
     )
     tow_t_val = float(tow_arr[0])
@@ -239,8 +240,15 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
     # it regardless of whether it was actually flown at cruise -- see
     # march_legs' own docstring), same filter report.py's step-climb
     # schedule and mean-FL summary both use.
+    # The decel ENDS at the decel waypoint (subsonic by there), so cruise
+    # control points stop decel_nm before it, where the decel starts.
+    a = {k: float(v[0]) for k, v in arrival_out.items()
+         if k not in ("by_schedule", "flags") and np.ndim(v) == 1}
+    decel_start_nm = decel_cum_nm - a["decel_nm"]
     n_legs = len(cc_legs)
     for i in np.flatnonzero(leg["eff_dist_nm"] > 0.0):
+        if cc_legs[i].cum_nm >= decel_start_nm:
+            break
         weight_after_t = (float(weight_per_leg[i + 1]) if i + 1 < n_legs
                            else weight_at_barix_t)
         points.append(dict(
@@ -255,14 +263,27 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
     # (search.resolve_tow_and_arrival's own arrival_out) -- one control
     # point at each segment's END (arrival.py has no sub-segment
     # granularity to sample further than this).
-    a = {k: float(v[0]) for k, v in arrival_out.items()
-         if k not in ("by_schedule", "flags") and np.ndim(v) == 1}
-    cursor_elapsed_s, cursor_cum_nm, cursor_weight_t = (
-        total_elapsed_s, decel_cum_nm, weight_at_barix_t)
+    last_cruise = int(np.flatnonzero(leg["eff_dist_nm"] > 0.0)[-1])
+    cursor_elapsed_s = total_elapsed_s - a["replaced_cruise_time_min"] * 60.0
+    cursor_cum_nm, cursor_weight_t = decel_start_nm, a["mass_at_decel_start_t"]
+    points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm,
+                        alt_ft=float(leg["chosen_fl"][last_cruise]) * 100.0,
+                        mach=float(leg["mach"][last_cruise]), tas_kt=float(leg["tas_kt"][last_cruise]),
+                        gs_kt=float(leg["gs_kt"][last_cruise]),
+                        weight_t=cursor_weight_t, on_ground=False))
 
     cursor_elapsed_s += a["decel_time_min"] * 60.0
-    cursor_cum_nm += a["decel_nm"]
+    cursor_cum_nm = decel_cum_nm
     cursor_weight_t -= a["decel_fuel_t"]
+    points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["decel_end_fl"] * 100.0,
+                        mach=REPLAY_DECEL_END_MACH, tas_kt=float(a["schedule_kt"]),
+                        gs_kt=float(a["schedule_kt"]) + a["level_wind_kt"],
+                        weight_t=cursor_weight_t, on_ground=False))
+
+    # Down to the subsonic cruise level, when it's below where the decel ends.
+    cursor_elapsed_s += a["transition_time_min"] * 60.0
+    cursor_cum_nm += a["transition_nm"]
+    cursor_weight_t -= a["transition_fuel_t"]
     points.append(dict(elapsed_s=cursor_elapsed_s, cum_nm=cursor_cum_nm, alt_ft=a["level_fl"] * 100.0,
                         mach=REPLAY_DECEL_END_MACH, tas_kt=float(a["schedule_kt"]),
                         gs_kt=float(a["schedule_kt"]) + a["level_wind_kt"],
@@ -284,7 +305,7 @@ def build_synthetic_flight(pln_path, data, dep_i8, decel_id, subsonic_data=None,
                         gs_kt=REPLAY_DESCENT_END_TAS_KT,
                         weight_t=cursor_weight_t, on_ground=False))
 
-    touchdown_elapsed_s = cursor_elapsed_s + arrival.APPROACH_MIN * 60.0
+    touchdown_elapsed_s = cursor_elapsed_s + a["approach_time_min"] * 60.0
     cursor_weight_t -= arrival.APPROACH_FUEL_T
     points.append(dict(elapsed_s=touchdown_elapsed_s, cum_nm=touchdown_cum_nm, alt_ft=0.0,
                         mach=REPLAY_TOUCHDOWN_MACH, tas_kt=REPLAY_TOUCHDOWN_TAS_KT,

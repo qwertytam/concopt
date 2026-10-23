@@ -384,25 +384,31 @@ def _wind_along_track_kt(wind_kt, wind_dir_deg, track_deg):
     return float(u_kt * np.sin(track_rad) + v_kt * np.cos(track_rad))
 
 
-def _flight_phase(cum_nm, accel_cum_nm, decel_cum_nm, mach, agl_ft, on_ground):
+def _flight_phase(cum_nm, accel_cum_nm, decel_cum_nm, mach, agl_ft, on_ground,
+                  decel_start_cum_nm=None):
     """climb / cruise / decel / descent / approach / ground for one sample,
     so a notebook can cut segments without re-inferring them from the
     altitude trace.
 
-    Cut from the ROUTE position where possible (the accel and decel
-    waypoints are exactly where search.py's own segment boundaries are, so
-    the recording's segments line up with the model's), and from Mach only
-    inside the arrival, where "decel" (M2.0 -> M1.0, still high) and
-    "descent" (down to 1,500 ft) genuinely differ by speed rather than by
-    position. approach needs agl_ft; where that read was unavailable the
-    sample stays "descent" rather than guessing -- the empty agl_ft column
-    is what says so."""
+    Cut from the ROUTE position where possible (the accel waypoint and the
+    decel start are exactly where search.py's own segment boundaries are,
+    so the recording's segments line up with the model's). The decel waypoint
+    is where the aircraft must be subsonic BY, so "decel" runs from
+    decel_start_cum_nm (the live arrival model's own decel distance before
+    it; the waypoint itself when unknown) up to the waypoint -- and past it
+    only while still supersonic, an overrun. approach needs agl_ft; where
+    that read was unavailable the sample stays "descent" rather than
+    guessing -- the empty agl_ft column is what says so."""
     if on_ground:
         return "ground"
+    if decel_start_cum_nm is None:
+        decel_start_cum_nm = decel_cum_nm
     if cum_nm >= decel_cum_nm:
         if agl_ft is not None and agl_ft < APPROACH_AGL_FT:
             return "approach"
         return "decel" if (mach is not None and mach >= 1.0) else "descent"
+    if cum_nm >= decel_start_cum_nm:
+        return "decel"
     if cum_nm >= accel_cum_nm:
         return "cruise"
     return "climb"
@@ -518,22 +524,36 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     return wind_at_fl
 
 
-def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl):
+def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl, gs_kt,
+                  thrust_reversers=False):
     """arrival.arrival() at the CURRENT state -- n_cand is 1 throughout, so
     every input is a scalar and the (1,)-shaped output arrays are squeezed
-    back to floats. speed=380 matches arrival()'s own default (the call
+    back to floats. The decel ends at the decel waypoint, so arrival()
+    backs the cruise it replaces out of the time to get there; with no march
+    to read that from, it's the current ground speed (gs_kt) at the current
+    weight -- what the time-to-waypoint estimate it is subtracted from
+    assumes too. speed=380 matches arrival()'s own default (the call
     signature this was speced against); real pre-flight callers
     (fuel._arrival_from_march) use speed="auto" instead, to dodge 380 kt's
     NaN-fuel gap at low decel_end_fl mass -- but that gap is in
     level_fuel_t, not level_time_min, and only time feeds the live panel's
     predicted-remaining clock, so it doesn't matter here."""
+    def march_tail(back_nm):
+        back_nm = np.asarray(back_nm, dtype=float)
+        time_s = back_nm / gs_kt * 3600.0 if gs_kt > 0 else np.full_like(back_nm, np.nan)
+        return time_s, np.full_like(back_nm, mass_at_barix_t), np.zeros(back_nm.shape, bool)
+
     out = arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_c,
-                           mass_at_barix_t, speed=FASTEST_SCHEDULE_KT)
+                           mass_at_barix_t, speed=FASTEST_SCHEDULE_KT, march_tail=march_tail,
+                           thrust_reversers=thrust_reversers)
     return dict(
         time_min=float(out["time_min"][0]),
+        decel_nm=float(out["decel_nm"][0]),
         decel_time_min=float(out["decel_time_min"][0]),
+        transition_time_min=float(out["transition_time_min"][0]),
         level_time_min=float(out["level_time_min"][0]),
         descent_time_min=float(out["descent_time_min"][0]),
+        approach_time_min=float(out["approach_time_min"][0]),
         level_fl=float(out["level_fl"][0]),
         level_wind_kt=float(out["level_wind_kt"][0]),
         flags=str(out["flags"][0]),
@@ -759,7 +779,7 @@ def _render_screen(state, table, best_idx, current_idx, binding_at_best, remaini
     arrival_text = _build_arrival_text(arrival_info)
 
     progress_text = Text(
-        f"Distance run {distance_run_nm:,.0f} nm / to run {remaining_nm:,.0f} nm   "
+        f"Distance run {distance_run_nm:,.0f} nm / to decel start {remaining_nm:,.0f} nm   "
         f"Elapsed {_format_hmm_or_na(elapsed_s)}   "
         f"Remaining {_format_hmm_or_na(predicted_remaining_s)}\n"
         f"Predicted total: live {_format_hmm_or_na(predicted_total_s)}   "
@@ -982,6 +1002,9 @@ def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id, decel_id):
         predicted_supersonic_s=(float(decel_rows["pred_elapsed_s"].iloc[0])
                                  - float(accel_rows["pred_elapsed_s"].iloc[0])
                                  if have_both else np.nan),
+        # The decel waypoint is where the aircraft must be subsonic BY.
+        mach_at_decel_waypoint=(cpa[decel_id]["mach"]
+                                if cpa.get(decel_id) is not None else np.nan),
     )
     return table, constants
 
@@ -1016,13 +1039,18 @@ def _print_comparison(table, constants):
           constants["predicted_decel_to_touchdown_s"])
     _line("supersonic segment", constants["measured_supersonic_s"],
           constants["predicted_supersonic_s"])
+    mach = constants.get("mach_at_decel_waypoint", np.nan)
+    if not np.isnan(mach):
+        verdict = "subsonic" if mach < 1.0 else "STILL SUPERSONIC"
+        print(f"  at the decel waypoint: M{mach:.2f} -- {verdict}")
 
 
 def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lookahead_nm=DEFAULT_LOOKAHEAD_NM,
                   record_path=None, compare_path=None,
                   host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
-                  state_source=None, weather_source=None, replay_speed=1.0):
+                  state_source=None, weather_source=None, replay_speed=1.0,
+                  thrust_reversers=False):
     """The live advisor loop, every interval_s: read the sim, project
     lookahead_nm ahead along the route, query Active Sky there, show the
     level table and recommendation. If record_path is given, also runs the
@@ -1156,7 +1184,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
 
             la_lat, la_lon, track_deg = project_along_route(legs, lat, lon, lookahead_nm)
             current_cum_nm, leg_idx, along_nm = current_progress_nm(legs, lat, lon)
-            remaining_nm = max(route_end_cum_nm - current_cum_nm, 0.0)  # to the decel waypoint
+            to_decel_wp_nm = max(route_end_cum_nm - current_cum_nm, 0.0)  # to the decel waypoint
             total_remaining_nm = max(touchdown_cum_nm - current_cum_nm, 0.0)  # to touchdown
             next_wp_id = legs[leg_idx].to_id
             dist_to_next_nm = max(legs[leg_idx].dist_nm - along_nm, 0.0)
@@ -1190,7 +1218,9 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                     # which understates specific range slightly on the subsonic
                     # table lookup.
                     arrival_info = _live_arrival(current_fl, arrival_nm, isa_dev_at_cruise,
-                                                  state["weight_t"], arrival_wind_fn)
+                                                  state["weight_t"], arrival_wind_fn,
+                                                  float(table["gs_kt"].iloc[current_idx]),
+                                                  thrust_reversers)
                 elif preflight_arrival_s is not None:
                     arrival_info = dict(time_min=preflight_arrival_s / 60.0, source="fallback")
                 else:
@@ -1204,6 +1234,14 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
 
             # Sim seconds since brake release, once per tick -- see
             # _SimClock and the module docstring's RECORDER note.
+            # The decel ENDS at the decel waypoint, so supersonic cruise -- and
+            # the advisor's "remaining" distance its level gains are worth
+            # anything over -- stops decel_nm short of it: the live arrival
+            # model's own decel distance from here, once it has one.
+            decel_nm = (arrival_info.get("decel_nm", 0.0) if arrival_info is not None else 0.0)
+            decel_start_cum_nm = decel_cum_nm - decel_nm
+            remaining_nm = max(decel_start_cum_nm - current_cum_nm, 0.0)
+
             elapsed_s = (sim_clock.elapsed_s(state["zulu_s"], time.monotonic())
                          if sim_clock is not None else None)
             current_gs_kt = float(table["gs_kt"].iloc[current_idx])
@@ -1213,7 +1251,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                 # BARIX -> touchdown total, not a remaining-distance one --
                 # arrival()'s decel/level/descent split only makes sense
                 # starting from the decel waypoint itself).
-                time_to_decel_s = (remaining_nm * NM_TO_M / (current_gs_kt * KT_TO_MS)
+                time_to_decel_s = (to_decel_wp_nm * NM_TO_M / (current_gs_kt * KT_TO_MS)
                                     if current_gs_kt > 0 else None)
                 arrival_time_s = arrival_info["time_min"] * 60.0 if arrival_info is not None else None
                 predicted_remaining_s = (
@@ -1298,7 +1336,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                         elapsed_row_s, state, current_cum_nm, last_wp,
                         legs[leg_idx].track_deg,
                         _flight_phase(current_cum_nm, accel_cum_nm, decel_cum_nm,
-                                       state["mach"], state.get("agl_ft"), state["on_ground"]),
+                                       state["mach"], state.get("agl_ft"), state["on_ground"],
+                                       decel_start_cum_nm),
                         as_point,
                         _advisory(table, best_idx, current_idx, remaining_nm, gain_threshold_kt),
                         binding_at_best, arrival_info,

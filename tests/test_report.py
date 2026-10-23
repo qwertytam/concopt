@@ -171,13 +171,14 @@ def test_run_report_prints_arrival_block(tmp_path, capsys):
     printed = capsys.readouterr().out
     arrival_block = printed.split("\n\n")[1]
 
-    assert arrival_block.startswith("Arrival (decel -> touchdown,")
+    assert arrival_block.startswith(f"Arrival (decel to M1.0 by {SAMPLE_DECEL_ID},")
     assert "decel to M1.0" in arrival_block
+    assert "cruise replaced" in arrival_block
     assert "level at M0.95" in arrival_block
     assert "descent" in arrival_block
     assert "approach" in arrival_block
     assert "total" in arrival_block
-    assert "kt schedule" in arrival_block
+    assert "kt decel schedule" in arrival_block
     assert "conc_subsonic_cruise.csv" in arrival_block
 
 
@@ -248,7 +249,7 @@ def test_run_report_end_to_end_with_zfw_and_subsonic_npz(tmp_path, capsys):
     fuel_block, arrival_block = printed.split("\n\n")[:2]
 
     assert "converged in" in fuel_block
-    assert "kt schedule" in arrival_block
+    assert "kt decel schedule" in arrival_block
 
 
 def test_run_report_requires_surface_npz(tmp_path):

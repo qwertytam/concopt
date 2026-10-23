@@ -125,16 +125,59 @@ def _boundary_flags(tow_calc):
     return flags
 
 
-def _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn):
+def march_tail(legs_out, weight_per_leg):
+    """callable(back_nm (n_cand,)) -> (time_s, mass_t, beyond_cruise): the
+    march's own elapsed time over its last back_nm before the decel
+    waypoint, and its mass back_nm before it -- what arrival.arrival backs
+    out of the march for the cruise the deceleration replaces (the decel
+    waypoint is where the aircraft must be subsonic BY, so the decel is
+    flown over the end of the march, not after it). Linear within a
+    sub-leg, which is how the march itself burns and times one.
+
+    Only cruise sub-legs count (eff_dist_nm > 0): a back_nm reaching past
+    top of climb is clamped to the whole cruise and flagged beyond_cruise,
+    rather than backing out climb the march never credited as cruise."""
+    eff = np.asarray(legs_out["eff_dist_nm"], dtype=float)
+    leg_s = np.asarray(legs_out["leg_time_s"], dtype=float)
+    w_start = np.asarray(weight_per_leg, dtype=float)
+    w_end = np.concatenate(
+        [w_start[:, 1:], np.asarray(legs_out["weight_at_barix"], dtype=float)[:, None]], axis=1)
+    # Distance/time from each sub-leg's END to the decel waypoint.
+    to_end_nm = np.cumsum(eff[:, ::-1], axis=1)[:, ::-1] - eff
+    to_end_s = np.cumsum(leg_s[:, ::-1], axis=1)[:, ::-1] - leg_s
+    cruise_nm = to_end_nm[:, 0] + eff[:, 0]
+
+    def tail(back_nm):
+        back = np.broadcast_to(np.asarray(back_nm, dtype=float), cruise_nm.shape)
+        beyond_cruise = back > cruise_nm
+        back = np.minimum(back, cruise_nm)[:, None]
+        inside = (eff > 0.0) & (to_end_nm <= back) & (back <= to_end_nm + eff)
+        i = np.argmax(inside, axis=1)[:, None]
+
+        def take(a):
+            return np.take_along_axis(a, i, axis=1)[:, 0]
+
+        e = take(eff)
+        f = np.where(e > 0.0, (back[:, 0] - take(to_end_nm)) / np.where(e > 0.0, e, 1.0), 0.0)
+        time_s = take(to_end_s) + f * take(leg_s)
+        mass_t = take(w_end) + f * (take(w_start) - take(w_end))
+        return time_s, mass_t, beyond_cruise
+
+    return tail
+
+
+def _arrival_from_march(legs_out, weight_per_leg, arrival_nm, arrival_wind_fn, arrival_fn,
+                        thrust_reversers=False):
     """arrival_fn's output for this march's own end-of-cruise state: FL and
     ISA deviation at the last cruise leg (arriving at the decel point), the
     weight at BARIX (mass_at_barix_t -- MASS IS THE TRAP, see
     arrival.arrival's docstring: the level segment's fuel table is indexed
-    by the mass actually flying it, not TOW), and wind sampled at this
-    march's own accumulated_s (arrival_wind_fn binds the position -- see
-    search._build_arrival_wind_fn -- and this call supplies the time).
-    Shared by every branch below so the fixed point and the plain --tow
-    path build arrival_out identically.
+    by the mass actually flying it, not TOW), the march's own tail
+    (march_tail -- the decel ends at the decel waypoint, so it replaces the
+    end of the march), and wind sampled at this march's own accumulated_s
+    (arrival_wind_fn binds the position -- see search._build_arrival_wind_fn
+    -- and this call supplies the time). Shared by every branch below so the
+    fixed point and the plain --tow path build arrival_out identically.
 
     speed="auto", not arrival()'s own 380 kt default: 380's decel_end_fl
     (FL312) only has subsonic-table coverage down to 110 t, which real
@@ -148,7 +191,9 @@ def _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn):
     mass_at_barix_t = legs_out["weight_at_barix"]
     wind_at_fl = arrival_wind_fn(legs_out["accumulated_s"])
     return arrival_fn(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
-                       mass_at_barix_t, speed="auto")
+                       mass_at_barix_t, speed="auto",
+                       march_tail=march_tail(legs_out, weight_per_leg),
+                       thrust_reversers=thrust_reversers)
 
 
 def fixed_point_fuel_iteration(
@@ -156,6 +201,7 @@ def fixed_point_fuel_iteration(
     min_landing_fuel_t=MIN_LANDING_FUEL_T, march_legs_fn=None, arrival_fn=None,
     cruise_mach=None, damping=DEFAULT_DAMPING,
     tolerance_t=DEFAULT_TOLERANCE_T, max_iterations=DEFAULT_MAX_ITERATIONS,
+    thrust_reversers=False,
 ):
     """Solve TOW = ZFW + trip_fuel(TOW) + reserve, for every candidate at once.
 
@@ -216,7 +262,8 @@ def fixed_point_fuel_iteration(
         legs_out, weight_per_leg, climb = march_legs_fn(
             cc_legs, cc_idx, data, dep_i8, tow_t=tow_t, cruise_mach=cruise_mach
         )
-        arrival_out = _arrival_from_march(legs_out, arrival_nm, arrival_wind_fn, arrival_fn)
+        arrival_out = _arrival_from_march(legs_out, weight_per_leg, arrival_nm,
+                                          arrival_wind_fn, arrival_fn, thrust_reversers)
         tow_calc = zfw_t + calculate_trip_fuel(climb, legs_out, arrival_out) + min_landing_fuel_t
 
         # A trial TOW light enough to put mass_at_barix_t below
@@ -249,17 +296,26 @@ def fixed_point_fuel_iteration(
         # candidates converge at all (a pinned value has zero residual).
         tow_next = np.clip(tow_calc, CLIMB_TOW_MIN_T, MTOW_T)
 
-        if np.abs(tow_next - tow_t).max() < tolerance_t:
+        converged = np.abs(tow_next - tow_t) < tolerance_t
+        if converged.all():
             flags = _boundary_flags(tow_calc)
             flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
             return (tow_next, iteration, flags,
                     legs_out, weight_per_leg, climb, arrival_out)
 
-        tow_t = damping * tow_next + (1.0 - damping) * tow_t
+        # A converged candidate keeps the TOW it was just flown at: each
+        # candidate's march and arrival depend only on its own TOW, so the
+        # next pass reproduces its converged residual exactly. Updating it
+        # anyway lets a candidate sitting on a small discontinuity -- e.g.
+        # the decel's cruise level flipping FL590/FL600 with a 0.001 t TOW
+        # change, which moves the backed-out cruise by ~0.03 t -- keep being
+        # stirred up while the rest of the batch settles.
+        tow_t = np.where(converged, tow_t, damping * tow_next + (1.0 - damping) * tow_t)
 
     flags = _boundary_flags(tow_calc)
     flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
-    flags[flags == ""] = "fuel_not_converged"
+    # Only the candidates that actually missed: the rest converged.
+    flags[~converged & (flags == "")] = "fuel_not_converged"
     # tow_next, not tow_t: tow_t was already overwritten by the damped blend
     # at the bottom of the loop above, computed from the SAME tow_calc/
     # tow_next as this flag check but never itself flown -- returning it

@@ -58,7 +58,8 @@ def _cmd_search(args):
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
-               arrival_upper_npz_path=args.arrival_upper_npz)
+               arrival_upper_npz_path=args.arrival_upper_npz,
+               thrust_reversers=args.thrust_reversers)
 
 
 def _cmd_report(args):
@@ -75,7 +76,8 @@ def _cmd_report(args):
                min_landing_fuel_t=args.min_landing_fuel,
                subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
-               arrival_upper_npz_path=args.arrival_upper_npz)
+               arrival_upper_npz_path=args.arrival_upper_npz,
+               thrust_reversers=args.thrust_reversers)
 
 
 def _cmd_verify(args):
@@ -87,7 +89,8 @@ def _cmd_verify(args):
                subsonic_npz_path=args.subsonic_npz,
                cruise_mach=args.cruise_mach,
                csv_path=args.csv,
-               arrival_upper_npz_path=args.arrival_upper_npz)
+               arrival_upper_npz_path=args.arrival_upper_npz,
+               thrust_reversers=args.thrust_reversers)
 
 
 def _cmd_shortlist(args):
@@ -119,7 +122,7 @@ def _cmd_inflight(args):
                  gain_threshold_kt=args.gain_threshold_kt,
                  simconnect_dll=args.simconnect_dll, live=not args.no_live,
                  state_source=state_source, weather_source=weather_source,
-                 replay_speed=args.replay_speed)
+                 replay_speed=args.replay_speed, thrust_reversers=args.thrust_reversers)
 
 
 def main(argv=None):
@@ -180,6 +183,8 @@ def main(argv=None):
     search_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
+    search_parser.add_argument('--thrust-reversers', action='store_true',
+                                help='use the in-flight thrust reversers for the subsonic descent: about double the descent rate and half the slow-down time, for at most 2 min from the top of the descent (default: off -- use the same setting on every step)')
     search_parser.set_defaults(func=_cmd_search)
 
     report_parser = subparsers.add_parser(
@@ -221,6 +226,8 @@ def main(argv=None):
     report_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
+    report_parser.add_argument('--thrust-reversers', action='store_true',
+                                help='use the in-flight thrust reversers for the subsonic descent: about double the descent rate and half the slow-down time, for at most 2 min from the top of the descent (default: off -- use the same setting on every step)')
     report_parser.set_defaults(func=_cmd_report)
 
     verify_parser = subparsers.add_parser(
@@ -265,6 +272,8 @@ def main(argv=None):
     verify_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                 help='target cruise Mach used in place of Mmo '
                                      f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
+    verify_parser.add_argument('--thrust-reversers', action='store_true',
+                                help='use the in-flight thrust reversers for the subsonic descent: about double the descent rate and half the slow-down time, for at most 2 min from the top of the descent (default: off -- use the same setting on every step)')
     verify_parser.add_argument('--csv', default=None,
                                 help='append one summary row (mean/std wind+temp delta, wind '
                                      'sign count, ERA5/AS total minutes) to this CSV, so repeated '
@@ -315,6 +324,8 @@ def main(argv=None):
     inflight_parser.add_argument('--cruise-mach', type=float, default=CRUISE_MACH,
                                   help='target cruise Mach used in place of Mmo '
                                        f'(default: {CRUISE_MACH}; try 2.04 for Mmo)')
+    inflight_parser.add_argument('--thrust-reversers', action='store_true',
+                                  help='use the in-flight thrust reversers for the subsonic descent: about double the descent rate and half the slow-down time, for at most 2 min from the top of the descent (default: off -- use the same setting on every step)')
     inflight_parser.add_argument('--gain-threshold-kt', type=float, default=DEFAULT_GAIN_THRESHOLD_KT,
                                   help='suppress a climb/descend recommendation worth less than this '
                                        f'many kt of ground speed (default: {DEFAULT_GAIN_THRESHOLD_KT:.0f})')

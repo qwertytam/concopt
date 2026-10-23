@@ -173,7 +173,7 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
                cruise_mach=limits.CRUISE_MACH,
                csv_path=None,
                snapshot_cache_path=SNAPSHOT_CACHE_PATH,
-               arrival_upper_npz_path=None):
+               arrival_upper_npz_path=None, thrust_reversers=False):
     """Compare Active Sky's live atmosphere against the ERA5 values the
     search used, at n_points evenly spaced cruise legs (climb-consumed legs
     excluded -- see march_legs' eff_dist_nm) for local_date/local_hour
@@ -236,7 +236,7 @@ def run_verify(pln_path, npz_path, local_date, local_hour,
             resolve_tow_and_arrival(
                 cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
                 zfw_t=zfw_t, min_landing_fuel_t=min_landing_fuel_t, cruise_mach=cruise_mach,
-                arrival_upper_data=arrival_upper_data,
+                arrival_upper_data=arrival_upper_data, thrust_reversers=thrust_reversers,
             )
         )
         tow_t = float(tow_arr[0])

@@ -233,6 +233,13 @@ def descent_to_1500ft(level_fl, speed_kt, temp_band):
     return result
 
 
+def descent_to_1500ft_floor_fl(speed_kt, temp_band):
+    """The lowest level_fl descent_to_1500ft has a row for (FL30 in the
+    warm band, FL50 in the cold one) -- below it, descent_to_1500ft clamps
+    rather than reaching zero at 1,500 ft."""
+    return _DESCENT_INTERPS[("descent_to_1500ft", False, float(speed_kt), temp_band)]["level_fl_min"]
+
+
 def descent_direct_from_cruise(level_fl, speed_kt, temp_band):
     """(fuel_t, time_min, dist_zero_wind_nm) from conc_descent.csv for combined
     decel-AND-descent directly from cruise (from_supersonic_cruise=True), linear

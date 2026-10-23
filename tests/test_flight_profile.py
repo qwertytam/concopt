@@ -103,10 +103,21 @@ def test_mach_limit_is_subsonic_before_linnd_and_after_decel(prof):
 
 
 def test_arrival_speeds_follow_the_model(prof):
+    """The descent is flown as fast as the airframe allows -- M0.95 until the
+    CAS limit, the CAS limit below, 250 kt below FL100 -- and the subsonic
+    cruise level at M0.95 (any descent down to that level is at the
+    descent's own speed)."""
     p = prof.profile
-    sched = prof.summary["schedule_kt"]
-    assert p.loc[p["phase"] == "descent", "cas_kt"].to_numpy() == pytest.approx(sched, abs=0.01)  # CAS schedule
-    assert p.loc[p["phase"] == "subsonic cruise", "mach"].to_numpy() == pytest.approx(0.95)
+    descent = p[p["phase"] == "descent"]
+    low = descent["alt_ft"] <= 10_000.0
+    assert descent.loc[low, "cas_kt"].to_numpy() == pytest.approx(250.0, abs=0.5)
+    high = descent[~low]
+    mach_cas_kt = np.array([cas_from_mach(0.95, isa(a * FT_TO_M)[1]) / KT_TO_MS for a in high["alt_ft"]])
+    assert high["cas_kt"].to_numpy() == pytest.approx(
+        np.minimum(mach_cas_kt, high["cas_limit_kt"].to_numpy()), abs=2.0)
+    subsonic = p[p["phase"] == "subsonic cruise"]
+    at_level = subsonic["alt_ft"] == subsonic["alt_ft"].min()
+    assert subsonic.loc[at_level, "mach"].to_numpy() == pytest.approx(0.95)
     decel = p[p["phase"] == "deceleration"]
     assert decel["mach"].iloc[-1] == pytest.approx(SUBSONIC_LIMIT_MACH)
     assert decel["mach"].is_monotonic_decreasing

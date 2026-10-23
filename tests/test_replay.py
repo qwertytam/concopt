@@ -160,7 +160,12 @@ def test_synthetic_flight_replays_end_to_end_with_phases_in_order(tmp_path):
     assert recorded["schema_version"].iloc[0] == 2
 
     phases = recorded["phase"].tolist()
-    canonical_order = ["ground", "climb", "cruise", "decel", "descent", "approach"]
+    # "ground" is left out: it is legitimately both first (brake release)
+    # and last (touchdown), and at this replay speed the brake-release tick
+    # can land just after liftoff (~13 s of flight time per Windows timer
+    # tick), so a recording may open in "climb". Ending on the ground is
+    # checked below.
+    canonical_order = ["climb", "cruise", "decel", "descent", "approach"]
     seen_in_canonical_order = [p for p in canonical_order if p in phases]
     first_seen_at = [phases.index(p) for p in seen_in_canonical_order]
     assert first_seen_at == sorted(first_seen_at), (
@@ -235,12 +240,23 @@ def test_replay_from_recording_reproduces_advisory_sequence(tmp_path):
     # both expected; a replay that diverges early or broadly is not, so
     # this tolerates a small fraction of both rather than exact equality
     # across two independently-timed live runs.
-    assert abs(len(rec1) - len(rec2)) <= max(6, int(0.05 * max(len(rec1), len(rec2)))), (
-        f"row counts {len(rec1)} vs {len(rec2)} diverged more than expected")
-    n = min(len(rec1), len(rec2))
-    actions1 = rec1["rec_action"].iloc[:n].to_numpy()
-    actions2 = rec2["rec_action"].iloc[:n].to_numpy()
-    mismatches = int(np.count_nonzero(actions1 != actions2))
+    #
+    # Rows are matched by elapsed (sim) time, not by position: a tick that
+    # lands on the same recorded row as the one before sees ZULU_TIME
+    # unchanged and is skipped as a pause (inflight._sim_paused), so rec2 is
+    # a little sparser than rec1 by a jitter-dependent count, and row i of
+    # one is not row i of the other.
+    assert rec2["elapsed_s"].iloc[-1] == pytest.approx(rec1["elapsed_s"].iloc[-1], abs=120.0), (
+        "the replay didn't fly the same flight end to end")
+    assert len(rec2) >= 0.75 * len(rec1), (
+        f"row counts {len(rec1)} vs {len(rec2)} -- far sparser than pause-skipping explains")
+    matched = pd.merge_asof(
+        rec2[["elapsed_s", "rec_action"]].sort_values("elapsed_s"),
+        rec1[["elapsed_s", "rec_action"]].sort_values("elapsed_s"),
+        on="elapsed_s", direction="nearest", tolerance=60.0, suffixes=("_2", "_1"),
+    ).dropna(subset=["rec_action_1"])
+    n = len(matched)
+    mismatches = int(np.count_nonzero(matched["rec_action_1"] != matched["rec_action_2"]))
     assert mismatches <= max(4, n // 10), (
         f"{mismatches}/{n} advisory actions differed between the recorded "
         "flight and its --replay -- too many to be tick-boundary jitter")

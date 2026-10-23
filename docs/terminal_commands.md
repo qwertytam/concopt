@@ -23,23 +23,41 @@ SET SUBSONIC_LEGS=data\era5\subsonic_legs.npz
 SET ARRIVAL_UPPER_LEGS=data\era5\arrival_upper_legs.npz
 
 SET TOP_N=50
-SET RESULTS_DIR=data\results\%DATE:~10,4%%DATE:~4,2%%DATE:~7,2%_%TIME:~0,2%%TIME:~3,2%
+```
+
+## 1. Set the results folder
+
+`Get-Date` doesn't depend on the Windows date format, unlike `%DATE%`. Pasted at the prompt it's
+`%i`; inside a `.bat` file it would be `%%i`.
+
+```bat
+for /f %i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmm"') do SET STAMP=%i
+SET RESULTS_DIR=data\results\%STAMP%
+```
+
+```bat
+if not exist "%RESULTS_DIR%\" mkdir "%RESULTS_DIR%"
 SET RESULTS_FILE=%RESULTS_DIR%\results.csv
 SET RESULTS_ALL_FILE=%RESULTS_DIR%\results_all.csv
 SET REPORT_SELECTED_DAYTIME_FILE=%RESULTS_DIR%\report_selected_daytime.csv
-SET INFLIGHT_RECORDING_FILE=%RESULTS_DIR%\recording_%DATE:~10,4%%DATE:~4,2%%DATE:~7,2%_%TIME:~0,2%%TIME:~3,2%.csv
+SET INFLIGHT_RECORDING_FILE=%RESULTS_DIR%\recording.csv
 ```
+
+Use just the bare `SET` command to list all existing environment variables.
 
 ## 2. Reduce netCDF files to npz
 
+Re-run whenever the `.pln` or `DECL` changes -- the `.npz` files are cut to the
+route's legs, and `search` raises if they don't match.
+
 ```bat
-poetry run concopt reduce --pln %PLN% --decel %DECL%
+poetry run python scripts/build_npz.py --pln %PLN% --decel %DECL%
 ```
 
 ## 3. Shortlist best departures
 
 ```bat
-poetry run concopt search --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% 0-surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --zfw %ZFW% --top %TOP_N% --out %RESULTS_FILE% --out-all %RESULTS_ALL_FILE%
+poetry run concopt search --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --top %TOP_N% --out %RESULTS_FILE% --out-all %RESULTS_ALL_FILE%
 ```
 
 ## 4. Verify against ActiveSky
@@ -50,13 +68,16 @@ poetry run concopt shortlist --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --sub
 
 ## 5. Generate full per-leg plan report for the selected winning day time
 
+`DEP_DATE`, not `DATE`: setting `DATE` replaces cmd's built-in `%DATE%` for the
+rest of the session (`SET DATE=` with nothing after it undoes that).
+
 ```bat
-SET DATE=2016-02-12
-SET LOCAL_HOUR=13
+SET DEP_DATE=2015-12-30
+SET LOCAL_HOUR=08
 ```
 
 ```bat
-poetry run concopt report --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --date %DATE% --hour %LOCAL_HOUR% --zfw %ZFW% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --out %REPORT_SELECTED_DAYTIME_FILE%
+poetry run concopt report --pln %PLN% --decel %DECL% --npz %ROUTE_LEGS% --date %DEP_DATE% --hour %LOCAL_HOUR% --zfw %ZFW% --cruise-mach %CRUISE_MACH% --surface-npz %SURFACE_LEGS% --subsonic-npz %SUBSONIC_LEGS% --arrival-upper-npz %ARRIVAL_UPPER_LEGS% --out %REPORT_SELECTED_DAYTIME_FILE%
 ```
 
 ## 6. Running in flight
