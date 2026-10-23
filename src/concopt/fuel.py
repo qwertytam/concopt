@@ -296,17 +296,26 @@ def fixed_point_fuel_iteration(
         # candidates converge at all (a pinned value has zero residual).
         tow_next = np.clip(tow_calc, CLIMB_TOW_MIN_T, MTOW_T)
 
-        if np.abs(tow_next - tow_t).max() < tolerance_t:
+        converged = np.abs(tow_next - tow_t) < tolerance_t
+        if converged.all():
             flags = _boundary_flags(tow_calc)
             flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
             return (tow_next, iteration, flags,
                     legs_out, weight_per_leg, climb, arrival_out)
 
-        tow_t = damping * tow_next + (1.0 - damping) * tow_t
+        # A converged candidate keeps the TOW it was just flown at: each
+        # candidate's march and arrival depend only on its own TOW, so the
+        # next pass reproduces its converged residual exactly. Updating it
+        # anyway lets a candidate sitting on a small discontinuity -- e.g.
+        # the decel's cruise level flipping FL590/FL600 with a 0.001 t TOW
+        # change, which moves the backed-out cruise by ~0.03 t -- keep being
+        # stirred up while the rest of the batch settles.
+        tow_t = np.where(converged, tow_t, damping * tow_next + (1.0 - damping) * tow_t)
 
     flags = _boundary_flags(tow_calc)
     flags[nonfinite_trial & (flags == "")] = "tow_from_nan_trip_fuel"
-    flags[flags == ""] = "fuel_not_converged"
+    # Only the candidates that actually missed: the rest converged.
+    flags[~converged & (flags == "")] = "fuel_not_converged"
     # tow_next, not tow_t: tow_t was already overwritten by the damped blend
     # at the bottom of the loop above, computed from the SAME tow_calc/
     # tow_next as this flag check but never itself flown -- returning it

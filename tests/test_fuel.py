@@ -638,3 +638,35 @@ def test_march_tail_backs_out_the_end_of_the_march():
     time_s, mass_t, beyond = tail(np.array([400.0]))
     assert time_s[0] == pytest.approx(1200.0) and mass_t[0] == pytest.approx(100.0)
     assert beyond[0]
+
+
+def test_one_candidate_on_a_discontinuity_neither_stalls_nor_flags_the_rest():
+    """A candidate whose arrival fuel jumps right where its fixed point would
+    land never settles -- but it is the only one flagged, and every other
+    candidate converges (and stays converged) regardless."""
+    n_cand = 5
+    dep_i8 = np.arange(n_cand, dtype="int64")
+    zfw_t = np.full(n_cand, 90.0)
+    kw = dict(min_landing_fuel_t=10.0, march_legs_fn=_synthetic_march_legs)
+
+    # Where candidate 0's smooth fixed point puts it at the decel waypoint ...
+    _, _, _, legs_out, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn, **kw)
+    threshold_t = float(legs_out["weight_at_barix"][0])
+
+    # ... and an arrival that costs 2 t more just below that mass: lighter
+    # -> more fuel -> heavier -> no extra fuel -> lighter, so no fixed point.
+    def jumpy_arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+                      mass_at_barix_t=None, speed="auto", march_tail=None, thrust_reversers=False):
+        out = arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
+                              mass_at_barix_t, speed=speed, march_tail=march_tail)
+        jump = np.where(np.arange(len(out["fuel_t"])) == 0,
+                        2.0 * (np.asarray(mass_at_barix_t) < threshold_t + 0.5), 0.0)
+        out["fuel_t"] = out["fuel_t"] + jump
+        return out
+
+    _, _, flags, _, _, _, _ = fixed_point_fuel_iteration(
+        None, None, None, dep_i8, zfw_t, _ARRIVAL_NM, _still_air_wind_fn,
+        arrival_fn=jumpy_arrival, **kw)
+    assert flags[0] == "fuel_not_converged"
+    assert np.all(flags[1:] == "")
