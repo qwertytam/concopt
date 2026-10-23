@@ -122,7 +122,8 @@ def _cmd_inflight(args):
                  gain_threshold_kt=args.gain_threshold_kt,
                  simconnect_dll=args.simconnect_dll, live=not args.no_live,
                  state_source=state_source, weather_source=weather_source,
-                 replay_speed=args.replay_speed, thrust_reversers=args.thrust_reversers)
+                 replay_speed=args.replay_speed, thrust_reversers=args.thrust_reversers,
+                 record_mode=args.record_mode)
 
 
 def main(argv=None):
@@ -314,6 +315,9 @@ def main(argv=None):
     inflight_parser.add_argument('--record', default=None,
                                   help='CSV path to record the flight to (brake release to touchdown); '
                                        'omit to run the advisor only')
+    inflight_parser.add_argument('--record-mode', choices=['ask', 'append', 'new'], default='ask',
+                                  help='what to do if the --record file already exists: ask (default), '
+                                       'append (resume it), or new (the old file is kept as a .bak copy)')
     inflight_parser.add_argument('--compare', default=None,
                                   help='a concopt report --out CSV to compare the recording against '
                                        'once touchdown is detected (requires --record)')

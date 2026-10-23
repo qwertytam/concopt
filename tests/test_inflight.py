@@ -939,3 +939,88 @@ def test_compare_reports_mach_at_the_decel_waypoint():
     _, constants = inflight.compare_to_report(_sample_report_df(), cpa, 4260.0 + REPORT_ARRIVAL_S,
                                               accel_id="LINND", decel_id="BARIX")
     assert constants["mach_at_decel_waypoint"] == pytest.approx(0.98)
+
+
+def test_sim_clock_does_not_count_a_clock_reset():
+    """Active Sky setting the time of day moves ZULU_TIME by hours: that step
+    is not flown, so the wall clock covers it instead."""
+    clock = inflight._SimClock(zulu_s=1000.0, now_s=0.0)
+    assert clock.elapsed_s(1030.0, 30.0) == pytest.approx(30.0)
+    assert clock.elapsed_s(1030.0 + 5 * 3600, 60.0) == pytest.approx(60.0)  # forward jump
+    assert clock.elapsed_s(1030.0 + 5 * 3600 + 30, 90.0) == pytest.approx(90.0)
+    assert clock.elapsed_s(1030.0 - 600, 120.0) == pytest.approx(120.0)  # set back
+
+
+def test_sim_clock_resumes_from_a_base():
+    clock = inflight._SimClock(zulu_s=1000.0, now_s=0.0, base_s=5000.0)
+    assert clock.elapsed_s(1060.0, 60.0) == pytest.approx(5060.0)
+
+
+def test_check_sim_state_rejects_nan_position():
+    good = dict(lat_deg=40.0, lon_deg=-70.0, alt_ft=50000.0, gs_kt=1200.0, weight_t=120.0)
+    inflight._check_sim_state(good)
+    for key in good:
+        with pytest.raises(inflight._BadSimData):
+            inflight._check_sim_state({**good, key: float("nan")})
+    with pytest.raises(inflight._BadSimData):
+        inflight._check_sim_state({**good, "lat_deg": None})
+
+
+def _write_rows(path, n_rows=3, columns=None):
+    rows = [{c: "" for c in inflight.RECORD_COLUMNS} | dict(
+        zulu_s=1000.0 + 15 * i, elapsed_s=15.0 * i, phase="climb", last_waypoint="KJFK",
+        on_ground=0, gs_kt=900.0, lat_deg=40.0 + i, lon_deg=-70.0) for i in range(n_rows)]
+    pd.DataFrame(rows, columns=columns or inflight.RECORD_COLUMNS).to_csv(path, index=False)
+
+
+def test_prepare_recording_without_an_existing_file_is_a_fresh_start(tmp_path):
+    assert inflight._prepare_recording(tmp_path / "none.csv", "ask") is None
+    header_only = tmp_path / "h.csv"
+    pd.DataFrame(columns=inflight.RECORD_COLUMNS).to_csv(header_only, index=False)
+    assert inflight._prepare_recording(header_only, "ask") is None
+
+
+def test_prepare_recording_append_returns_the_resume_point(tmp_path):
+    path = tmp_path / "rec.csv"
+    _write_rows(path)
+    resume = inflight._prepare_recording(path, "append")
+    assert len(resume["rows"]) == 3
+    assert resume["elapsed_s"] == pytest.approx(30.0)
+    assert resume["zulu_s"] == pytest.approx(1030.0)
+    assert resume["on_ground"] is False
+    assert path.exists()  # untouched
+
+
+def test_prepare_recording_new_keeps_the_old_file_as_a_backup(tmp_path):
+    path = tmp_path / "rec.csv"
+    _write_rows(path)
+    assert inflight._prepare_recording(path, "new") is None
+    assert not path.exists()
+    backups = list(tmp_path.glob("rec.*.bak.csv"))
+    assert len(backups) == 1 and len(pd.read_csv(backups[0])) == 3
+
+
+def test_prepare_recording_ask_reprompts_until_it_gets_an_answer(tmp_path):
+    path = tmp_path / "rec.csv"
+    _write_rows(path)
+    answers = iter(["", "maybe", "A"])
+    resume = inflight._prepare_recording(path, "ask", input_fn=lambda _prompt: next(answers))
+    assert resume is not None
+
+
+def test_prepare_recording_ask_without_a_terminal_exits_with_the_flag_to_use(tmp_path):
+    path = tmp_path / "rec.csv"
+    _write_rows(path)
+
+    def no_stdin(_prompt):
+        raise EOFError
+
+    with pytest.raises(SystemExit, match="--record-mode"):
+        inflight._prepare_recording(path, "ask", input_fn=no_stdin)
+
+
+def test_prepare_recording_append_refuses_a_different_schema(tmp_path):
+    path = tmp_path / "rec.csv"
+    _write_rows(path, columns=inflight.RECORD_COLUMNS[:-1])
+    with pytest.raises(SystemExit, match="different columns"):
+        inflight._prepare_recording(path, "append")

@@ -268,6 +268,13 @@ touchdown; `--compare` runs the predicted-vs-actual comparison once
 touchdown is detected. `--no-live` switches to plain scrolling prints
 instead of the redraw-in-place display, useful when piping to a log file.
 
+If you have to restart `concopt inflight` mid-flight with the same `--record`
+file, it asks whether to **append** (resume the recording: elapsed time carries
+on from the last row) or start a **new** one (the old file is renamed to a
+`.bak` copy, never overwritten). `--record-mode append|new` answers it up front.
+If Active Sky or the sim has no usable data for a tick (e.g. while you correct
+Active Sky's date/time) it shows a notice and retries instead of exiting.
+
 **Dry-run first** against a previous recording instead of the real sim:
 
 ```
