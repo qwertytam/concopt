@@ -211,6 +211,23 @@ DEFAULT_TOW_T = MTOW_T
 # top-of-climb time/distance/mass the march starts the cruise from.
 TOP_OF_CLIMB_FL = 502.0
 
+# Noise-abatement allowance, added to conc_climb.csv's brake-release-to-level
+# time at EVERY climb level (so to top of climb too) -- an ASSUMPTION, not
+# from the performance manual. After takeoff from KJFK the throttles come
+# back for noise abatement until the aircraft is further from the coast, and
+# the climb table (a clean climb) doesn't include that. Three flown flights
+# ran ~3 min behind the climb model by the first waypoints and then held
+# that gap through the cruise: the first trial (+3.5 min at 40N073W), the
+# 2015-12-30 flight (+3.5 min early on) and the 2026-01-21 12:00 flight
+# flown 2026-10-23 (+2.7 min at 405270N, 2:55 brake release to touchdown
+# against a 2:49 plan). Time only: the climb's air distance and fuel stay
+# the table's (reduced thrust for longer is taken as burning about the same
+# fuel); the extra minutes do pick up wind in the ground-distance
+# correction, like the rest of the climb time. Revisit once a fully
+# recorded climb shows where the time actually goes; 0 gives the table
+# as published.
+CLIMB_NOISE_ABATEMENT_MIN = 3.0
+
 # cum_nm within which search._climb_conditions samples ISA deviation/wind to
 # pick conc_climb.csv's temp_band and correct the climb's ground distance for
 # wind -- conc_climb.csv's shortest climb span is ~210 nm, so this stays

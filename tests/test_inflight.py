@@ -1046,3 +1046,41 @@ def test_a_dropped_required_read_is_a_skipped_tick_not_a_crash():
     assert state["weight_t"] is None
     with pytest.raises(inflight._BadSimData, match="weight_t"):
         inflight._check_sim_state(state)
+
+
+def test_no_level_advice_past_decel_start():
+    """The 2026-10-23 recording said CLIMB to FL530 down to the runway."""
+    table, best_idx, current_idx = _table_with_levels(500.0, 1000.0, 530.0, 1020.0)
+    adv = inflight._advisory(table, best_idx, current_idx, remaining_nm=0.0, gain_threshold_kt=3.0)
+    assert adv["action"] == "NONE"
+    assert adv["rec_fl"] is None and adv["gain_kt"] is None and adv["gain_s"] is None
+    line = inflight._recommendation_line(table, best_idx, current_idx, remaining_nm=0.0,
+                                          gain_threshold_kt=3.0, binding_at_best="CAS")
+    assert line == "No level advice -- past decel start"
+    assert inflight._recommendation_text(line).style == "dim"
+
+
+def test_approach_phase_sticks_until_the_ground():
+    """Holding ~1,500 ft used to flip approach/descent row to row."""
+    args = dict(cum_nm=3040.0, accel_cum_nm=40.0, decel_cum_nm=2865.0, mach=0.4, on_ground=False)
+    assert inflight._flight_phase(agl_ft=1400.0, **args) == "approach"
+    assert inflight._flight_phase(agl_ft=1600.0, **args) == "descent"
+    assert inflight._flight_phase(agl_ft=1600.0, prev_phase="approach", **args) == "approach"
+    assert inflight._flight_phase(agl_ft=0.0, prev_phase="approach",
+                                  **{**args, "on_ground": True}) == "ground"
+
+
+def test_parse_utc_s():
+    assert inflight._parse_utc_s("16:56") == 16 * 3600 + 56 * 60
+    assert inflight._parse_utc_s("16:56:54") == 16 * 3600 + 56 * 60 + 54
+    for bad in ("25:00", "16:60", "1656", "16:56:54:00"):
+        with pytest.raises(ValueError):
+            inflight._parse_utc_s(bad)
+
+
+def test_late_start_elapsed_counts_from_brake_release():
+    br = inflight._parse_utc_s("16:56:54")
+    assert inflight._late_start_elapsed_s(17 * 3600 + 13 * 60 + 17, br) == pytest.approx(16 * 60 + 23)
+    assert inflight._late_start_elapsed_s(60.0, inflight._parse_utc_s("23:59")) == pytest.approx(120.0)
+    assert inflight._late_start_elapsed_s(1000.0, None) == 0.0
+    assert inflight._late_start_elapsed_s(None, br) == 0.0

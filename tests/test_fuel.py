@@ -686,3 +686,22 @@ def test_one_candidate_on_a_discontinuity_neither_stalls_nor_flags_the_rest():
         arrival_fn=jumpy_arrival, **kw)
     assert flags[0] == "fuel_not_converged"
     assert np.all(flags[1:] == "")
+
+
+def test_climb_time_carries_the_noise_abatement_allowance():
+    """The climb's time is the table's plus CLIMB_NOISE_ABATEMENT_MIN (an
+    assumption -- see params.py); its fuel and air distance are the table's."""
+    from concopt.data.conc_data import climb_to
+    from concopt.params import CLIMB_NOISE_ABATEMENT_MIN, TOP_OF_CLIMB_FL
+    from concopt.search import _climb_profile
+
+    cc_legs, cc_idx, data, times = _multi_band_march_legs_data()
+    tow_t = np.array([175.0, 182.0])
+    climb = _climb_profile(data, times.astype("int64"), cc_legs, cc_idx, tow_t)
+
+    assert CLIMB_NOISE_ABATEMENT_MIN == 3.0
+    for i, band in enumerate(climb["temp_band"]):
+        _m, fuel_kg, air_nm, table_min = climb_to(TOP_OF_CLIMB_FL, tow_t[i], band)
+        assert climb["time_min"][i] == pytest.approx(table_min + CLIMB_NOISE_ABATEMENT_MIN)
+        assert climb["fuel_used_kg"][i] == pytest.approx(fuel_kg)
+        assert climb["dist_nm"][i] == pytest.approx(air_nm)

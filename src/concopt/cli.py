@@ -6,7 +6,7 @@ import datetime as dt
 
 import pandas as pd
 
-from concopt.inflight import run_inflight
+from concopt.inflight import _parse_utc_s, run_inflight
 from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N,
@@ -123,7 +123,8 @@ def _cmd_inflight(args):
                  simconnect_dll=args.simconnect_dll, live=not args.no_live,
                  state_source=state_source, weather_source=weather_source,
                  replay_speed=args.replay_speed, thrust_reversers=args.thrust_reversers,
-                 record_mode=args.record_mode)
+                 record_mode=args.record_mode,
+                 brake_release_utc_s=args.brake_release_utc)
 
 
 def main(argv=None):
@@ -318,6 +319,10 @@ def main(argv=None):
     inflight_parser.add_argument('--record-mode', choices=['ask', 'append', 'new'], default='ask',
                                   help='what to do if the --record file already exists: ask (default), '
                                        'append (resume it), or new (the old file is kept as a .bak copy)')
+    inflight_parser.add_argument('--brake-release-utc', default=None, type=_parse_utc_s, metavar='HH:MM[:SS]',
+                                  help='sim UTC time of brake release, for a recording started after '
+                                       'takeoff: elapsed time then counts from it instead of from the '
+                                       'first reading (ignored when brake release is seen)')
     inflight_parser.add_argument('--compare', default=None,
                                   help='a concopt report --out CSV to compare the recording against '
                                        'once touchdown is detected (requires --record)')
