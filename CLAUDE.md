@@ -462,7 +462,16 @@ for its own sake, no defensive error handling.
   which the first real recording (2026-10-21) showed P3D falling behind
   (~87% speed for 12 minutes), and which keeps running through a pause.
   While the sim is paused (`ZULU_TIME` unchanged since the last row,
-  `_sim_paused`) no rows are written at all. With `--compare`
+  `_sim_paused`) no rows are written at all.
+  A ZULU_TIME step over `SIM_CLOCK_JUMP_S` (1 h) is the sim's clock being set
+  (Active Sky changing the time of day), not flown: `_SimClock` covers it with
+  wall-clock time instead. A tick the sim or Active Sky can't answer (NaN
+  position, Active Sky erroring while its date is changed) shows a notice and
+  retries, writing no row, rather than ending the run. If the `--record` file
+  already exists, `--record-mode ask|append|new` (default ask, prompted before
+  connecting): append resumes it (phase, elapsed time and each waypoint's
+  closest approach rebuilt from its rows), new renames it to a `.bak` copy --
+  it is never overwritten. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release

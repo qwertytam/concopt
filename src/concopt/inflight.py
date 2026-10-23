@@ -69,8 +69,11 @@ _read_state (the SimConnect reads) and the recorder state machine in
 run_inflight are the same either way.
 """
 import csv
+import datetime as dt
+import os
 import time
 from itertools import groupby
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -94,7 +97,7 @@ from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, FASTEST_SCHEDULE_KT, FT_TO_M,
                             INHG_TO_HPA, ISA_H1_M, LB_TO_KG, LOW_ALT_FT, LOW_ALT_INTERVAL_S,
-                            NM_TO_M, SIMCONNECT_REQUEST_TIME_MS, S_PER_DAY)
+                            NM_TO_M, SIM_CLOCK_JUMP_S, SIMCONNECT_REQUEST_TIME_MS, S_PER_DAY)
 from concopt.search import TARGET_FL, _format_hmm
 
 # --- Flight recorder schema --------------------------------------------------
@@ -222,21 +225,27 @@ class _SimClock:
     answers with wall-clock time since the last good read, scaled by
     replay_speed like every other wall-clock use in run_inflight, and
     doesn't move the reference, so the next good read covers the gap from
-    ZULU_TIME alone."""
+    ZULU_TIME alone.
 
-    def __init__(self, zulu_s, now_s, replay_speed=1.0):
+    A step over SIM_CLOCK_JUMP_S is the sim's clock being set (Active Sky
+    changing the time of day), not flown: it is replaced by the wall-clock
+    time since the last read, like a dropped read. base_s lets a resumed
+    recording continue from its last row's elapsed time."""
+
+    def __init__(self, zulu_s, now_s, replay_speed=1.0, base_s=0.0):
         self.replay_speed = replay_speed
-        self.base_s = 0.0
+        self.base_s = base_s
         self.zulu_s = zulu_s if _zulu_ok(zulu_s) else None
         self.now_s = now_s
 
     def elapsed_s(self, zulu_s, now_s):
         if not _zulu_ok(zulu_s):
             return self.base_s + (now_s - self.now_s) * self.replay_speed
-        if self.zulu_s is None:
+        step_s = None if self.zulu_s is None else (zulu_s - self.zulu_s) % S_PER_DAY
+        if step_s is None or step_s > SIM_CLOCK_JUMP_S:
             self.base_s += (now_s - self.now_s) * self.replay_speed
         else:
-            self.base_s += (zulu_s - self.zulu_s) % S_PER_DAY
+            self.base_s += step_s
         self.zulu_s, self.now_s = zulu_s, now_s
         return self.base_s
 
@@ -253,6 +262,75 @@ def _sim_paused(last_row_zulu_s, zulu_s):
 
 def _zulu_ok(zulu_s):
     return zulu_s is not None and not np.isnan(zulu_s)
+
+
+class _BadSimData(ValueError):
+    """The sim answered, but with a position/state that can't be flown on
+    (NaN while P3D reloads scenery or Active Sky changes the time)."""
+
+
+def _check_sim_state(state):
+    """Raise _BadSimData if the required reads aren't finite numbers."""
+    for key in ("lat_deg", "lon_deg", "alt_ft", "gs_kt", "weight_t"):
+        value = state[key]
+        if value is None or not np.isfinite(value):
+            raise _BadSimData(f"the sim returned {value!r} for {key}")
+
+
+def _update_cpa(cpa, wp_positions, lat, lon, elapsed_s, fl, mach, tas_kt, gs_kt):
+    """Fold one position into each waypoint's closest point of approach."""
+    for wid, (wlat, wlon) in wp_positions.items():
+        d = great_circle_nm(lat, lon, wlat, wlon)
+        prev = cpa[wid]
+        if prev is None or d < prev["dist_nm"]:
+            cpa[wid] = dict(dist_nm=d, elapsed_s=elapsed_s, fl=fl,
+                             mach=mach, tas_kt=tas_kt, gs_kt=gs_kt)
+
+
+def _prepare_recording(record_path, mode, input_fn=input):
+    """What to do about a recording that already exists at record_path:
+    append to it and resume, or start a new one. mode is "ask" (prompt),
+    "append" or "new". Returns None for a fresh recording (no file, an empty
+    one, or "new" -- the old file is renamed to a .bak copy first, never
+    overwritten), or a dict of the existing rows to resume from."""
+    path = Path(record_path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    existing = pd.read_csv(path)
+    if existing.empty:
+        return None
+
+    elapsed = existing["elapsed_s"].dropna()
+    last_elapsed_s = float(elapsed.iloc[-1]) if len(elapsed) else 0.0
+    print(f"{path} already exists: {len(existing)} rows, last at "
+          f"{_format_hmm(last_elapsed_s)} elapsed ({existing['phase'].iloc[-1]}, "
+          f"after {existing['last_waypoint'].iloc[-1]}).")
+
+    if mode == "ask":
+        try:
+            while mode == "ask":
+                answer = input_fn("[A]ppend to it and resume, or start a [N]ew recording "
+                                  "(the old file is kept as a .bak copy)? ").strip().lower()
+                mode = {"a": "append", "append": "append", "n": "new", "new": "new"}.get(answer, "ask")
+        except EOFError:
+            raise SystemExit("A recording already exists and there is no terminal to ask "
+                             "about it -- pass --record-mode append or --record-mode new.")
+
+    if mode == "new":
+        stamp = dt.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y%m%d_%H%M%S")
+        backup = path.with_name(f"{path.stem}.{stamp}.bak{path.suffix}")
+        os.replace(path, backup)
+        print(f"Moved the existing recording to {backup}; starting a new one.")
+        return None
+
+    if list(existing.columns) != RECORD_COLUMNS:
+        raise SystemExit(f"{path} has different columns from this version's recording "
+                         f"(schema {RECORD_SCHEMA_VERSION}), so it can't be appended to -- "
+                         "use --record-mode new.")
+    last = existing.iloc[-1]
+    return dict(rows=existing, elapsed_s=last_elapsed_s,
+                zulu_s=None if pd.isna(last["zulu_s"]) else float(last["zulu_s"]),
+                on_ground=bool(last["on_ground"]), gs_kt=last["gs_kt"])
 
 
 def _live_weather_source(host, port):
@@ -1050,7 +1128,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                   host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
                   state_source=None, weather_source=None, replay_speed=1.0,
-                  thrust_reversers=False):
+                  thrust_reversers=False, record_mode="ask"):
     """The live advisor loop, every interval_s: read the sim, project
     lookahead_nm ahead along the route, query Active Sky there, show the
     level table and recommendation. If record_path is given, also runs the
@@ -1093,7 +1171,14 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     Covered by tests/test_replay.py via the seam above (a live SimConnect +
     Active Sky are never touched there); see compare_to_report and
     _level_table/_recommendation_line/_render_screen for the other pure
-    pieces."""
+    pieces.
+
+    record_mode is what to do when record_path already holds a recording:
+    "ask" (prompt), "append" (resume it -- phase, elapsed time and each
+    waypoint's closest approach are rebuilt from its rows, and new rows go on
+    the end) or "new" (the old file is renamed to a .bak copy). A tick the
+    sim or Active Sky can't answer (NaN position, Active Sky not loaded with
+    a date) shows a notice and retries rather than ending the run."""
     plan = parse_pln(pln_path)
     legs = build_legs(plan["waypoints"])
     mask = supersonic_segment(legs, accel_id=accel_id, decel_id=decel_id)
@@ -1136,6 +1221,10 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         preflight_arrival_s = _report_arrival_s(report_df)
         preflight_predicted_total_s = _preflight_predicted_total_s(report_df)
 
+    # Asked before connecting, so the answer isn't buried under SimConnect's
+    # output (and a typo'd path doesn't cost a connection first).
+    resume = _prepare_recording(record_path, record_mode) if record_path is not None else None
+
     # THE SEAM: state_source/weather_source given (replay) -> no SimConnect
     # connection is attempted at all, live or otherwise. Neither given (a
     # real flight) -> connect for real and build the live defaults, exactly
@@ -1155,9 +1244,10 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         wp_positions = {wid: (lat, lon) for wid, lat, lon in plan["waypoints"]}
         cpa = {wid: None for wid in wp_positions}
         waypoint_cum_nm = _waypoint_cum_nm(legs)
-        csv_file = open(record_path, "w", newline="")
+        csv_file = open(record_path, "a" if resume else "w", newline="")
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(RECORD_COLUMNS)
+        if not resume:
+            csv_writer.writerow(RECORD_COLUMNS)
 
     phase = "ground"
     prev_on_ground = None
@@ -1166,6 +1256,22 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     last_row_zulu_s = None  # the ZULU_TIME of the last row written -- see _sim_paused
     touchdown_elapsed_s = None
     recorder_note = None  # live panel only -- --no-live prints these as before
+    if resume:
+        # Carry on as if never stopped: already recording, the clock picks up
+        # at the last row's elapsed time (on the first tick, below), and the
+        # waypoint approaches seen so far are rebuilt from the rows.
+        phase = "recording"
+        prev_on_ground = resume["on_ground"]
+        prev_gs_kt = resume["gs_kt"]
+        last_row_zulu_s = resume["zulu_s"]
+        for r in resume["rows"].itertuples():
+            if pd.notna(r.lat_deg) and pd.notna(r.lon_deg):
+                _update_cpa(cpa, wp_positions, r.lat_deg, r.lon_deg, r.elapsed_s,
+                            r.level_fl, r.mach, r.tas_kt, r.gs_kt)
+        recorder_note = (f"Resumed recording to {record_path} after {len(resume['rows'])} rows "
+                         f"({_format_hmm(resume['elapsed_s'])} elapsed)")
+        if not live:
+            print(f"\n{recorder_note}")
     # The live arrival estimate is refreshed at most every ARRIVAL_REFRESH_S
     # (see that constant) and reused in between, so the low-altitude tick
     # doesn't multiply its 10-level Active Sky query.
@@ -1179,21 +1285,37 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     interrupted = False
     try:
         while True:
-            state = state_source()
-            lat, lon = state["lat_deg"], state["lon_deg"]
+            try:
+                state = state_source()
+                _check_sim_state(state)
+                lat, lon = state["lat_deg"], state["lon_deg"]
 
-            la_lat, la_lon, track_deg = project_along_route(legs, lat, lon, lookahead_nm)
-            current_cum_nm, leg_idx, along_nm = current_progress_nm(legs, lat, lon)
-            to_decel_wp_nm = max(route_end_cum_nm - current_cum_nm, 0.0)  # to the decel waypoint
-            total_remaining_nm = max(touchdown_cum_nm - current_cum_nm, 0.0)  # to touchdown
-            next_wp_id = legs[leg_idx].to_id
-            dist_to_next_nm = max(legs[leg_idx].dist_nm - along_nm, 0.0)
+                la_lat, la_lon, track_deg = project_along_route(legs, lat, lon, lookahead_nm)
+                current_cum_nm, leg_idx, along_nm = current_progress_nm(legs, lat, lon)
+                to_decel_wp_nm = max(route_end_cum_nm - current_cum_nm, 0.0)  # to the decel waypoint
+                total_remaining_nm = max(touchdown_cum_nm - current_cum_nm, 0.0)  # to touchdown
+                next_wp_id = legs[leg_idx].to_id
+                dist_to_next_nm = max(legs[leg_idx].dist_nm - along_nm, 0.0)
 
-            temp_k, u_ms, v_ms = _lookahead_atmosphere(weather_source, la_lat, la_lon)
-            temp_k = _advisor_temp_k(temp_k, state.get("sim_temp_c"), state["alt_ft"])
-            current_fl = state["alt_ft"] / 100.0
-            table, best_idx, current_idx, binding_at_best = _level_table(
-                temp_k, u_ms, v_ms, track_deg, state["weight_t"], cruise_mach, current_fl)
+                temp_k, u_ms, v_ms = _lookahead_atmosphere(weather_source, la_lat, la_lon)
+                temp_k = _advisor_temp_k(temp_k, state.get("sim_temp_c"), state["alt_ft"])
+                current_fl = state["alt_ft"] / 100.0
+                table, best_idx, current_idx, binding_at_best = _level_table(
+                    temp_k, u_ms, v_ms, track_deg, state["weight_t"], cruise_mach, current_fl)
+            except (_BadSimData, RuntimeError) as exc:
+                # Active Sky errors out when its date/time is being changed or
+                # isn't loaded, the sim hands back NaN while it reloads: none
+                # of that is the end of the flight. No row is written for a
+                # tick like this; elapsed time is sim time, so nothing is lost.
+                notice = (f"No usable data this tick ({str(exc)[:160]}). Check the sim and "
+                          f"Active Sky date/time -- retrying in {interval_s:.0f} s "
+                          f"(Ctrl+C to stop).")
+                if live_display is not None:
+                    live_display.update(Text(notice, style="bold yellow"))
+                else:
+                    print(f"\n{notice}")
+                time.sleep(interval_s / replay_speed)
+                continue
 
             # Live arrival estimate, at the CURRENT state -- not the
             # pre-flight one, which is the entire point of an in-flight
@@ -1242,6 +1364,11 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
             decel_start_cum_nm = decel_cum_nm - decel_nm
             remaining_nm = max(decel_start_cum_nm - current_cum_nm, 0.0)
 
+            if sim_clock is None and resume:
+                # Pick up from the last recorded row; the step since its
+                # ZULU_TIME is counted unless it's a clock reset (see _SimClock).
+                sim_clock = _SimClock(resume["zulu_s"], time.monotonic(), replay_speed,
+                                       base_s=resume["elapsed_s"])
             elapsed_s = (sim_clock.elapsed_s(state["zulu_s"], time.monotonic())
                          if sim_clock is not None else None)
             current_gs_kt = float(table["gs_kt"].iloc[current_idx])
@@ -1344,12 +1471,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                         predicted_remaining_s, predicted_total_s)
                     csv_writer.writerow(_row_values(row))
                     csv_file.flush()
-                    for wid, (wlat, wlon) in wp_positions.items():
-                        d = great_circle_nm(lat, lon, wlat, wlon)
-                        prev = cpa[wid]
-                        if prev is None or d < prev["dist_nm"]:
-                            cpa[wid] = dict(dist_nm=d, elapsed_s=elapsed_row_s, fl=current_fl,
-                                             mach=state["mach"], tas_kt=state["tas_kt"], gs_kt=gs_kt)
+                    _update_cpa(cpa, wp_positions, lat, lon, elapsed_row_s, current_fl,
+                                state["mach"], state["tas_kt"], gs_kt)
 
                 prev_on_ground = state["on_ground"]
                 prev_gs_kt = gs_kt

@@ -308,3 +308,76 @@ def test_live_display_handles_none_values_early_in_flight(tmp_path):
                  state_source=stopping_state_source, weather_source=weather_source,
                  replay_speed=5.0, live=True)
     # No exception -> rich.Live tolerated the early None values.
+
+
+# --- a tick the sim or Active Sky can't answer, and resuming a recording ---------
+
+def test_unusable_ticks_show_a_notice_and_the_flight_carries_on(tmp_path, capsys):
+    """Active Sky erroring (its date being changed) or the sim returning NaN
+    must not end the run -- a notice, then the next tick."""
+    profile_df = _synthetic_flight_df(seed=4)
+    state_source, weather_source = replay_sources(profile_df, replay_speed=_FAST_REPLAY_SPEED)
+    calls = {"state": 0, "weather": 0}
+
+    def flaky_state():
+        calls["state"] += 1
+        state = state_source()
+        return {**state, "lat_deg": float("nan"), "lon_deg": float("nan")} if calls["state"] <= 2 else state
+
+    def flaky_weather(lat, lon, alt_ft):
+        calls["weather"] += 1
+        if calls["weather"] <= 2:
+            raise RuntimeError("Active Sky at localhost:19285 returned 'Error'")
+        return weather_source(lat, lon, alt_ft)
+
+    record_path = tmp_path / "recording.csv"
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
+                 state_source=flaky_state, weather_source=flaky_weather,
+                 replay_speed=_FAST_REPLAY_SPEED, live=False)
+
+    out = capsys.readouterr().out
+    assert out.count("No usable data this tick") == 4
+    assert "the sim returned nan for lat_deg" in out
+    recorded = pd.read_csv(record_path)
+    assert len(recorded) > 20
+    assert recorded["on_ground"].iloc[-1] == 1  # still flew through to touchdown
+
+
+def test_append_resumes_a_recording_part_way_through_the_flight(tmp_path, capsys):
+    """concopt restarted mid-flight: the rows already on disk stay, elapsed
+    time carries on from the last of them, and brake release is not
+    'detected' again."""
+    profile_df = _synthetic_flight_df(seed=5)
+    first_path = tmp_path / "first.csv"
+    state_source, weather_source = replay_sources(profile_df, replay_speed=_FAST_REPLAY_SPEED)
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(first_path),
+                 state_source=state_source, weather_source=weather_source,
+                 replay_speed=_FAST_REPLAY_SPEED, live=False)
+    full = pd.read_csv(first_path)
+
+    # What had been written when it stopped, a third of the way in...
+    existing = full.iloc[: len(full) // 3]
+    record_path = tmp_path / "recording.csv"
+    existing.to_csv(record_path, index=False)
+    last_elapsed_s, last_zulu_s = existing["elapsed_s"].iloc[-1], existing["zulu_s"].iloc[-1]
+
+    # ...and the sim carrying on from a little later, replayed from there.
+    later = profile_df[profile_df["zulu_s"] > last_zulu_s + 300.0].reset_index(drop=True)
+    later = later.assign(elapsed_s=later["elapsed_s"] - later["elapsed_s"].iloc[0])
+    state_source, weather_source = replay_sources(later, replay_speed=_FAST_REPLAY_SPEED)
+    capsys.readouterr()
+    run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0, record_path=str(record_path),
+                 state_source=state_source, weather_source=weather_source,
+                 replay_speed=_FAST_REPLAY_SPEED, live=False, record_mode="append")
+
+    out = capsys.readouterr().out
+    assert "Resumed recording" in out
+    assert "Brake release detected" not in out
+    resumed = pd.read_csv(record_path)
+    assert list(resumed.columns) == list(full.columns)  # one header
+    pd.testing.assert_frame_equal(resumed.iloc[: len(existing)], existing)
+    new = resumed.iloc[len(existing):]
+    assert len(new) > 10
+    assert new["elapsed_s"].iloc[0] > last_elapsed_s + 300.0 - 1.0  # carried on, not restarted at 0
+    assert resumed["elapsed_s"].is_monotonic_increasing
+    assert resumed["on_ground"].iloc[-1] == 1

@@ -392,6 +392,11 @@ ARRIVAL_WIND_SAMPLE_FL = np.array(
     [183.0, 230.0, 280.0, 330.0, 380.0, 430.0, 480.0, 530.0, 580.0, 605.0])
 
 SIMCONNECT_REQUEST_TIME_MS = 200  # AircraftRequests(_time=...): read cache age
+# A ZULU_TIME step between two ticks bigger than this is the sim's clock being
+# SET (Active Sky loading another time of day), not flown: the recorder doesn't
+# count it into elapsed time. Generous -- a flight at 4x sim rate with a 30 s
+# tick is a 2 min step.
+SIM_CLOCK_JUMP_S = 3600.0
 
 # =============================================================================
 # Synthetic flight for replay/notebook (replay.build_synthetic_flight)
