@@ -158,6 +158,7 @@ cython_debug/
 # ERA5 downloads (raw netCDF + reduced .npz) -- large, re-downloadable
 data/era5*/
 data/inflight/
+data/results/
 data/*.csv
 
 # Ad hoc command output (e.g. `concopt verify ... | Tee-Object -FilePath
