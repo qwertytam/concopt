@@ -234,23 +234,22 @@ for its own sake, no defensive error handling.
   TAS is higher in the warmer air lower down, so without a wind reason to
   stay high the lowest level, FL290, wins.
 
-  Descent (`_descent_grid`/`_descend`, integrated on a 500 ft grid built once
-  per call): as fast as the airframe allows — M0.95 until that meets the CAS
-  limit (`conc_cas_limit.csv`), the CAS limit below, 250 KIAS below FL100 —
-  at `conc_descent.csv`'s own subsonic descent rate and fuel for the
-  380 kt schedule (`DESCENT_RATE_SCHEDULE_KT`, user-confirmed as close
-  enough); that table stops at FL30 (warm)/FL50 (cold), so `_to_1500ft`
-  runs it linearly to zero at 1,500 ft rather than clamping. Two level
-  slow-downs (user-supplied rates): to 250 kt at FL100 (100 kt per 3 min),
-  and 250 → 175 kt at 1,500 ft (90 s). `--thrust-reversers` (`thrust_reversers`,
+  Descent (`_descent_grid`/`_descend`, on a 500 ft grid built once per
+  call): `conc_descent.csv`'s own subsonic descent for the 380 kt schedule
+  (`DESCENT_RATE_SCHEDULE_KT`, user-confirmed as close enough) — its time,
+  zero-wind distance and fuel, plus wind over each step's time. The table
+  already includes slowing down on the way (M0.95/CAS limit at the top,
+  250 KIAS below FL100, 175 KIAS by 1,500 ft — `descent_top_kias` and the
+  inflight panel show these); there are **no separate level slow-downs**.
+  An earlier version added them (~5 min, ~29 nm) and the inflight panel's
+  descent read ~76-88 nm against the sim's own ~65 nm FL290 → 2,000 ft with
+  a 40 kt tailwind (2026-10-23); now ~61 nm to 1,500 ft. The table stops
+  at FL30 (warm)/FL50 (cold), so `_to_1500ft` runs it linearly to zero at
+  1,500 ft rather than clamping. `--thrust-reversers` (`thrust_reversers`,
   off by default; same setting on every step, like `--cruise-mach`)
-  doubles the descent rate and halves slow-down time for at most
-  `REVERSER_MAX_MIN` (2) minutes in all, from the top of the descent
-  (user-specified placement). Note what that buys: at the top the aircraft
-  is already at ~M0.95, the level cruise's own speed, so a steeper descent
-  there only moves the top of descent later — ~0.06 min on the
-  2016-02-12 13:00 day. The same 2 min at FL100 and below (250 kt, the
-  slow-downs) would be worth ~1.4 min.
+  doubles the descent rate for at most `REVERSER_MAX_MIN` (2) minutes,
+  from the top of the descent (user-specified placement), shortening the
+  descent's distance and time.
 
   `descent_direct_from_cruise` is deliberately unused. The three decel
   schedules (325/350/380 kt) now only pick the decel itself (its distance

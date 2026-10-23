@@ -233,8 +233,9 @@ def _arrival_lines(arrival_out, arrival_nm, cruise_fl, decel_id):
         f"{a['level_fuel_t']:5.2f} t*  FL{a['level_fl']:.0f}, {a['level_wind_kt']:+.0f} kt "
         f"(fastest level)",
         f"  {'descent':<16}{a['descent_nm']:6.0f} nm  {a['descent_time_min']:5.1f} min  "
-        f"{a['descent_fuel_t']:5.2f} t   FL{a['level_fl']:.0f} -> 1500 ft at max speed, "
-        f"slow-downs {a['slowdown_time_min']:.1f} min{reversers}",
+        f"{a['descent_fuel_t']:5.2f} t   FL{a['level_fl']:.0f} -> 1500 ft, "
+        f"M{arrival.LEVEL_MACH:.2f}/{a['descent_top_kias']:.0f} KIAS -> {arrival.SPEED_LIMIT_KIAS:.0f} KIAS "
+        f"at FL{arrival.SPEED_LIMIT_FL:.0f} -> {arrival.GATE_KIAS:.0f} KIAS{reversers}",
         f"  {'approach':<16}{arrival.APPROACH_NM:6.0f} nm  {a['approach_time_min']:5.1f} min  "
         f"{arrival.APPROACH_FUEL_T:5.2f} t   from the gate at {arrival.GATE_KIAS:.0f} KIAS",
         f"  {'total':<16}{total_nm:6.0f} nm  {a['time_min']:5.1f} min  "

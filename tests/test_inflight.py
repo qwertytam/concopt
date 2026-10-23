@@ -385,7 +385,8 @@ def test_live_arrival_returns_a_segment_breakdown():
 
 def test_build_arrival_text_renders_the_segment_breakdown():
     info = dict(time_min=30.6, decel_time_min=6.2, level_time_min=12.4,
-                decel_nm=98.0, level_nm=120.0, descent_nm=75.0,
+                decel_nm=98.0, level_nm=120.0, descent_nm=61.0,
+                approach_time_min=1.6, descent_top_kias=380.0, reverser_min=2.0,
                 descent_time_min=10.5, level_fl=350.0, level_wind_kt=-18.0,
                 flags="", source="live")
     console = Console(width=120, record=True)
@@ -397,7 +398,10 @@ def test_build_arrival_text_renders_the_segment_breakdown():
     assert "descent" in text
     assert "approach" in text
     assert "30.6 min total" in text
-    assert "98 nm" in text and "120 nm" in text and "75 nm" in text and "5 nm" in text
+    assert "98 nm" in text and "120 nm" in text and "61 nm" in text and "5 nm" in text
+    # the speeds through the descent, so the slow-downs are visibly inside it
+    assert "M0.95/380 KIAS -> 250 KIAS at FL100 -> 175 KIAS at 1,500 ft" in text
+    assert "reversers 2.0 min" in text
     assert "LIVE" in text  # D2: a visible marker, not just the absence of a fallback note
 
 
@@ -430,7 +434,8 @@ def test_render_screen_includes_the_arrival_breakdown_and_live_vs_preflight():
         temp_k, u_ms, v_ms, track_deg=90.0, weight_t=135.0, cruise_mach=2.0, current_fl=530.0)
     state = _synthetic_state()
     arrival_info = dict(time_min=30.6, decel_time_min=6.2, level_time_min=12.4,
-                decel_nm=98.0, level_nm=120.0, descent_nm=75.0,
+                decel_nm=98.0, level_nm=120.0, descent_nm=61.0,
+                approach_time_min=1.6, descent_top_kias=380.0, reverser_min=2.0,
                          descent_time_min=10.5, level_fl=350.0, level_wind_kt=-18.0,
                          flags="", source="live")
 
