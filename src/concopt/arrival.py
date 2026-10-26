@@ -209,7 +209,7 @@ def _descend(g, top_ft, bottom_ft, budget_min):
 
 
 def _after_waypoint(level_fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c,
-                    mass_after_decel_t, reverser_budget_min, n_cand):
+                    mass_after_decel_t, reverser_budget_min, n_cand, descent_wind_at_fl=None):
     """Decel waypoint (M1.0 at decel_end_fl) -> touchdown, at one subsonic
     cruise level_fl <= decel_end_fl:
 
@@ -233,7 +233,9 @@ def _after_waypoint(level_fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c
         g, level_fl * 100.0, DESCENT_END_FT, np.full(n_cand, reverser_budget_min))
     descent_top_kias = _max_cas_kt(level_fl * 100.0, atmos.fl_to_pressure(level_fl),
                                    mass_after_decel_t - tr_fuel_t)
-    low_wind, _, _ = _wind_temp(wind_at_fl, DESCENT_END_FL, n_cand)
+    if descent_wind_at_fl is None:
+        descent_wind_at_fl = wind_at_fl
+    low_wind, _, _ = _wind_temp(descent_wind_at_fl, DESCENT_END_FL, n_cand)
     low_temp_k = atmos.isa(DESCENT_END_FT * FT_TO_M)[0] + isa_dev_c
 
     gate_gs_kt = _tas_kt(GATE_KIAS, atmos.fl_to_pressure(DESCENT_END_FL), low_temp_k) + low_wind
@@ -288,7 +290,7 @@ def _after_waypoint(level_fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c
     level_mass_outside_envelope = ~np.isfinite(fuel_total_kgh) & (level_nm > 0.0)
 
     descent_mid_fl = (level_fl + DESCENT_END_FL) / 2.0
-    descent_wind, _, _ = _wind_temp(wind_at_fl, descent_mid_fl, n_cand)
+    descent_wind, _, _ = _wind_temp(descent_wind_at_fl, descent_mid_fl, n_cand)
 
     out = {
         "level_fl": np.full(n_cand, float(level_fl)),
@@ -318,7 +320,8 @@ def _after_waypoint(level_fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c
 
 
 def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand,
-                        mass_at_barix_t, march_tail, g, isa_dev_c, reverser_budget_min):
+                        mass_at_barix_t, march_tail, g, isa_dev_c, reverser_budget_min,
+                        decel_wind_at_fl=None, descent_wind_at_fl=None):
     """One descent speed schedule, vectorised over every candidate at once.
     The schedule only picks conc_descent.csv's decel (its distance and the
     level it ends at); after the decel waypoint every candidate flies the
@@ -334,7 +337,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     )
 
     decel_wind, _, decel_wind_clamped = _wind_temp(
-        wind_at_fl, (cruise_fl + decel_end_fl) / 2.0, n_cand
+        decel_wind_at_fl or wind_at_fl, (cruise_fl + decel_end_fl) / 2.0, n_cand
     )
     decel_nm = conc_data.dist_with_wind(
         decel["dist_zero_wind_nm"], decel["time_min"], decel_wind
@@ -355,7 +358,7 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
     levels = [decel_end_fl] + [fl for fl in SUBSONIC_LEVELS_FL if fl < decel_end_fl]
     per_level = [
         _after_waypoint(fl, decel_end_fl, arrival_nm, g, wind_at_fl, isa_dev_c,
-                        mass_after_decel_t, reverser_budget_min, n_cand)
+                        mass_after_decel_t, reverser_budget_min, n_cand, descent_wind_at_fl)
         for fl in levels
     ]
     # Same rule as the schedule choice: a level with no fuel number (outside
@@ -398,7 +401,8 @@ def _arrival_for_speed(cruise_fl, arrival_nm, wind_at_fl, warm, speed_kt, n_cand
 
 def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             mass_at_barix_t=DEFAULT_MASS_AT_BARIX_T, speed=FASTEST_SCHEDULE_KT,
-            march_tail=None, thrust_reversers=False):
+            march_tail=None, thrust_reversers=False, decel_wind_at_fl=None,
+            descent_wind_at_fl=None):
     """Arrival time and fuel, net of the cruise the deceleration replaces:
     measured from the march's own arrival at the decel waypoint to
     touchdown (see the module docstring).
@@ -422,6 +426,12 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
             positive for a tailwind; temperature is static, K. Missing
             fl_clamped is treated as never-clamped (see search.
             _build_arrival_wind_fn for the real implementation, B6).
+        decel_wind_at_fl, descent_wind_at_fl: optional separate sources,
+            same shape as wind_at_fl, for the decel (read where it is flown,
+            ending at the decel waypoint) and for the descent and approach
+            (read at the destination). None means wind_at_fl, as pre-flight
+            -- concopt inflight passes Active Sky at the decel waypoint and
+            at EGLL; wind_at_fl then only prices the level segment.
         isa_dev_at_cruise: ISA deviation in the arrival area at cruise level,
             °C. Picks the descent temperature band (two bands, not the climb
             table's three).
@@ -560,13 +570,13 @@ def arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_at_cruise,
     # The descent below the waypoint is the same airspace for every schedule
     # and level -- built once. The CAS limit it reads is weight-dependent;
     # mass_at_barix_t stands in for the (slightly lighter) descent weight.
-    g = _descent_grid(wind_at_fl, warm, n_cand)
+    g = _descent_grid(descent_wind_at_fl or wind_at_fl, warm, n_cand)
     reverser_budget_min = REVERSER_MAX_MIN if thrust_reversers else 0.0
 
     by_schedule = {
         spd: _arrival_for_speed(
             cruise_fl, arrival_nm, wind_at_fl, warm, spd, n_cand, mass_at_barix_t, march_tail,
-            g, isa_dev_at_cruise, reverser_budget_min,
+            g, isa_dev_at_cruise, reverser_budget_min, decel_wind_at_fl, descent_wind_at_fl,
         )
         for spd in SCHEDULES_KT
     }

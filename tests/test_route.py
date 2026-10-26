@@ -213,3 +213,21 @@ def test_project_along_route_clamps_past_route_end(legs):
 
     end_lat, end_lon = destination_point(last.lat_mid, last.lon_mid, last.track_deg, last.dist_nm / 2.0)
     assert great_circle_nm(lat, lon, end_lat, end_lon) < 1.0
+
+
+def test_current_progress_nm_not_captured_by_a_zero_length_leg():
+    """The 2026-10-23 flight's .pln has a zero-length leg near EGLL; picking
+    the leg by nearest MIDPOINT let it win ~20 nm early and froze progress.
+    Here: 60 nm west -> A -> A again (zero length) -> 20 nm east."""
+    from concopt.route import build_legs, current_progress_nm, destination_point
+
+    a_lat, a_lon = 51.5, -1.0
+    w_lat, w_lon = destination_point(a_lat, a_lon, 270.0, 60.0)
+    e_lat, e_lon = destination_point(a_lat, a_lon, 90.0, 20.0)
+    legs = build_legs([("W", float(w_lat), float(w_lon)), ("A", a_lat, a_lon),
+                       ("A2", a_lat, a_lon), ("E", float(e_lat), float(e_lon))])
+
+    for back_nm in (25.0, 15.0, 5.0):  # inside the first leg, nearer A than its midpoint
+        lat, lon = destination_point(a_lat, a_lon, 270.0, back_nm)
+        cum_nm, _i, _along = current_progress_nm(legs, float(lat), float(lon))
+        assert cum_nm == pytest.approx(60.0 - back_nm, abs=0.5)

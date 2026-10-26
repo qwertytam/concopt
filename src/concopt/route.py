@@ -180,12 +180,18 @@ def build_legs(waypoints, max_leg_nm=100.0):
 
 def current_progress_nm(legs, lat, lon):
     """(lat, lon)'s along-route progress (cum_nm), for Phase 6's advisor and
-    recorder. Finds the leg whose midpoint is nearest (lat, lon),
-    reconstructs that leg's endpoints (destination_point against its own
-    midpoint/track/dist_nm -- Leg keeps only the midpoint), and projects
-    (lat, lon) onto its track to get an along-track offset from the leg's
-    start -- clamped to [0, dist_nm], so being off to the side of the route
-    doesn't run the projection backwards or past the leg.
+    recorder. Projects (lat, lon) onto every leg's track (each leg's start
+    reconstructed with destination_point from its own midpoint/track/dist_nm
+    -- Leg keeps only the midpoint), the along-track offset clamped to
+    [0, dist_nm] so being off to the side doesn't run it backwards or past
+    the leg, and takes the leg whose projected point is nearest -- ties to
+    the earlier leg.
+
+    Not the leg with the nearest MIDPOINT, as this used to be: a short or
+    zero-length leg's midpoint can be nearer than a long leg's while the
+    aircraft is well inside the long one. On the 2026-10-23 flight the
+    .pln's zero-length 5128N0053W -> 51N000W leg won for the last ~20 nm
+    and froze progress at its cum_nm.
 
     Not vectorised across candidates -- there is only ever one live
     aircraft position, unlike search.py's ~31,000-candidate scan.
@@ -195,17 +201,18 @@ def current_progress_nm(legs, lat, lon):
     redoing the nearest-leg search."""
     mid_lat = np.array([leg.lat_mid for leg in legs])
     mid_lon = np.array([leg.lon_mid for leg in legs])
-    i = int(np.argmin(great_circle_nm(lat, lon, mid_lat, mid_lon)))
-    leg = legs[i]
+    track = np.array([leg.track_deg for leg in legs])
+    dist = np.array([leg.dist_nm for leg in legs])
 
-    start_lat, start_lon = destination_point(leg.lat_mid, leg.lon_mid, leg.track_deg + 180.0, leg.dist_nm / 2.0)
+    start_lat, start_lon = destination_point(mid_lat, mid_lon, track + 180.0, dist / 2.0)
     d_from_start = great_circle_nm(start_lat, start_lon, lat, lon)
     brng_from_start = initial_bearing_deg(start_lat, start_lon, lat, lon)
-    along_nm = float(np.clip(
-        d_from_start * np.cos(np.radians(brng_from_start - leg.track_deg)),
-        0.0, leg.dist_nm,
-    ))
-    cum_nm = (leg.cum_nm - leg.dist_nm) + along_nm
+    along = np.clip(d_from_start * np.cos(np.radians(brng_from_start - track)), 0.0, dist)
+    on_lat, on_lon = destination_point(start_lat, start_lon, track, along)
+    i = int(np.argmin(great_circle_nm(on_lat, on_lon, lat, lon)))
+
+    along_nm = float(along[i])
+    cum_nm = (legs[i].cum_nm - legs[i].dist_nm) + along_nm
     return cum_nm, i, along_nm
 
 

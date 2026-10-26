@@ -23,7 +23,7 @@ from concopt.params import (CLIMB_BAND_SAMPLE_NM, C_TO_K,  # noqa: F401
                             DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N, DEFAULT_TOW_T,
                             DEPARTURE_LOCAL_HOURS, FT_TO_M, NM_TO_M, NS_PER_S, NY_TZ,
                             S_PER_HOUR, TARGET_FL, TOP_OF_CLIMB_FL, WINTER_MONTHS,
-                            CLIMB_NOISE_ABATEMENT_MIN)
+                            CLIMB_NOISE_ABATEMENT_MIN, TOUCHDOWN_ESTIMATE_S)
 from concopt.route import build_legs, climb_cruise_segment, parse_pln
 
 
@@ -677,6 +677,13 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
     n_cand = len(candidates)
     dep_i8 = candidates["departure_utc"].values.astype("datetime64[ns]").astype("int64")
 
+    # The EGLL runway sets the arrival distance (27 flies past to a final
+    # from the east -- runways.arrival_nm_by_runway), so it's picked before
+    # TOW and the arrival are solved, from the wind at a nominal touchdown
+    # time, and re-checked at the real one below.
+    arrival_nm, lhr_estimate = runways.lhr_arrival_nm(
+        legs, arrival_nm, surface_data, dep_i8 + int(TOUCHDOWN_ESTIMATE_S * NS_PER_S))
+
     how = ("fixed TOW override" if tow_t is not None
            else f"solving TOW from ZFW, up to {fuel.DEFAULT_MAX_ITERATIONS} passes")
     status(f"Marching {n_cand} candidate departures over {len(cc_legs)} legs ({how})...")
@@ -729,6 +736,8 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
     candidates["lhr_runway"] = lhr["runway"]
     candidates["jfk_xwind_gust_kt"] = jfk["xwind_gust_kt"]
     candidates["lhr_xwind_gust_kt"] = lhr["xwind_gust_kt"]
+    candidates["arrival_nm"] = arrival_nm
+    lhr_changed = lhr["runway"] != lhr_estimate["runway"]
     candidates["jfk_flag"] = jfk["flag"]
     candidates["lhr_flag"] = lhr["flag"]
     candidates["jfk_penalty_s"] = jfk["penalty_s"]
@@ -740,9 +749,11 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
             ("climb_warm_clamped" if warm else ""),
             fuel_flag,  # already self-describing (fuel.py's own flag strings), no prefix needed
             arrival_flag,  # already self-describing (arrival.py's own flag strings)
+            ("lhr_runway_estimate_changed" if changed else ""),
         ) if part)
-        for jfk_flag, lhr_flag, warm, fuel_flag, arrival_flag in
-        zip(jfk["flag"], lhr["flag"], climb["warm_flag"], fuel_flags, arrival_out["flags"])
+        for jfk_flag, lhr_flag, warm, fuel_flag, arrival_flag, changed in
+        zip(jfk["flag"], lhr["flag"], climb["warm_flag"], fuel_flags, arrival_out["flags"],
+            lhr_changed)
     ]
     candidates["total_time_s"] = (legs_out["accumulated_s"] + candidates["arrival_time_s"]
                                     + jfk["penalty_s"] + lhr["penalty_s"])
@@ -823,8 +834,9 @@ def run_search(pln_path, npz_path, surface_npz_path, decel_id,
           f"apart and leave a gap at easterly winds)")
     print(f"6. LHR ops: westerly (27R/27L) {lhr_westerly_n} "
           f"({lhr_westerly_n / n_valid * 100:.0f}%), easterly (09L/09R) {lhr_easterly_n} "
-          f"({lhr_easterly_n / n_valid * 100:.0f}%) (expect westerlies to dominate; the minority "
-          f"easterly days skip LHR's 5 min penalty and float up the total_time ranking)")
+          f"({lhr_easterly_n / n_valid * 100:.0f}%) (09 is taken whenever its tailwind is <= "
+          f"{runways.TAILWIND_MAX_KT:.0f} kt; 27 adds ~20 nm of arrival -- runways.arrival_nm_by_runway); "
+          f"runway changed between the estimate and touchdown: {int(lhr_changed.sum())}")
     print(f"7. Flagged {runways.XWIND_OK_KT:.0f}-{runways.XWIND_FLAG_KT:.0f} kt crosswind-gust "
           f"band: JFK {jfk_flagged_n} ({jfk_flagged_n / n_valid * 100:.1f}%), "
           f"LHR {lhr_flagged_n} ({lhr_flagged_n / n_valid * 100:.1f}%) of {n_valid}")

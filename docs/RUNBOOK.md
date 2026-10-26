@@ -288,6 +288,15 @@ for KJFK noise abatement (`CLIMB_NOISE_ABATEMENT_MIN` in `params.py`), based on
 three flights running ~3 min behind the climb table. `report` prints a note
 under its climb block.
 
+The level table uses Active Sky's weather **at the aircraft** (`--lookahead-nm`
+now defaults to 0). The arrival estimate reads Active Sky at the decel
+waypoint (for the decel), mid-arrival (for the level segment) and at EGLL (for
+the descent and approach). The panel's `LHR` line shows EGLL's surface wind and
+whether 09 is usable (tailwind ≤ 10 kt, crosswind ≤ 30 kt). If it isn't, the
+arrival is flown for 27 with a 10 nm final from the east, about 20 nm longer.
+`search` and `report` make the same 09/27 choice from ERA5. 27 no longer adds
+a flat 5 min; it adds the extra distance instead.
+
 **Dry-run first** against a previous recording instead of the real sim:
 
 ```

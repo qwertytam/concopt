@@ -440,7 +440,9 @@ def test_report_total_block_time_agrees_with_search(tmp_path, monkeypatch, capsy
         zfw_t=92.0, min_landing_fuel_t=10.0,
         subsonic_npz_path=subsonic, arrival_upper_npz_path=upper)
     row = candidates[candidates["local_hour"] == 10].iloc[0]
-    assert row["jfk_penalty_s"] + row["lhr_penalty_s"] == 7 * 60.0
+    # 31L's 2 min; EGLL's 5 m/s westerly is inside 09's tailwind limit, and 27
+    # costs distance now, not a penalty.
+    assert row["jfk_penalty_s"] + row["lhr_penalty_s"] == 2 * 60.0
     capsys.readouterr()
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,

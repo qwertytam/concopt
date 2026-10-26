@@ -264,10 +264,11 @@ def test_run_report_requires_surface_npz(tmp_path):
 
 def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
     """A northwesterly at KJFK picks 31L (2 min penalty) and a westerly at
-    EGLL picks 27R/27L (5 min penalty): both are shown, and the totals'
-    runway penalty is their sum, not a placeholder zero."""
+    EGLL too strong for 09 (6 m/s = 11.7 kt tailwind) picks 27R/27L, which
+    costs no penalty but ~20 nm more arrival: both are shown, and the totals'
+    runway penalty is JFK's, not a placeholder zero."""
     npz_path = _still_air_npz(tmp_path)
-    surface = _surface_npz(tmp_path, jfk_from_deg=301.0, egll_from_deg=269.0)
+    surface = _surface_npz(tmp_path, jfk_from_deg=301.0, egll_from_deg=269.0, speed_ms=6.0)
 
     run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
                 out_path=tmp_path / "report.csv", surface_npz_path=surface,
@@ -277,8 +278,24 @@ def test_run_report_prints_runways_and_includes_their_penalty(tmp_path, capsys):
     assert "Runways (ERA5 surface wind" in printed
     assert "KJFK  31L" in printed
     assert "EGLL  27R/27L" in printed
-    assert "runway penalty  : 0:07 (KJFK 31L, EGLL 27R/27L)" in printed
+    assert "runway penalty  : 0:02 (KJFK 31L, EGLL 27R/27L)" in printed
+    assert "arrival flown for EGLL 27R/27L: 320 nm" in printed
     assert "placeholder" not in printed
+
+
+def test_run_report_takes_09_with_a_light_tailwind(tmp_path, capsys):
+    """A 5 m/s (9.7 kt) westerly is inside 09's 10 kt tailwind limit, and 09
+    -- the straight-in from the west -- is preferred whenever it passes."""
+    npz_path = _still_air_npz(tmp_path)
+    surface = _surface_npz(tmp_path, egll_from_deg=269.0, speed_ms=5.0)
+
+    run_report(SAMPLE_PLN, npz_path, dt.date(2016, 2, 12), 10, decel_id=SAMPLE_DECEL_ID,
+                out_path=tmp_path / "report.csv", surface_npz_path=surface,
+                zfw_t=92.0, tow_t=DEFAULT_TOW_T, **_arrival_kw(tmp_path))
+
+    printed = capsys.readouterr().out
+    assert "EGLL  09L/09R" in printed
+    assert "arrival flown for EGLL 09L/09R: 321 nm" in printed
 
 
 def test_run_report_climb_waypoints_get_their_own_elapsed_time(tmp_path, capsys):

@@ -247,22 +247,45 @@ DEFAULT_SHORTLIST_TOP_N = 10  # `concopt shortlist --top`
 # =============================================================================
 # Runway screen (runways.py)
 # =============================================================================
-# Runway geometry + JFK/LHR-specific missed-approach-slot/taxi penalty, true
+# Runway geometry + JFK-specific missed-approach-slot/taxi penalty, true
 # bearings (see runways.py's docstring). Only 22R/31L are JFK candidates --
 # not 04L/13R, which this route never uses. EGLL's runways are parallel (09L/
 # 09R and 27R/27L share one true bearing each), so there is no crosswind
 # relief from choosing between the pair -- only the westerly/easterly
 # choice matters here.
+#
+# priority: among the runways that pass the screen, the lowest priority
+# wins, then the greatest headwind. KJFK's are equal (headwind decides).
+# EGLL prefers 09 whenever it passes (tailwind <= TAILWIND_MAX_KT, crosswind
+# gust <= XWIND_FLAG_KT): arriving from the west, 09 is the straight-in and
+# 27 means flying past the airport to a final from the east. 27's cost is
+# no longer a flat penalty (it was 5 min) but the extra distance itself --
+# runways.arrival_nm_by_runway, LHR_FINAL_NM below -- flown through the
+# arrival model (user decision, 2026-10-26).
 RUNWAYS = {
     "KJFK": (
-        {"name": "22R", "true_deg": 211.0, "penalty_s": 0.0},
-        {"name": "31L", "true_deg": 301.0, "penalty_s": 2.0 * 60.0},
+        {"name": "22R", "true_deg": 211.0, "penalty_s": 0.0, "priority": 0},
+        {"name": "31L", "true_deg": 301.0, "penalty_s": 2.0 * 60.0, "priority": 0},
     ),
     "EGLL": (
-        {"name": "09L/09R", "true_deg": 89.0, "penalty_s": 0.0},
-        {"name": "27R/27L", "true_deg": 269.0, "penalty_s": 5.0 * 60.0},
+        {"name": "09L/09R", "true_deg": 89.0, "penalty_s": 0.0, "priority": 0},
+        {"name": "27R/27L", "true_deg": 269.0, "penalty_s": 0.0, "priority": 1},
     ),
 }
+
+# Final approach length, nm: each EGLL runway's arrival is modelled as the
+# route's last waypoint before EGLL -> a final approach fix this far out on
+# that runway's extended centreline -> EGLL (runways.arrival_nm_by_runway).
+# For this route's straight-in from the west that leaves 09 unchanged and
+# adds ~20 nm for 27. A simplification: no downwind/base geometry, just the
+# straight line to the fix.
+LHR_FINAL_NM = 10.0
+
+# The EGLL runway is picked before TOW and the arrival are solved (its
+# distance feeds both), from the LHR wind at departure + this nominal block
+# time; search/report then re-screen at the real touchdown time and flag
+# lhr_runway_estimate_changed where the two disagree.
+TOUCHDOWN_ESTIMATE_S = 2.0 * 3600.0 + 50.0 * 60.0
 
 # Screen thresholds, kt. 25-30 kt crosswind (gust) is allowed but flagged;
 # above 30 kt gust, or any mean tailwind above 10 kt, is unflyable on that
@@ -361,7 +384,9 @@ SNAPSHOT_CACHE_PATH = Path("data/verify_snapshot_cache.json")
 # In-flight advisor and recorder (inflight.py)
 # =============================================================================
 DEFAULT_INTERVAL_S = 60.0
-DEFAULT_LOOKAHEAD_NM = 100.0
+# 0: the advisor's level table uses Active Sky AT the aircraft's current
+# position (user decision, 2026-10-26; it used to look 100 nm ahead).
+DEFAULT_LOOKAHEAD_NM = 0.0
 DEFAULT_GAIN_THRESHOLD_KT = 3.0
 
 # On-ground ground speed the take-off roll is judged to have started at --
@@ -402,6 +427,13 @@ ARRIVAL_REFRESH_S = 60.0
 # altitude.
 ARRIVAL_WIND_SAMPLE_FL = np.array(
     [183.0, 230.0, 280.0, 330.0, 380.0, 430.0, 480.0, 530.0, 580.0, 605.0])
+
+# The live descent and approach read Active Sky AT EGLL on this ladder,
+# surface to the top of the subsonic levels (inflight's descent_wind_at_fl),
+# and the runway choice reads its surface wind at LHR_SURFACE_QUERY_FT
+# (EGLL is 83 ft amsl).
+LHR_WIND_SAMPLE_FL = np.array([1.0, 15.0, 40.0, 70.0, 100.0, 150.0, 200.0, 250.0, 300.0, 410.0])
+LHR_SURFACE_QUERY_FT = 100.0
 
 SIMCONNECT_REQUEST_TIME_MS = 200  # AircraftRequests(_time=...): read cache age
 # A ZULU_TIME step between two ticks bigger than this is the sim's clock being

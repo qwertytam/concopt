@@ -163,3 +163,29 @@ def test_wind_at_clamps_outside_range():
 
     assert u[0] == pytest.approx(0.0)
     assert u[1] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("tailwind_kt, expected", [(0.0, "09L/09R"), (9.0, "09L/09R"),
+                                                   (11.0, "27R/27L")])
+def test_egll_takes_09_whenever_it_passes(tailwind_kt, expected):
+    """09 is the straight-in from the west, so it's taken whenever its
+    tailwind is within TAILWIND_MAX_KT -- not just when it has the bigger
+    headwind -- and 27 only when it isn't."""
+    u, v = _uv_from_dir_speed(269.0, speed_kt=tailwind_kt)  # a westerly: tailwind on 09
+    out = select_runway(u, v, np.array([tailwind_kt]) * KT_TO_MS, "EGLL")
+    assert out["runway"][0] == expected
+    assert out["penalty_s"][0] == 0.0  # 27 costs distance now, not a penalty
+
+
+def test_arrival_nm_by_runway_for_a_straight_in_from_the_west():
+    """A route ending eastbound into EGLL (like CONC_KJFK_EGLL_SPEED02.pln):
+    09 is the route as flown, 27 flies past to a LHR_FINAL_NM final from
+    the east -- about 2 x LHR_FINAL_NM more."""
+    from concopt.params import LHR_FINAL_NM
+    from concopt.route import build_legs
+    from concopt.runways import arrival_nm_by_runway
+
+    legs = build_legs([("W", 51.47, -1.5), ("EGLL", 51.4775, -0.4614)])
+    by_runway = arrival_nm_by_runway(legs, arrival_nm=100.0)
+    assert by_runway["09L/09R"] == pytest.approx(100.0, abs=1.0)
+    assert by_runway["27R/27L"] == pytest.approx(100.0 + 2 * LHR_FINAL_NM, abs=1.0)

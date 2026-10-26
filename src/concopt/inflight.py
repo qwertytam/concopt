@@ -84,15 +84,17 @@ from rich.table import Table
 from rich.text import Text
 from SimConnect import AircraftRequests, SimConnect
 
-from concopt import arrival, limits
+from concopt import arrival, limits, runways
 from concopt.asky import get_atmosphere_np
 from concopt.atmos import (KT_TO_MS, fl_to_pressure, isa, pressure_to_fl,
                             speed_of_sound)
-from concopt.route import (build_legs, current_progress_nm,
+from concopt.route import (build_legs, current_progress_nm, destination_point,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
 from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT,  # noqa: F401
                             APPROACH_AGL_FT, ARRIVAL_REFRESH_S, ARRIVAL_WIND_SAMPLE_FL,
+                            LHR_SURFACE_QUERY_FT, LHR_WIND_SAMPLE_FL,
+                            RUNWAYS,
                             BRAKE_RELEASE_GS_KT, C_TO_K,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, FASTEST_SCHEDULE_KT, FT_TO_M,
@@ -539,7 +541,8 @@ def _as_point_atmosphere(weather_source, lat, lon, alt_ft):
                 temp_c=float(temp_c[0]), pressure_hpa=float(pressure_hpa[0]))
 
 
-def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
+def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg,
+                                levels_fl=ARRIVAL_WIND_SAMPLE_FL):
     """weather_source's counterpart to search._build_arrival_wind_fn: query
     weather_source at ARRIVAL_WIND_SAMPLE_FL (lat, lon) near the arrival
     region and return a wind_at_fl callable for arrival.arrival() -- linear
@@ -578,10 +581,10 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     pressure, fewer than two distinct levels survive) falls back to None."""
     try:
         alt_ft, wind_dir_deg, wind_speed_kt, pressure_hpa, temp_c = weather_source(
-            lat, lon, ARRIVAL_WIND_SAMPLE_FL * 100.0)
+            lat, lon, levels_fl * 100.0)
     except (RuntimeError, TypeError, KeyError, ValueError):
         return None
-    if (len(alt_ft) != len(ARRIVAL_WIND_SAMPLE_FL)
+    if (len(alt_ft) != len(levels_fl)
             or not np.all(np.isfinite(pressure_hpa)) or np.any(pressure_hpa <= 0.0)):
         return None
 
@@ -628,8 +631,26 @@ def _build_live_arrival_wind_fn(weather_source, lat, lon, track_deg):
     return wind_at_fl
 
 
+def _live_lhr_runway(weather_source, lat, lon):
+    """EGLL's runway from Active Sky's surface wind there, through the same
+    screen search/report apply to ERA5 (runways.select_runway: 09 whenever
+    its tailwind <= TAILWIND_MAX_KT and crosswind passes, else 27). Active
+    Sky gives no gust, so the mean wind stands in for it. None if Active Sky
+    doesn't answer."""
+    point = _as_point_atmosphere(weather_source, lat, lon, LHR_SURFACE_QUERY_FT)
+    if point is None:
+        return None
+    speed_ms = point["wind_kt"] * KT_TO_MS
+    dir_rad = np.radians(point["wind_dir_deg"])
+    u_ms, v_ms = np.array([-speed_ms * np.sin(dir_rad)]), np.array([-speed_ms * np.cos(dir_rad)])
+    screen = runways.select_runway(u_ms, v_ms, np.array([speed_ms]), "EGLL")
+    return dict(runway=str(screen["runway"][0]), headwind_kt=float(screen["headwind_kt"][0]),
+                xwind_kt=float(screen["xwind_gust_kt"][0]), flag=str(screen["flag"][0]),
+                wind_dir_deg=point["wind_dir_deg"], wind_kt=point["wind_kt"])
+
+
 def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl, gs_kt,
-                  thrust_reversers=False):
+                  thrust_reversers=False, decel_wind_at_fl=None, descent_wind_at_fl=None):
     """arrival.arrival() at the CURRENT state -- n_cand is 1 throughout, so
     every input is a scalar and the (1,)-shaped output arrays are squeezed
     back to floats. The decel ends at the decel waypoint, so arrival()
@@ -649,7 +670,8 @@ def _live_arrival(cruise_fl, arrival_nm, isa_dev_c, mass_at_barix_t, wind_at_fl,
 
     out = arrival.arrival(cruise_fl, arrival_nm, wind_at_fl, isa_dev_c,
                            mass_at_barix_t, speed=FASTEST_SCHEDULE_KT, march_tail=march_tail,
-                           thrust_reversers=thrust_reversers)
+                           thrust_reversers=thrust_reversers, decel_wind_at_fl=decel_wind_at_fl,
+                           descent_wind_at_fl=descent_wind_at_fl)
     return dict(
         time_min=float(out["time_min"][0]),
         decel_nm=float(out["decel_nm"][0]),
@@ -706,7 +728,26 @@ def _build_arrival_text(arrival_info):
         f"{arrival.GATE_KIAS:.0f} KIAS at 1,500 ft{reversers}\n"
         f"  approach {a['approach_time_min']:4.1f} min {arrival.APPROACH_NM:4.0f} nm   "
         f"at {arrival.GATE_KIAS:.0f} KIAS"
+        + _lhr_runway_text(a.get("lhr"), a.get("extra_nm", 0.0))
     )
+
+
+def _lhr_runway_text(lhr, extra_nm):
+    """The arrival panel's runway line: which EGLL runway Active Sky's
+    surface wind allows, and why -- 09 is the straight-in from the west, 27
+    flies past to a final from the east (extra_nm longer than the .pln)."""
+    if lhr is None:
+        return "\n  LHR runway: Active Sky surface wind unavailable -- arrival as the .pln flies it"
+    wind = f"{lhr['wind_dir_deg']:03.0f}/{lhr['wind_kt']:.0f} kt"
+    head = (f"headwind {lhr['headwind_kt']:.0f} kt" if lhr["headwind_kt"] >= 0
+            else f"tailwind {-lhr['headwind_kt']:.0f} kt")
+    if lhr["runway"].startswith("09"):
+        why = f"09 usable ({head}, crosswind {lhr['xwind_kt']:.0f} kt)"
+    else:
+        why = (f"09 not usable -- {lhr['runway']} ({head}, crosswind {lhr['xwind_kt']:.0f} kt), "
+               f"final from the east, {extra_nm:+.0f} nm")
+    unflyable = "  !! no runway passes the crosswind/tailwind screen" if lhr["flag"] == "unflyable" else ""
+    return f"\n  LHR {wind}: {why}{unflyable}"
 
 
 def _advisory(table, best_idx, current_idx, remaining_nm, gain_threshold_kt):
@@ -1314,6 +1355,17 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         arr_lat, arr_lon, arr_track_deg = arr_leg.lat_mid, arr_leg.lon_mid, arr_leg.track_deg
     else:
         arr_lat = arr_lon = arr_track_deg = None
+    # Where the live arrival reads its weather: the decel at the decel
+    # waypoint itself (it ends there), the descent and approach at EGLL, and
+    # the runway from EGLL's surface wind -- 27 flies past to a final from
+    # the east, runways.arrival_nm_by_runway.
+    decel_leg = ss_legs[-1]
+    decel_lat, decel_lon = destination_point(decel_leg.lat_mid, decel_leg.lon_mid,
+                                             decel_leg.track_deg, decel_leg.dist_nm / 2.0)
+    lhr_lat, lhr_lon = destination_point(legs[-1].lat_mid, legs[-1].lon_mid,
+                                         legs[-1].track_deg, legs[-1].dist_nm / 2.0)
+    arrival_nm_by_runway = runways.arrival_nm_by_runway(legs, arrival_nm)
+    runway_true_deg = {r["name"]: r["true_deg"] for r in RUNWAYS["EGLL"]}
 
     # Read the compare report up front (not just at touchdown) so its total
     # predicted time can sit in the live panel's progress line throughout
@@ -1443,7 +1495,15 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                 arrival_wind_fn = (
                     _build_live_arrival_wind_fn(weather_source, arr_lat, arr_lon, arr_track_deg)
                     if arr_lat is not None else None)
+                lhr = _live_lhr_runway(weather_source, lhr_lat, lhr_lon)
+                live_arrival_nm = arrival_nm_by_runway[lhr["runway"]] if lhr else arrival_nm
                 if arrival_wind_fn is not None:
+                    decel_wind_fn = _build_live_arrival_wind_fn(
+                        weather_source, decel_lat, decel_lon, decel_leg.track_deg)
+                    descent_wind_fn = _build_live_arrival_wind_fn(
+                        weather_source, lhr_lat, lhr_lon,
+                        runway_true_deg[lhr["runway"]] if lhr else legs[-1].track_deg,
+                        LHR_WIND_SAMPLE_FL)
                     isa_dev_at_cruise = float(table["isa_dev_c"].iloc[current_idx])
                     # Projected mass at the decel waypoint = current weight minus
                     # the cruise burn still to come; no burn-off schedule is
@@ -1451,10 +1511,12 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                     # used as-is -- a few tonnes heavy vs the real BARIX mass,
                     # which understates specific range slightly on the subsonic
                     # table lookup.
-                    arrival_info = _live_arrival(current_fl, arrival_nm, isa_dev_at_cruise,
+                    arrival_info = _live_arrival(current_fl, live_arrival_nm, isa_dev_at_cruise,
                                                   state["weight_t"], arrival_wind_fn,
                                                   float(table["gs_kt"].iloc[current_idx]),
-                                                  thrust_reversers)
+                                                  thrust_reversers, decel_wind_fn, descent_wind_fn)
+                    arrival_info["lhr"] = lhr
+                    arrival_info["extra_nm"] = live_arrival_nm - arrival_nm
                 elif preflight_arrival_s is not None:
                     arrival_info = dict(time_min=preflight_arrival_s / 60.0, source="fallback")
                 else:
@@ -1503,7 +1565,9 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                 # to touchdown instead (this is what "remaining" used to
                 # silently drop to 0 for, the bug this task fixes).
                 predicted_remaining_s = (
-                    total_remaining_nm * NM_TO_M / (current_gs_kt * KT_TO_MS)
+                    # + the 27 final's extra distance, which the .pln's legs don't have
+                    (total_remaining_nm + (arrival_info or {}).get("extra_nm", 0.0))
+                    * NM_TO_M / (current_gs_kt * KT_TO_MS)
                     if current_gs_kt > 0 else None)
             predicted_total_s = (
                 elapsed_s + predicted_remaining_s
