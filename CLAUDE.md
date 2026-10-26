@@ -495,7 +495,12 @@ for its own sake, no defensive error handling.
   (`_advisory` action `NONE`, empty `rec_fl`/`binding`) -- the FL450-600
   table means nothing in the descent. The recorder's `approach` phase is
   sticky (`_flight_phase`'s `prev_phase`) until the ground, so levelling at
-  ~1,500 ft doesn't flip it approach/descent row to row. With `--compare`
+  ~1,500 ft doesn't flip it approach/descent row to row. With `--compare`, the panel
+  also shows actual vs plan at the current position, both ways round (time
+  behind/ahead getting here, and nm behind/ahead of where the plan had the
+  aircraft by now) -- `_plan_track` builds the plan from the report's
+  `leg_time` (to the second) plus its `arrival_s`, straight-line across
+  the arrival, and `_plan_vs_actual` interpolates it. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release
