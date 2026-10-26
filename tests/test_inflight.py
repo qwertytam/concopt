@@ -1110,3 +1110,34 @@ def test_live_lhr_runway_none_when_active_sky_fails():
         raise RuntimeError("Active Sky returned 'Error'")
     assert inflight._live_lhr_runway(broken, 51.48, -0.46) is None
     assert "unavailable" in inflight._lhr_runway_text(None, 0.0)
+
+
+def _plan_report_df():
+    return pd.DataFrame({
+        "waypoint": ["KJFK", "A", "B"], "cum_nm": [0.0, 100.0, 1100.0],
+        "elapsed": ["0:00", "0:10", "1:00"], "leg_time": [np.nan, "10:00", "50:00"],
+        "arrival_s": [np.nan, np.nan, 1200.0],
+    })
+
+
+def test_plan_track_runs_from_leg_times_to_touchdown():
+    cum_nm, plan_s = inflight._plan_track(_plan_report_df(), touchdown_cum_nm=1300.0)
+    np.testing.assert_allclose(cum_nm, [0.0, 100.0, 1100.0, 1300.0])
+    np.testing.assert_allclose(plan_s, [0.0, 600.0, 3600.0, 4800.0])
+
+
+def test_plan_vs_actual_both_ways_round():
+    track = inflight._plan_track(_plan_report_df(), touchdown_cum_nm=1300.0)
+    # At 600 nm the plan says 600 + 500 * 3 s = 2100 s; flown in 2280 s.
+    pva = inflight._plan_vs_actual(track, cum_nm=600.0, elapsed_s=2280.0)
+    assert pva["plan_s_here"] == pytest.approx(2100.0)
+    assert pva["behind_s"] == pytest.approx(180.0)
+    # By 2280 s the plan was at 100 + 1680 / 3 = 660 nm: 60 nm behind it.
+    assert pva["plan_nm_now"] == pytest.approx(660.0)
+    assert pva["behind_nm"] == pytest.approx(60.0)
+    text = inflight._plan_vs_actual_text(pva, 600.0, 2280.0)
+    assert "3:00 (min:sec) behind here" in text and "60 nm behind" in text
+    ahead = inflight._plan_vs_actual(track, cum_nm=600.0, elapsed_s=2000.0)
+    assert "1:40 (min:sec) ahead here" in inflight._plan_vs_actual_text(ahead, 600.0, 2000.0)
+    assert inflight._plan_vs_actual(track, 600.0, None) is None
+    assert inflight._plan_vs_actual(None, 600.0, 2000.0) is None

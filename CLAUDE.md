@@ -524,7 +524,12 @@ for its own sake, no defensive error handling.
   `arrival_nm_by_runway`'s longer distance. `route.current_progress_nm`
   projects onto every leg and takes the nearest projected point -- picking
   the leg with the nearest midpoint let the .pln's zero-length leg near EGLL
-  freeze progress for the last ~20 nm of the 2026-10-23 flight. With `--compare`
+  freeze progress for the last ~20 nm of the 2026-10-23 flight. With `--compare`, the panel
+  also shows actual vs plan at the current position, both ways round (time
+  behind/ahead getting here, and nm behind/ahead of where the plan had the
+  aircraft by now) -- `_plan_track` builds the plan from the report's
+  `leg_time` (to the second) plus its `arrival_s`, straight-line across
+  the arrival, and `_plan_vs_actual` interpolates it. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release
