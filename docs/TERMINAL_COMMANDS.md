@@ -85,6 +85,7 @@ rest of the session (`SET DATE=` with nothing after it undoes that).
 SET DEP_DATE=2026-01-21
 SET LOCAL_HOUR=12
 SET REFRESH_INTERVAL=10
+SET WEATHER_LOOKAHEAD_NM=0
 ```
 
 ```bat
@@ -94,5 +95,5 @@ poetry run concopt report --pln %PLN% --decel %DECL% --thrust-reversers --npz %R
 ## 6. Running in flight
 
 ```bat
-poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%
+poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm 0
 ```
