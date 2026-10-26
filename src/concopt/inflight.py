@@ -876,7 +876,7 @@ def _render_screen(state, table, best_idx, current_idx, binding_at_best, remaini
                     gain_threshold_kt, next_wp_id, dist_to_next_nm, distance_run_nm,
                     elapsed_s, predicted_remaining_s, predicted_total_s,
                     preflight_predicted_total_s, countdown_s, arrival_info=None,
-                    recorder_note=None):
+                    recorder_note=None, plan_vs_actual=None):
     """Everything --live (the default) redraws in place each tick, as one
     rich renderable -- pure and testable via rich.console.Console(record=
     True), no terminal or Live instance needed. Layout, top to bottom, is
@@ -908,7 +908,8 @@ def _render_screen(state, table, best_idx, current_idx, binding_at_best, remaini
         f"Elapsed {_format_hmm_or_na(elapsed_s)}   "
         f"Remaining {_format_hmm_or_na(predicted_remaining_s)}\n"
         f"Predicted total: live {_format_hmm_or_na(predicted_total_s)}   "
-        f"vs pre-flight {_format_hmm_or_na(preflight_predicted_total_s)}"
+        f"vs pre-flight {_format_hmm_or_na(preflight_predicted_total_s)}\n"
+        + _plan_vs_actual_text(plan_vs_actual, distance_run_nm, elapsed_s)
     )
 
     countdown_text = Text(f"next update in {countdown_s:.0f}s", style="dim", justify="right")
@@ -1070,6 +1071,56 @@ def _preflight_predicted_total_s(report_df):
     constant on top double-counts against a plan that already accounts for
     its own (usually ~30 min, but day-dependent) arrival."""
     return _parse_hmm_seconds(report_df["elapsed"].iloc[-1]) + _report_arrival_s(report_df)
+
+
+def _plan_track(report_df, touchdown_cum_nm):
+    """The pre-flight plan as (cum_nm, plan_s) points, brake release ->
+    touchdown: each report waypoint at the running sum of its leg_time
+    (m:ss -- to the second, where the elapsed column is whole minutes),
+    then touchdown at the decel waypoint's time plus the report's own
+    arrival_s, straight-line across the arrival (the report has no
+    waypoints after the decel one)."""
+    def _mmss_s(text):
+        m, sec = str(text).split(":")
+        return int(m) * 60.0 + int(sec)
+
+    leg_s = report_df["leg_time"].map(lambda v: _mmss_s(v) if pd.notna(v) and str(v) else 0.0)
+    cum_nm = np.append(report_df["cum_nm"].to_numpy(float), touchdown_cum_nm)
+    plan_s = np.cumsum(leg_s.to_numpy(float))
+    plan_s = np.append(plan_s, plan_s[-1] + _report_arrival_s(report_df))
+    return cum_nm, plan_s
+
+
+def _plan_vs_actual(plan_track, cum_nm, elapsed_s):
+    """Actual against the plan at the current position, both ways round:
+    behind_s, how much later than planned the aircraft got HERE (positive =
+    behind), and behind_nm, how far short of where the plan had it by NOW
+    (positive = behind). None before brake release or with no plan."""
+    if plan_track is None or elapsed_s is None:
+        return None
+    track_nm, track_s = plan_track
+    plan_s_here = float(np.interp(cum_nm, track_nm, track_s))
+    plan_nm_now = float(np.interp(elapsed_s, track_s, track_nm))
+    return dict(plan_s_here=plan_s_here, behind_s=elapsed_s - plan_s_here,
+                plan_nm_now=plan_nm_now, behind_nm=plan_nm_now - cum_nm)
+
+
+def _plan_vs_actual_text(pva, cum_nm, elapsed_s):
+    """One line for the panel, e.g. "vs plan: here 2:53 behind (plan 1:07 at
+    1,302 nm) / plan is at 1,350 nm by now, 48 nm ahead of you"."""
+    if pva is None:
+        return "vs plan: needs --compare and a recorded brake release"
+
+    def _mmss(seconds):
+        total = int(round(abs(seconds)))
+        return f"{total // 60}:{total % 60:02d}"
+
+    time_word = "behind" if pva["behind_s"] >= 0 else "ahead"
+    nm_word = "behind" if pva["behind_nm"] >= 0 else "ahead"
+    return (f"vs plan: {_mmss(pva['behind_s'])} {time_word} here (plan "
+            f"{_format_hmm(pva['plan_s_here'])} at {cum_nm:,.0f} nm, actual "
+            f"{_format_hmm(elapsed_s)})  /  {abs(pva['behind_nm']):,.0f} nm {nm_word} "
+            f"(plan at {pva['plan_nm_now']:,.0f} nm by now)")
 
 
 def compare_to_report(report_df, cpa, touchdown_elapsed_s, accel_id, decel_id):
@@ -1276,6 +1327,9 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         report_df = pd.read_csv(compare_path)
         preflight_arrival_s = _report_arrival_s(report_df)
         preflight_predicted_total_s = _preflight_predicted_total_s(report_df)
+        plan_track = _plan_track(report_df, touchdown_cum_nm)
+    else:
+        plan_track = None
 
     # Asked before connecting, so the answer isn't buried under SimConnect's
     # output (and a typo'd path doesn't cost a connection first).
@@ -1468,13 +1522,17 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                     state, table, best_idx, current_idx, binding_at_best, remaining_nm,
                     gain_threshold_kt, next_wp_id, dist_to_next_nm, current_cum_nm,
                     elapsed_s, predicted_remaining_s, predicted_total_s,
-                    preflight_predicted_total_s, countdown_s, arrival_info, recorder_note)
+                    preflight_predicted_total_s, countdown_s, arrival_info, recorder_note,
+                    _plan_vs_actual(plan_track, current_cum_nm, elapsed_s))
 
             if live_display is not None:
                 live_display.update(_screen(tick_s))
             else:
                 _print_advisor(state, la_lat, la_lon, track_deg, table, best_idx, current_idx,
                                 binding_at_best, remaining_nm, gain_threshold_kt)
+                if plan_track is not None and elapsed_s is not None:
+                    print(_plan_vs_actual_text(_plan_vs_actual(plan_track, current_cum_nm, elapsed_s),
+                                               current_cum_nm, elapsed_s))
 
             if recording:
                 gs_kt = state["gs_kt"]
