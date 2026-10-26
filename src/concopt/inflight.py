@@ -1106,7 +1106,7 @@ def _plan_vs_actual(plan_track, cum_nm, elapsed_s):
 
 
 def _plan_vs_actual_text(pva, cum_nm, elapsed_s):
-    """One line for the panel, e.g. "vs plan: here 2:53 behind (plan 1:07 at
+    """One line for the panel, e.g. "vs plan: 2:53 (min:sec) behind here (plan 1:07 at
     1,302 nm) / plan is at 1,350 nm by now, 48 nm ahead of you"."""
     if pva is None:
         return "vs plan: needs --compare and a recorded brake release"
@@ -1117,7 +1117,7 @@ def _plan_vs_actual_text(pva, cum_nm, elapsed_s):
 
     time_word = "behind" if pva["behind_s"] >= 0 else "ahead"
     nm_word = "behind" if pva["behind_nm"] >= 0 else "ahead"
-    return (f"vs plan: {_mmss(pva['behind_s'])} {time_word} here (plan "
+    return (f"vs plan: {_mmss(pva['behind_s'])} (min:sec) {time_word} here (plan "
             f"{_format_hmm(pva['plan_s_here'])} at {cum_nm:,.0f} nm, actual "
             f"{_format_hmm(elapsed_s)})  /  {abs(pva['behind_nm']):,.0f} nm {nm_word} "
             f"(plan at {pva['plan_nm_now']:,.0f} nm by now)")

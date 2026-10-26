@@ -1110,8 +1110,8 @@ def test_plan_vs_actual_both_ways_round():
     assert pva["plan_nm_now"] == pytest.approx(660.0)
     assert pva["behind_nm"] == pytest.approx(60.0)
     text = inflight._plan_vs_actual_text(pva, 600.0, 2280.0)
-    assert "3:00 behind here" in text and "60 nm behind" in text
+    assert "3:00 (min:sec) behind here" in text and "60 nm behind" in text
     ahead = inflight._plan_vs_actual(track, cum_nm=600.0, elapsed_s=2000.0)
-    assert "1:40 ahead here" in inflight._plan_vs_actual_text(ahead, 600.0, 2000.0)
+    assert "1:40 (min:sec) ahead here" in inflight._plan_vs_actual_text(ahead, 600.0, 2000.0)
     assert inflight._plan_vs_actual(track, 600.0, None) is None
     assert inflight._plan_vs_actual(None, 600.0, 2000.0) is None
