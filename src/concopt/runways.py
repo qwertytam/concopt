@@ -30,7 +30,9 @@ reported gust direction.
 import numpy as np
 
 from concopt.atmos import KT_TO_MS
-from concopt.params import CALM_WIND_MS, RUNWAYS, TAILWIND_MAX_KT, XWIND_FLAG_KT, XWIND_OK_KT  # noqa: F401
+from concopt.params import (CALM_WIND_MS, LHR_FINAL_NM, RUNWAYS,  # noqa: F401
+                            TAILWIND_MAX_KT, XWIND_FLAG_KT, XWIND_OK_KT)
+from concopt.route import destination_point, great_circle_nm
 
 
 def _headwind_crosswind_gust(u_ms, v_ms, gust_ms, runway_true_deg):
@@ -73,9 +75,10 @@ def select_runway(u_ms, v_ms, gust_ms, airport):
     departure-hour KJFK wind for the JFK call, touchdown-time EGLL wind for
     the LHR call).
 
-    Screens every runway at this airport, then picks the greatest-headwind
-    one among those that pass (crosswind gust <= XWIND_FLAG_KT and tailwind
-    mean <= TAILWIND_MAX_KT). If none pass, the candidate is unflyable at
+    Screens every runway at this airport, then picks, among those that pass
+    (crosswind gust <= XWIND_FLAG_KT and tailwind mean <= TAILWIND_MAX_KT),
+    the lowest RUNWAYS "priority" and then the greatest headwind -- so EGLL
+    takes 09 whenever it passes (see params.RUNWAYS). If none pass, the candidate is unflyable at
     this airport -- rather than dropping the row, still reports the
     greatest-headwind runway overall (so total_time stays computable) with
     flag "unflyable".
@@ -98,12 +101,15 @@ def select_runway(u_ms, v_ms, gust_ms, airport):
     passes = (xwind_gust_kt <= XWIND_FLAG_KT) & (tailwind_kt <= TAILWIND_MAX_KT)
     any_pass = passes.any(axis=1)
 
-    # Among passing runways, greatest headwind wins; where none pass, fall
-    # back to the greatest headwind overall (see docstring) rather than
-    # dropping the candidate.
-    masked_headwind = np.where(passes, headwind_kt, -np.inf)
+    # Among passing runways, lowest priority then greatest headwind wins
+    # (headwind is never anywhere near 1e6 kt); where none pass, fall back to
+    # the greatest headwind overall (see docstring) rather than dropping the
+    # candidate.
+    priority = np.array([rwy["priority"] for rwy in runways], dtype=float)
+    score = headwind_kt - priority[None, :] * 1e6
+    masked_score = np.where(passes, score, -np.inf)
     chosen_idx = np.where(any_pass,
-                           np.argmax(masked_headwind, axis=1),
+                           np.argmax(masked_score, axis=1),
                            np.argmax(headwind_kt, axis=1))
 
     row = np.arange(n_cand)
@@ -127,6 +133,33 @@ def select_runway(u_ms, v_ms, gust_ms, airport):
         "penalty_s": penalties_s[chosen_idx],
         "flag": flag,
     }
+
+
+def arrival_nm_by_runway(legs, arrival_nm, airport="EGLL"):
+    """{runway name: post-decel arrival distance, nm} at `airport`, the
+    route's last leg (last waypoint -> airport) replaced by last waypoint ->
+    a final approach fix LHR_FINAL_NM out on that runway's extended
+    centreline -> airport. arrival_nm is the route's own (as the .pln
+    flies it). For this route's straight-in from the west, 09 comes out
+    the same as the .pln and 27 ~20 nm longer; see params.LHR_FINAL_NM."""
+    last = legs[-1]
+    end_lat, end_lon = destination_point(last.lat_mid, last.lon_mid, last.track_deg, last.dist_nm / 2.0)
+    start_lat, start_lon = destination_point(last.lat_mid, last.lon_mid, last.track_deg + 180.0,
+                                             last.dist_nm / 2.0)
+    out = {}
+    for rwy in RUNWAYS[airport]:
+        faf_lat, faf_lon = destination_point(end_lat, end_lon, rwy["true_deg"] + 180.0, LHR_FINAL_NM)
+        to_faf_nm = float(great_circle_nm(start_lat, start_lon, faf_lat, faf_lon))
+        out[rwy["name"]] = arrival_nm - last.dist_nm + to_faf_nm + LHR_FINAL_NM
+    return out
+
+
+def lhr_arrival_nm(legs, arrival_nm, surface_data, touchdown_i8):
+    """Per candidate, the EGLL runway screen at touchdown_i8 and the arrival
+    distance that runway means: (arrival_nm (n_cand,), screen dict)."""
+    screen = runway_screen(surface_data, "EGLL", touchdown_i8)
+    by_runway = arrival_nm_by_runway(legs, arrival_nm)
+    return np.array([by_runway[r] for r in screen["runway"]], dtype=float), screen
 
 
 def wind_at(surface_data, airport, query_i8):

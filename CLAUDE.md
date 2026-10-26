@@ -337,10 +337,26 @@ for its own sake, no defensive error handling.
   mean wind's direction and rescales only the magnitude onto the gust
   speed. Screen: crosswind gust ≤25 kt OK, 25–30 kt allowed but flagged,
   >30 kt unflyable on that runway; tailwind (mean) >10 kt unflyable, no
-  buffer. Picks the greatest-headwind runway among those that pass; if
-  none pass, the day is flagged `unflyable` at that airport but still
-  reports the greatest-headwind runway and a computed time — never
-  dropped. Touchdown clock time (for sampling EGLL's arrival wind here) is
+  buffer. Picks, among those that pass, the lowest `RUNWAYS` `priority`
+  then the greatest headwind -- KJFK's runways are equal (headwind
+  decides); EGLL takes **09 whenever it passes** (the straight-in from the
+  west) and 27 only when it doesn't (user decision, 2026-10-26). If none
+  pass, the day is flagged `unflyable` at that airport but still reports
+  the greatest-headwind runway and a computed time — never dropped.
+
+  **27 costs distance, not a penalty** (the old flat 5 min LHR westerly
+  penalty is gone): `arrival_nm_by_runway` replaces the route's last leg
+  (last waypoint -> EGLL) with last waypoint -> a final approach fix
+  `LHR_FINAL_NM` (10) out on that runway's extended centreline -> EGLL. On
+  the shipped .pln (straight-in from the west) 09 is the route as flown
+  and 27 is ~20 nm longer; no downwind/base geometry is modelled. The runway
+  has to be known before TOW and the arrival are solved, so
+  `search`/`report` pick it (`lhr_arrival_nm`) from the EGLL wind at
+  departure + `TOUCHDOWN_ESTIMATE_S` (2:50), fly that arrival distance
+  through the fixed point, then re-screen at the real touchdown and flag
+  `lhr_runway_estimate_changed` where they differ. `flight_profile` takes
+  `lhr_runway` (the notebook passes the search CSV's). `verify` takes no
+  surface wind, so it flies the arrival as the .pln has it. Touchdown clock time (for sampling EGLL's arrival wind here) is
   each candidate's own `arrival.arrival()` output (`arrival_time_s`,
   `search.run_search`), not a flat constant.
   `report.run_report` runs the same two `runway_screen` calls for its one
@@ -449,7 +465,8 @@ for its own sake, no defensive error handling.
 - `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
   recorder against a running Prepar3D + Active Sky, over SimConnect
   (`python-SimConnect`, localhost). Every `--interval` seconds: reads the
-  sim, projects `--lookahead-nm` ahead along the loaded route
+  sim, projects `--lookahead-nm` (default 0: the weather at the aircraft
+  itself -- it was 100 nm ahead until 2026-10-26) ahead along the loaded route
   (`route.project_along_route`), queries Active Sky there via
   `verify._as_atmosphere` (reused, not reimplemented), and feeds the result
   to `limits.best_level` **unchanged** -- same ceiling, same limits, same
@@ -495,7 +512,19 @@ for its own sake, no defensive error handling.
   (`_advisory` action `NONE`, empty `rec_fl`/`binding`) -- the FL450-600
   table means nothing in the descent. The recorder's `approach` phase is
   sticky (`_flight_phase`'s `prev_phase`) until the ground, so levelling at
-  ~1,500 ft doesn't flip it approach/descent row to row. With `--compare`
+  ~1,500 ft doesn't flip it approach/descent row to row. The live arrival
+  estimate (every `ARRIVAL_REFRESH_S`) reads Active Sky in three places,
+  through `arrival()`'s `decel_wind_at_fl`/`descent_wind_at_fl`: the decel
+  at the decel waypoint (where it ends), the level segment at the middle of
+  the post-decel route, and the descent and approach at EGLL
+  (`LHR_WIND_SAMPLE_FL`, surface to FL410). EGLL's runway comes from Active
+  Sky's surface wind there through the same screen (`_live_lhr_runway`, mean
+  wind standing in for the gust Active Sky doesn't give), the panel says
+  whether 09 is usable and why, and a 27 arrival is flown at
+  `arrival_nm_by_runway`'s longer distance. `route.current_progress_nm`
+  projects onto every leg and takes the nearest projected point -- picking
+  the leg with the nearest midpoint let the .pln's zero-length leg near EGLL
+  freeze progress for the last ~20 nm of the 2026-10-23 flight. With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release

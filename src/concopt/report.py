@@ -21,6 +21,7 @@ from concopt.era5 import load_legs_npz, load_surface_npz
 from concopt.route import build_legs, climb_cruise_segment, parse_pln, position_at_cum_nm
 from concopt.params import (APPROACH_FUEL_T, APPROACH_MIN, APPROACH_NM,
                             ARRIVAL_PROFILE_STEPS, C_TO_K, CLIMB_NOISE_ABATEMENT_MIN,
+                            LHR_FINAL_NM, TOUCHDOWN_ESTIMATE_S,
                             DESCENT_END_FT,
                             FT_TO_M, LEVEL_MACH, NS_PER_S, S_PER_HOUR, SPEED_LIMIT_FL,
                             SPEED_LIMIT_KIAS, SUBSONIC_LIMIT_MACH, TOTAL_TEMP_MAX_K)
@@ -333,6 +334,13 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     departure_utc_ts = pd.Timestamp(departure_utc)
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")
 
+    # Same as run_search: the EGLL runway (27 is ~20 nm longer) is picked from
+    # the wind at a nominal touchdown time, before TOW and the arrival.
+    surface_data = load_surface_npz(surface_npz_path)
+    arrival_nm_arr, lhr_estimate = runways.lhr_arrival_nm(
+        legs, arrival_nm, surface_data, dep_i8 + int(TOUCHDOWN_ESTIMATE_S * NS_PER_S))
+    arrival_nm = float(arrival_nm_arr[0])
+
     tow_arr, n_iterations, plan_flags, legs_out, weight_per_leg, climb, arrival_out = (
         resolve_tow_and_arrival(
             cc_legs, cc_idx, arrival_legs, arrival_nm, data, subsonic_data, dep_i8,
@@ -462,7 +470,6 @@ def run_report(pln_path, npz_path, local_date, local_hour,
 
     # Same two calls run_search makes: KJFK wind at departure, EGLL wind at
     # touchdown (departure + climb+cruise + arrival).
-    surface_data = load_surface_npz(surface_npz_path)
     touchdown_i8 = dep_i8 + (
         np.array([total_elapsed_s + arrival_time_s]) * NS_PER_S).astype("int64")
     jfk = runways.runway_screen(surface_data, "KJFK", dep_i8)
@@ -473,6 +480,12 @@ def run_report(pln_path, npz_path, local_date, local_hour,
     print()
     for line in _runway_lines(jfk, lhr, departure_utc_ts, touchdown_utc_ts):
         print(line)
+    print(f"  arrival flown for EGLL {lhr_estimate['runway'][0]}: {arrival_nm:.0f} nm after "
+          f"{decel_id} (27 flies past to a {LHR_FINAL_NM:.0f} nm final from the east)")
+    if lhr_estimate["runway"][0] != lhr["runway"][0]:
+        print(f"  !! the runway estimate ({lhr_estimate['runway'][0]}, from the wind at departure "
+              f"+ {_format_hmm(TOUCHDOWN_ESTIMATE_S)}) differs from touchdown's -- arrival distance "
+              f"is for the estimate")
     total_block_s = climb_time_s + cruise_time_s + decel_s + after_waypoint_s + runway_penalty_s
 
     print("\nTotals, brakes-release to touchdown:")
@@ -762,7 +775,7 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, accel_id, 
                    subsonic_npz_path=None, arrival_upper_npz_path=None,
                    cruise_mach=limits.CRUISE_MACH,
                    min_landing_fuel_t=fuel.MIN_LANDING_FUEL_T, runway_penalties_s=(0.0, 0.0),
-                   thrust_reversers=False):
+                   thrust_reversers=False, lhr_runway=None):
     """The whole flight, brake release -> touchdown, for ONE candidate departure
     -- run_report's model (resolve_tow_and_arrival, so TOW is solved from zfw_t
     or is the tow_t override) laid out as data instead of printed text.
@@ -794,6 +807,8 @@ def flight_profile(pln_path, npz_path, local_date, local_hour, zfw_t, accel_id, 
     cc_legs = [legs[i] for i in cc_idx]
     arrival_legs = [legs[i] for i in np.flatnonzero(~mask)]
     arrival_nm = legs[-1].cum_nm - cc_legs[-1].cum_nm
+    if lhr_runway is not None:  # e.g. the search CSV's lhr_runway -- 27 is ~20 nm longer
+        arrival_nm = runways.arrival_nm_by_runway(legs, arrival_nm)[lhr_runway]
 
     departure_utc_ts = pd.Timestamp(local_to_departure_utc(local_date, local_hour))
     dep_i8 = np.array([departure_utc_ts.value], dtype="int64")

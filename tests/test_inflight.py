@@ -1084,3 +1084,29 @@ def test_late_start_elapsed_counts_from_brake_release():
     assert inflight._late_start_elapsed_s(60.0, inflight._parse_utc_s("23:59")) == pytest.approx(120.0)
     assert inflight._late_start_elapsed_s(1000.0, None) == 0.0
     assert inflight._late_start_elapsed_s(None, br) == 0.0
+
+
+def _surface_weather(from_deg, speed_kt):
+    def weather_source(lat, lon, alt_ft):
+        n = len(np.atleast_1d(alt_ft))
+        return (np.atleast_1d(alt_ft), np.full(n, from_deg), np.full(n, speed_kt),
+                np.full(n, 1013.0), np.full(n, 10.0))
+    return weather_source
+
+
+@pytest.mark.parametrize("speed_kt, runway", [(8.0, "09L/09R"), (14.0, "27R/27L")])
+def test_live_lhr_runway_from_active_sky_surface_wind(speed_kt, runway):
+    lhr = inflight._live_lhr_runway(_surface_weather(270.0, speed_kt), 51.48, -0.46)
+    assert lhr["runway"] == runway
+    text = inflight._lhr_runway_text(lhr, 20.0 if runway.startswith("27") else 0.0)
+    if runway.startswith("09"):
+        assert "09 usable (tailwind 8 kt" in text
+    else:
+        assert "09 not usable -- 27R/27L (headwind 14 kt" in text and "+20 nm" in text
+
+
+def test_live_lhr_runway_none_when_active_sky_fails():
+    def broken(lat, lon, alt_ft):
+        raise RuntimeError("Active Sky returned 'Error'")
+    assert inflight._live_lhr_runway(broken, 51.48, -0.46) is None
+    assert "unavailable" in inflight._lhr_runway_text(None, 0.0)

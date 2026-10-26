@@ -644,3 +644,30 @@ class TestDescentModel:
         t, f, _ = arrival._to_1500ft(np.array([15.0, 20.0, 60.0]), band)
         assert t[0] == 0.0 and f[0] == 0.0
         assert 0.0 < t[1] < t[2]
+
+
+def test_descent_wind_source_prices_the_descent_and_approach_only():
+    """inflight passes Active Sky at EGLL as descent_wind_at_fl: a headwind
+    there slows the descent and approach, and leaves the decel alone."""
+    def headwind(fl):
+        fl = np.asarray(fl, float)
+        return {"wind_kt": np.full(1, -40.0), "temp_k": np.full(1, _isa_temp_k(fl, 0.0))}
+
+    base = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350)
+    lhr = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350,
+                          descent_wind_at_fl=headwind)
+    assert lhr["decel_time_min"][0] == pytest.approx(base["decel_time_min"][0])
+    assert lhr["descent_nm"][0] < base["descent_nm"][0]
+    assert lhr["approach_time_min"][0] > base["approach_time_min"][0]
+
+
+def test_decel_wind_source_prices_the_decel():
+    def tail(fl):
+        fl = np.asarray(fl, float)
+        return {"wind_kt": np.full(1, 60.0), "temp_k": np.full(1, _isa_temp_k(fl, 0.0))}
+
+    base = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350)
+    decel = arrival.arrival(550.0, np.array([ROUTE_NM]), _still_air(1), np.zeros(1), speed=350,
+                            decel_wind_at_fl=tail)
+    assert decel["decel_nm"][0] > base["decel_nm"][0]
+    assert decel["descent_nm"][0] == pytest.approx(base["descent_nm"][0])
