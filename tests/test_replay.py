@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from concopt.atmos import isa, pressure_to_fl
+from concopt import inflight
 from concopt.inflight import run_inflight
 from concopt.replay import (_row_weather, build_synthetic_flight,
                              replay_sources)
@@ -157,7 +158,7 @@ def test_synthetic_flight_replays_end_to_end_with_phases_in_order(tmp_path):
 
     recorded = pd.read_csv(record_path)
     assert len(recorded) > 20
-    assert recorded["schema_version"].iloc[0] == 2
+    assert recorded["schema_version"].iloc[0] == inflight.RECORD_SCHEMA_VERSION
 
     phases = recorded["phase"].tolist()
     # "ground" is left out: it is legitimately both first (brake release)
