@@ -529,7 +529,23 @@ for its own sake, no defensive error handling.
   behind/ahead getting here, and nm behind/ahead of where the plan had the
   aircraft by now) -- `_plan_track` builds the plan from the report's
   `leg_time` (to the second) plus its `arrival_s`, straight-line across
-  the arrival, and `_plan_vs_actual` interpolates it. With `--compare`
+  the arrival, and `_plan_vs_actual` interpolates it.
+
+  **Engines (N2, and N1 by hand).** FSLabs publishes no N1 anywhere an
+  external program can read it (checked 2026-10-28): the stock SimConnect
+  engine variables are placeholders (identical on all four engines, fixed at
+  reverse idle), `L:sstsim_vc_eng<n>_n1_needle` stays 0 even in the VC, and
+  the rest lives inside FSL_ConcX.dll. What it does publish is
+  `L:sstsim_engine<n>_N1` -- which is **N2** (it tracks the cockpit N2 gauge,
+  in whole percent) -- and only through FSUIPC, not SimConnect.
+  `fsuipc_ipc.py` reads it over FSUIPC's IPC with plain ctypes (the `fsuipc`
+  pip package doesn't build on Python 3.13); the live state source adds
+  `eng1_n2`..`eng4_n2`, shown on the panel and recorded (schema 3), empty if
+  FSUIPC isn't running. Pressing `o` (Windows console) pauses the panel and
+  asks for observed N1/N2 ("53 74" or "2 53 74" for engine 2), appended with
+  FSLabs' N2 and the flight state to `--obs-log` (default
+  `<record>_n1n2.csv`) -- data for an N1-from-N2 model, so the advisor can
+  warn about the 88-91% N1 blade-resonance band (not built yet). With `--compare`
   (a `concopt report --out` CSV, requires `--record`), runs
   `compare_to_report` at touchdown -- predicted vs actual per waypoint, plus
   the three numbers the recorder exists to measure: measured brake-release

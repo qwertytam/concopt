@@ -1141,3 +1141,71 @@ def test_plan_vs_actual_both_ways_round():
     assert "1:40 (min:sec) ahead here" in inflight._plan_vs_actual_text(ahead, 600.0, 2000.0)
     assert inflight._plan_vs_actual(track, 600.0, None) is None
     assert inflight._plan_vs_actual(None, 600.0, 2000.0) is None
+
+
+class _FakeFsuipc:
+    def __init__(self, values=None, fail=False):
+        self.values, self.fail = values, fail
+
+    def read_n2(self):
+        if self.fail:
+            raise RuntimeError("FSUIPC request failed")
+        return self.values
+
+
+def test_read_n2_maps_engines_and_degrades_to_none():
+    assert inflight._read_n2(_FakeFsuipc((73.0, 74.0, 73.0, 74.0))) == {
+        "eng1_n2": 73.0, "eng2_n2": 74.0, "eng3_n2": 73.0, "eng4_n2": 74.0}
+    for source in (None, _FakeFsuipc(fail=True)):
+        assert inflight._read_n2(source) == {f"eng{i}_n2": None for i in (1, 2, 3, 4)}
+
+
+def test_n2_line_on_the_panel():
+    state = {"eng1_n2": 73.0, "eng2_n2": 74.0, "eng3_n2": None, "eng4_n2": 74.0}
+    assert "N2 % (eng 1-4): 73  74  --  74" in inflight._n2_text(state)
+    assert "press o" in inflight._n2_text(state)
+    assert inflight._n2_text({}) == ""
+
+
+def test_recording_carries_n2_columns():
+    assert inflight.RECORD_SCHEMA_VERSION == 3
+    for i in (1, 2, 3, 4):
+        assert f"eng{i}_n2" in inflight.RECORD_COLUMNS
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("53 74", dict(engine=None, n1_obs=53.0, n2_obs=74.0)),
+    ("2 53.5 74", dict(engine=2, n1_obs=53.5, n2_obs=74.0)),
+    ("53,74", dict(engine=None, n1_obs=53.0, n2_obs=74.0)),
+])
+def test_parse_observation(text, expected):
+    assert inflight._parse_observation(text) == expected
+
+
+@pytest.mark.parametrize("text", ["53", "1 2 3 4", "5 53 74", "53 abc", "53 150"])
+def test_parse_observation_rejects(text):
+    with pytest.raises(ValueError):
+        inflight._parse_observation(text)
+
+
+def test_observation_log_appends_with_one_header(tmp_path):
+    path = tmp_path / "rec_n1n2.csv"
+    state = {"zulu_s": 1000.0, "eng1_n2": 73.0, "eng2_n2": 74.0, "eng3_n2": 73.0,
+             "eng4_n2": 74.0, "alt_ft": 51000.0, "mach": 2.02, "cas_kt": 490.0,
+             "tas_kt": 1160.0, "sim_temp_c": -56.0, "on_ground": False}
+    for text in ("53 74", "2 66 80"):
+        row = inflight._observation_row(inflight._parse_observation(text), state, 120.0)
+        inflight._append_observation(path, row)
+    df = pd.read_csv(path)
+    assert list(df.columns) == inflight.OBS_COLUMNS
+    assert df["n1_obs"].tolist() == [53.0, 66.0]
+    assert df["engine"].isna().tolist() == [True, False]
+    assert df["eng2_n2"].tolist() == [74.0, 74.0]
+    assert df["mach"].iloc[0] == pytest.approx(2.02)
+
+
+def test_take_observation_cancels_on_enter(tmp_path, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    note = inflight._take_observation(tmp_path / "obs.csv", {}, 0.0, None)
+    assert note == "Observation cancelled"
+    assert not (tmp_path / "obs.csv").exists()

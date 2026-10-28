@@ -283,6 +283,13 @@ warns that elapsed time counts from the first reading.
 Once past the decel start the panel says "No level advice -- past decel
 start": the FL450–FL600 table only applies to the supersonic cruise.
 
+**Engine N2 and N1 observations.** With FSUIPC6 running, the panel shows each
+engine's N2 (FSLabs' own value, whole percent) and the recording logs it. FSLabs
+doesn't publish N1, so press **o** to type what the gauges show: `53 74` (N1 N2),
+or `2 53 74` for engine 2. Press Enter on its own to cancel. Each entry is saved
+with FSLabs' N2 and the altitude/Mach to `<recording>_n1n2.csv` (or `--obs-log`),
+to build an N1-from-N2 model for the 88–91% N1 band.
+
 **Climb timing is an assumption.** The model adds 3 min to the climb table
 for KJFK noise abatement (`CLIMB_NOISE_ABATEMENT_MIN` in `params.py`), based on
 three flights running ~3 min behind the climb table. `report` prints a note

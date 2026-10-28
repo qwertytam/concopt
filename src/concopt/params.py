@@ -478,3 +478,16 @@ REPLAY_TOUCHDOWN_TAS_KT = 140.0
 REPLAY_MACH_NOISE_FRAC = 0.003
 REPLAY_GS_NOISE_KT = 2.0
 REPLAY_POSITION_NOISE_NM = 0.1
+
+# =============================================================================
+# FSUIPC (fsuipc_ipc.py) -- the FSLabs Concorde's own L:vars, which SimConnect
+# can't read
+# =============================================================================
+# FSLabs' per-engine N2, as an L:var name template. Named N1 by FSLabs (it
+# drives the exterior fan animation), but it tracks the cockpit N2 gauge, in
+# whole percent -- confirmed live 2026-10-28. FSLabs doesn't expose N1 at all.
+N2_LVAR = "sstsim_engine{}_N1"
+# L:var reads land in FSUIPC's user offsets (0x66C0-0x66FF): eight doubles.
+FSUIPC_LVAR_RESULT_OFFSET = 0x66C0
+FSUIPC_LVAR_MAX = 8
+FSUIPC_TIMEOUT_MS = 2000

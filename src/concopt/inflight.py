@@ -71,6 +71,7 @@ run_inflight are the same either way.
 import csv
 import datetime as dt
 import os
+import sys
 import time
 from itertools import groupby
 from pathlib import Path
@@ -106,7 +107,7 @@ from concopt.search import TARGET_FL, _format_hmm
 # Bumped whenever RECORD_COLUMNS changes, and written as a column on every
 # row so a notebook can tell which vintage it is reading without guessing
 # from the header. 1 = the original narrow schema (zulu_s .. last_waypoint).
-RECORD_SCHEMA_VERSION = 2
+RECORD_SCHEMA_VERSION = 3  # 3: eng1_n2..eng4_n2 (FSLabs N2 via FSUIPC)
 
 # One row per interval, flat, no nesting: pd.read_csv and nothing else. A
 # value that is not available writes EMPTY, never 0 or a sentinel -- a zero
@@ -126,6 +127,8 @@ RECORD_COLUMNS = [
     "mach", "cas_kt", "tas_kt", "gs_kt",
     # mass and phase
     "weight_t", "fuel_kg", "on_ground", "phase",
+    # engines: FSLabs' own N2 per engine, via FSUIPC (N1 isn't published)
+    "eng1_n2", "eng2_n2", "eng3_n2", "eng4_n2",
     # weather chain, source 1: what Active Sky says is here
     "as_wind_dir_deg", "as_wind_kt", "as_wind_along_kt", "as_temp_c", "as_pressure_hpa",
     # weather chain, source 2: what the sim says the aircraft is actually in
@@ -282,6 +285,124 @@ def _late_start_elapsed_s(zulu_s, brake_release_utc_s):
     if brake_release_utc_s is None or not _zulu_ok(zulu_s):
         return 0.0
     return float((zulu_s - brake_release_utc_s) % S_PER_DAY)
+
+
+def _connect_fsuipc():
+    """An FSUIPC connection for FSLabs' N2 L:vars, or None (with a note) if
+    FSUIPC isn't there -- N2 is recorder/panel telemetry, not worth ending
+    the run over."""
+    from concopt.fsuipc_ipc import Fsuipc
+    try:
+        return Fsuipc()
+    except (RuntimeError, OSError, AttributeError) as exc:  # AttributeError: no ctypes.WinDLL off Windows
+        print(f"N2 unavailable: {exc}")
+        return None
+
+
+def _read_n2(fsuipc):
+    """{eng1_n2..eng4_n2}: FSLabs' N2 per engine, or None each when FSUIPC
+    isn't connected or a read fails (an empty CSV cell, never 0)."""
+    values = (None,) * 4
+    if fsuipc is not None:
+        try:
+            values = fsuipc.read_n2()
+        except RuntimeError:
+            pass
+    return {f"eng{i}_n2": v for i, v in zip((1, 2, 3, 4), values)}
+
+
+def _n2_text(state):
+    """The panel's N2 line ("" when there's no N2), with the key to log
+    observations."""
+    n2 = [state.get(f"eng{i}_n2") for i in (1, 2, 3, 4)]
+    if all(v is None for v in n2):
+        return ""
+    shown = "  ".join("--" if v is None else f"{v:.0f}" for v in n2)
+    return f"\nN2 % (eng 1-4): {shown}   [press o to log observed N1/N2]"
+
+
+# The observation log -- N1/N2 read off the gauges by hand (FSLabs publishes
+# no N1), next to FSLabs' own N2 and the flight state, for an N1-from-N2 model.
+OBS_COLUMNS = ["zulu_s", "elapsed_s", "engine", "n1_obs", "n2_obs",
+               "eng1_n2", "eng2_n2", "eng3_n2", "eng4_n2",
+               "alt_ft", "mach", "cas_kt", "tas_kt", "sim_temp_c", "on_ground"]
+
+
+def _parse_observation(text):
+    """"N1 N2" or "ENGINE N1 N2" (e.g. "53 74" / "2 53 74") -> dict(engine,
+    n1_obs, n2_obs); engine None when not given. Raises ValueError."""
+    parts = text.replace(",", " ").split()
+    if len(parts) not in (2, 3):
+        raise ValueError("enter N1 N2, or ENGINE N1 N2")
+    engine = int(parts[0]) if len(parts) == 3 else None
+    n1, n2 = (float(p) for p in parts[-2:])
+    if engine is not None and engine not in (1, 2, 3, 4):
+        raise ValueError("engine must be 1-4")
+    if not (0.0 <= n1 <= 120.0 and 0.0 <= n2 <= 120.0):
+        raise ValueError("N1 and N2 are percent, 0-120")
+    return dict(engine=engine, n1_obs=n1, n2_obs=n2)
+
+
+def _observation_row(obs, state, elapsed_s):
+    """One OBS_COLUMNS row: what was typed, FSLabs' N2 at the same moment,
+    and the flight state (the N1/N2 relationship may move with altitude and
+    Mach)."""
+    row = {**obs, "zulu_s": state.get("zulu_s"), "elapsed_s": elapsed_s,
+           "on_ground": int(bool(state.get("on_ground")))}
+    for col in ("eng1_n2", "eng2_n2", "eng3_n2", "eng4_n2", "alt_ft", "mach", "cas_kt",
+                "tas_kt", "sim_temp_c"):
+        row[col] = state.get(col)
+    return row
+
+
+def _append_observation(path, row):
+    path = Path(path)
+    new = not path.exists() or path.stat().st_size == 0
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if new:
+            writer.writerow(OBS_COLUMNS)
+        writer.writerow([row.get(c) for c in OBS_COLUMNS])
+
+
+def _wait_for_key(seconds, enabled):
+    """Sleep `seconds`, or return True early when "o" is pressed (Windows
+    console only -- msvcrt)."""
+    if not enabled:
+        time.sleep(seconds)
+        return False
+    import msvcrt
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        while msvcrt.kbhit():
+            if msvcrt.getwch().lower() == "o":
+                return True
+        time.sleep(0.05)
+    return False
+
+
+def _take_observation(path, state, elapsed_s, live_display):
+    """Prompt for observed N1/N2 (pausing the live panel), append it to
+    `path`, and return a note for the panel. Enter alone cancels."""
+    if live_display is not None:
+        live_display.stop()
+    try:
+        while True:
+            text = input("\nObserved N1 N2 (e.g. '53 74', or '2 53 74' for engine 2; "
+                         "Enter to cancel): ").strip()
+            if not text:
+                return "Observation cancelled"
+            try:
+                obs = _parse_observation(text)
+                break
+            except ValueError as exc:
+                print(f"  {exc}")
+        _append_observation(path, _observation_row(obs, state, elapsed_s))
+        eng = f" (engine {obs['engine']})" if obs["engine"] else ""
+        return f"Logged N1 {obs['n1_obs']:g} / N2 {obs['n2_obs']:g}{eng} to {path}"
+    finally:
+        if live_display is not None:
+            live_display.start()
 
 
 class _BadSimData(ValueError):
@@ -938,6 +1059,7 @@ def _render_screen(state, table, best_idx, current_idx, binding_at_best, remaini
         f"Weight {state['weight_t']:.1f} t\n"
         f"{state['lat_deg']:.3f}, {state['lon_deg']:.3f}   "
         f"next: {next_wp_id} ({dist_to_next_nm:.0f} nm)"
+        + _n2_text(state)
     )
 
     level_table = _build_level_table(table, best_idx, current_idx)
@@ -1027,6 +1149,7 @@ def _record_row(elapsed_s, state, cum_nm, last_waypoint, leg_track_deg, flight_p
         "fuel_kg": _round_or_none(state.get("fuel_kg"), 1),
         "on_ground": int(bool(state["on_ground"])),
         "phase": flight_phase,
+        **{f"eng{i}_n2": _round_or_none(state.get(f"eng{i}_n2"), 1) for i in (1, 2, 3, 4)},
         "as_wind_dir_deg": _round_or_none(as_wind_dir_deg, 2),
         "as_wind_kt": _round_or_none(as_wind_kt, 2),
         "as_wind_along_kt": _round_or_none(
@@ -1267,7 +1390,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
                   host=ACTIVE_SKY_HOST, port=ACTIVE_SKY_PORT, cruise_mach=limits.CRUISE_MACH,
                   gain_threshold_kt=DEFAULT_GAIN_THRESHOLD_KT, simconnect_dll=None, live=True,
                   state_source=None, weather_source=None, replay_speed=1.0,
-                  thrust_reversers=False, record_mode="ask", brake_release_utc_s=None):
+                  thrust_reversers=False, record_mode="ask", brake_release_utc_s=None,
+                  obs_log_path=None):
     """The live advisor loop, every interval_s: read the sim, project
     lookahead_nm ahead along the route, query Active Sky there, show the
     level table and recommendation. If record_path is given, also runs the
@@ -1393,9 +1517,17 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     # the calls this replaced.
     if state_source is None:
         sm, aq = _connect(simconnect_dll)
-        state_source = lambda: _read_state(aq)  # noqa: E731
+        fsuipc = _connect_fsuipc()
+        state_source = lambda: {**_read_state(aq), **_read_n2(fsuipc)}  # noqa: E731
     if weather_source is None:
         weather_source = _live_weather_source(host, port)
+
+    # Press "o" to log observed N1/N2 (only with a real keyboard, not under a
+    # replay piped from tests): to obs_log_path, next to the recording by default.
+    observe_keys = sys.stdin.isatty() and os.name == "nt"
+    if obs_log_path is None:
+        obs_log_path = (Path(record_path).with_name(Path(record_path).stem + "_n1n2.csv")
+                        if record_path is not None else Path("n1n2_observations.csv"))
 
     recording = record_path is not None
     csv_file = None
@@ -1594,6 +1726,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
             else:
                 _print_advisor(state, la_lat, la_lon, track_deg, table, best_idx, current_idx,
                                 binding_at_best, remaining_nm, gain_threshold_kt)
+                if _n2_text(state):
+                    print(_n2_text(state).strip())
                 if plan_track is not None and elapsed_s is not None:
                     print(_plan_vs_actual_text(_plan_vs_actual(plan_track, current_cum_nm, elapsed_s),
                                                current_cum_nm, elapsed_s))
@@ -1678,9 +1812,14 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
             if live_display is not None:
                 for countdown_s in range(max(int(tick_s), 1), 0, -1):
                     live_display.update(_screen(countdown_s))
-                    time.sleep(1 / replay_speed)
+                    if _wait_for_key(1 / replay_speed, observe_keys):
+                        recorder_note = (_take_observation(obs_log_path, state, elapsed_s,
+                                                           live_display) or recorder_note)
+                        live_display.update(_screen(countdown_s))
             else:
-                time.sleep(tick_s / replay_speed)
+                if _wait_for_key(tick_s / replay_speed, observe_keys):
+                    recorder_note = (_take_observation(obs_log_path, state, elapsed_s, None)
+                                     or recorder_note)
     except KeyboardInterrupt:
         interrupted = True
     finally:

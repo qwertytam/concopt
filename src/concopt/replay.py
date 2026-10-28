@@ -51,6 +51,7 @@ _STATE_COLUMNS = (
 _OPTIONAL_STATE_COLUMNS = (
     "fuel_kg", "sim_wind_kt", "sim_wind_dir_deg", "sim_temp_c",
     "sim_pressure_hpa", "agl_ft", "vs_fpm", "cas_kt", "track_deg",
+    "eng1_n2", "eng2_n2", "eng3_n2", "eng4_n2",
 )
 
 

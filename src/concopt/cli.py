@@ -124,7 +124,7 @@ def _cmd_inflight(args):
                  state_source=state_source, weather_source=weather_source,
                  replay_speed=args.replay_speed, thrust_reversers=args.thrust_reversers,
                  record_mode=args.record_mode,
-                 brake_release_utc_s=args.brake_release_utc)
+                 brake_release_utc_s=args.brake_release_utc, obs_log_path=args.obs_log)
 
 
 def main(argv=None):
@@ -323,6 +323,9 @@ def main(argv=None):
                                   help='sim UTC time of brake release, for a recording started after '
                                        'takeoff: elapsed time then counts from it instead of from the '
                                        'first reading (ignored when brake release is seen)')
+    inflight_parser.add_argument('--obs-log', default=None,
+                                  help='CSV that observed N1/N2 readings (press o in flight) are appended to '
+                                       '(default: <record>_n1n2.csv next to --record, else n1n2_observations.csv)')
     inflight_parser.add_argument('--compare', default=None,
                                   help='a concopt report --out CSV to compare the recording against '
                                        'once touchdown is detected (requires --record)')
