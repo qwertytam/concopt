@@ -1,7 +1,6 @@
 {
   "python.testing.pytestEnabled": true,
   "python.testing.pytestArgs": ["tests"],
-  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.terminal.activateEnvironment": true,
   "python.analysis.extraPaths": ["src"],
   "files.exclude": {
