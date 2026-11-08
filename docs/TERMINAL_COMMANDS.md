@@ -122,9 +122,32 @@ must be on the Mac too). `SIM_PC` is the sim PC's IP address:
 ```zsh
 export SIM_PC=192.168.11.123
 export PLN=data/CONC_KJFK_EGLL_SPEED02.pln ACCL=40N073W DECL=51N005W CRUISE_MACH=2.04 REFRESH_INTERVAL=10
-export INFLIGHT_RECORDING_FILE=data/results/<folder>/recording.csv
-export REPORT_SELECTED_DAYTIME_FILE=data/results/<folder>/report_selected_daytime.csv
 ```
+
+Then pick the results folder, as in step 1. Paste this block on its own. It lists
+the existing results folders, newest first, then asks which one to use. Press Enter
+for a new timestamped folder, or type an existing one (e.g. `data/results/20261023_0630`).
+The prompt must be the last line you paste, or the next pasted line becomes its answer.
+
+```zsh
+export STAMP=$(date +%Y%m%d_%H%M)
+ls -1r data/results
+read "RESULTS_DIR?Results folder [Enter = new data/results/$STAMP, or type an existing one]: "
+```
+
+Then this block uses that folder if it exists, or creates it, and says which:
+
+```zsh
+export RESULTS_DIR=${RESULTS_DIR:-data/results/$STAMP}
+if [[ -d $RESULTS_DIR ]]; then echo "Using existing folder $RESULTS_DIR"; else mkdir -p $RESULTS_DIR && echo "Created folder $RESULTS_DIR"; fi
+export INFLIGHT_RECORDING_FILE=$RESULTS_DIR/recording.csv
+export REPORT_SELECTED_DAYTIME_FILE=$RESULTS_DIR/report_selected_daytime.csv
+ls -l $REPORT_SELECTED_DAYTIME_FILE
+```
+
+The last line checks the step 5 report is in that folder (copy it over from the sim
+PC, or run step 5 on the Mac); `--compare` needs it. Use `env | grep -E 'RESULTS|PLN|SIM_PC'`
+to list what's set.
 
 ```zsh
 poetry run concopt inflight --pln $PLN --accel $ACCL --decel $DECL --cruise-mach $CRUISE_MACH --thrust-reversers --state-url http://$SIM_PC:19286/state --host $SIM_PC --record $INFLIGHT_RECORDING_FILE --compare $REPORT_SELECTED_DAYTIME_FILE --interval $REFRESH_INTERVAL --lookahead-nm 0
