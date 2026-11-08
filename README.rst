@@ -28,6 +28,11 @@ Python 3.11+ and Poetry::
     poetry install --extras test
     poetry run pytest
 
+Everything except ``inflight`` runs on macOS or Linux. ``inflight`` needs
+Windows (SimConnect, FSUIPC, a running Prepar3D); its dependencies are only
+imported when that subcommand actually runs, so ``search``, ``report``,
+``verify`` and the rest start fine without them.
+
 Commands
 --------
 

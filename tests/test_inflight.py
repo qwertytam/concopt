@@ -1209,3 +1209,199 @@ def test_take_observation_cancels_on_enter(tmp_path, monkeypatch):
     note = inflight._take_observation(tmp_path / "obs.csv", {}, 0.0, None)
     assert note == "Observation cancelled"
     assert not (tmp_path / "obs.csv").exists()
+
+
+# --- the "o" key on POSIX and Windows -------------------------------------------------
+
+import contextlib  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+class _FakeStdin:
+    def __init__(self, tty=True):
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+    def fileno(self):
+        return 7
+
+
+@pytest.fixture
+def posix_tty(monkeypatch):
+    """A fake tty stdin, POSIX branch, with termios/tty patched out."""
+    termios = pytest.importorskip("termios")
+    import tty
+    saved = ["saved", "settings"]
+    mocks = MagicMock()
+    monkeypatch.setattr(inflight, "_WINDOWS", False)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True))
+    monkeypatch.setattr(termios, "tcgetattr", mocks.tcgetattr)
+    mocks.tcgetattr.return_value = saved
+    monkeypatch.setattr(termios, "tcsetattr", mocks.tcsetattr)
+    monkeypatch.setattr(tty, "setcbreak", mocks.setcbreak)
+    mocks.saved = saved
+    mocks.termios = termios
+    return mocks
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("boom"), KeyboardInterrupt()])
+def test_raw_keys_restores_settings_when_the_body_raises(posix_tty, exc):
+    with pytest.raises(type(exc)):
+        with inflight.raw_keys():
+            posix_tty.setcbreak.assert_called_once_with(7)
+            raise exc
+    posix_tty.tcsetattr.assert_called_once_with(7, posix_tty.termios.TCSAFLUSH, posix_tty.saved)
+    assert inflight._saved_tty is None
+
+
+def test_raw_keys_restores_on_clean_exit(posix_tty):
+    with inflight.raw_keys():
+        assert inflight._saved_tty == (7, posix_tty.saved)
+    posix_tty.tcsetattr.assert_called_once_with(7, posix_tty.termios.TCSAFLUSH, posix_tty.saved)
+
+
+def test_raw_keys_is_a_noop_when_stdin_is_not_a_tty(posix_tty, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    ran = False
+    with inflight.raw_keys():
+        ran = True
+    assert ran
+    posix_tty.tcgetattr.assert_not_called()
+    posix_tty.setcbreak.assert_not_called()
+    posix_tty.tcsetattr.assert_not_called()
+
+
+def test_raw_keys_is_a_noop_on_windows(posix_tty, monkeypatch):
+    monkeypatch.setattr(inflight, "_WINDOWS", True)
+    with inflight.raw_keys():
+        pass
+    posix_tty.tcgetattr.assert_not_called()
+
+
+def test_raw_keys_degrades_to_disabled_when_termios_refuses(posix_tty):
+    posix_tty.tcgetattr.side_effect = posix_tty.termios.error(25, "not a tty")
+    ran = False
+    with inflight.raw_keys():
+        ran = True
+    assert ran
+    posix_tty.tcsetattr.assert_not_called()
+    assert inflight._saved_tty is None
+
+
+def test_input_cooked_restores_echo_for_the_prompt_then_cbreak_again(posix_tty, monkeypatch):
+    order = []
+    posix_tty.tcsetattr.side_effect = lambda *a: order.append("cooked")
+    posix_tty.setcbreak.side_effect = lambda fd: order.append("cbreak")
+    monkeypatch.setattr("builtins.input", lambda prompt: order.append("input") or "53 74")
+    monkeypatch.setattr(inflight, "_saved_tty", (7, posix_tty.saved))
+    assert inflight._input_cooked("?") == "53 74"
+    assert order == ["cooked", "input", "cbreak"]
+
+
+def test_wait_for_key_disabled_just_sleeps(monkeypatch):
+    slept = []
+    monkeypatch.setattr(inflight.time, "sleep", slept.append)
+    assert inflight._wait_for_key(2.0, False) is False
+    assert slept == [2.0]
+
+
+def test_wait_for_key_posix_times_out_and_sees_o(posix_tty, monkeypatch):
+    def quiet(r, w, x, timeout):
+        time.sleep(timeout)
+        return [], [], []
+
+    monkeypatch.setattr(inflight.select, "select", quiet)
+    t0 = time.monotonic()
+    assert inflight._wait_for_key(0.1, True) is False
+    assert time.monotonic() - t0 >= 0.1
+
+    keys = iter([b"x", b"O"])
+    monkeypatch.setattr(inflight.select, "select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(inflight.os, "read", lambda fd, n: next(keys))
+    assert inflight._wait_for_key(5.0, True) is True  # an "x" first, then "O"
+
+
+def test_wait_for_key_windows_times_out_and_sees_o(monkeypatch):
+    pressed = []
+    fake = MagicMock()
+    fake.kbhit.side_effect = lambda: bool(pressed)
+    fake.getwch.side_effect = lambda: pressed.pop(0)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setattr(inflight, "_WINDOWS", True)
+    t0 = time.monotonic()
+    assert inflight._wait_for_key(0.1, True) is False
+    assert time.monotonic() - t0 >= 0.1
+    pressed.extend(["x", "O"])
+    assert inflight._wait_for_key(5.0, True) is True
+
+
+def test_run_inflight_arms_observe_keys_for_a_tty_on_any_platform(monkeypatch):
+    """observe_keys is just isatty(), and raw_keys() is entered once around
+    the loop and exited when Ctrl+C ends it."""
+    from concopt.replay import replay_sources
+    from tests.test_replay import _synthetic_flight_df
+    from tests.test_route import SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, SAMPLE_PLN
+
+    log = []
+
+    @contextlib.contextmanager
+    def fake_raw_keys():
+        log.append("enter")
+        try:
+            yield
+        finally:
+            log.append("exit")
+
+    def fake_wait(seconds, enabled):
+        log.append(("wait", enabled))
+        raise KeyboardInterrupt
+
+    state_source, weather_source = replay_sources(_synthetic_flight_df(seed=7), replay_speed=900.0)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True))
+    monkeypatch.setattr(inflight, "raw_keys", fake_raw_keys)
+    monkeypatch.setattr(inflight, "_wait_for_key", fake_wait)
+    inflight.run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0,
+                          state_source=state_source, weather_source=weather_source,
+                          replay_speed=900.0, live=False)
+    assert log == ["enter", ("wait", True), "exit"]
+
+    log.clear()
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    state_source, weather_source = replay_sources(_synthetic_flight_df(seed=7), replay_speed=900.0)
+    inflight.run_inflight(SAMPLE_PLN, SAMPLE_ACCEL_ID, SAMPLE_DECEL_ID, interval_s=60.0,
+                          state_source=state_source, weather_source=weather_source,
+                          replay_speed=900.0, live=False)
+    assert ("wait", False) in log
+
+
+def test_take_observation_restarts_the_panel_without_leftover_lines(tmp_path, monkeypatch):
+    """The 'o' prompt left the old frame's top lines on screen: rich's
+    Live.stop() switches vertical_overflow to "visible" for good, and the
+    restart positioned itself from below the prompt. After an observation
+    the overflow is back to what it was and the screen was cleared before
+    the panel restarted."""
+    import io
+    from rich.live import Live
+    from rich.text import Text
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=True, force_interactive=True, width=80, height=12)
+    live = Live(Text("\n".join(f"panel line {i}" for i in range(10))), console=console,
+                auto_refresh=False)
+    live.start(refresh=True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "53 74")
+    note = inflight._take_observation(tmp_path / "obs.csv", {}, 0.0, live)
+    try:
+        assert note.startswith("Logged N1 53 / N2 74")
+        assert live.is_started
+        assert live.vertical_overflow == "ellipsis"
+        written = out.getvalue()
+        clear_at = written.rfind("\x1b[2J")
+        assert clear_at != -1, "screen not cleared before the panel restarted"
+        # the restarted panel is drawn after the clear
+        assert written.rfind("panel line 0") > clear_at
+    finally:
+        live.stop()

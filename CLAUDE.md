@@ -462,6 +462,33 @@ for its own sake, no defensive error handling.
   shortlist` days and eyeball whether the ranking survives, and whether
   AS/ERA5 divergence looks like a fixable constant bias or unfixable
   scatter.
+- `cli.py` — argparse entry point. **`inflight` is imported lazily**, inside
+  `_cmd_inflight`, never at module level: `inflight.py` imports SimConnect
+  (Windows-only), and every other subcommand must start without it (a Mac
+  can run `search`/`report`/`route`/`shortlist`). Don't add a top-level
+  `concopt.inflight` import to `cli.py`; `tests/test_cli.py` blocks
+  `SimConnect` in a subprocess and fails if the parser or `search --help`
+  needs it. Tests that mock the call patch `concopt.inflight.run_inflight`,
+  not `concopt.cli.run_inflight`. Anything the parser needs from inflight's
+  world lives in a small shared module instead -- `timeparse.parse_utc_s`
+  (the `--brake-release-utc` type; `inflight._parse_utc_s` is the same
+  function under its old name).
+- `bridge.py` / `remote.py` — run the advisor on another machine. `concopt
+  bridge` (Windows sim PC) serves `inflight._live_state_source(aq, fsuipc)` —
+  the same `_read_state` + `_read_n2` dict `run_inflight` uses, the one place
+  unit conversions live — as JSON over `ThreadingHTTPServer`, GET `/state`,
+  one fresh read per request under a lock; a raising read is HTTP 500.
+  `concopt inflight --state-url` builds `remote.remote_state_source`, a
+  `state_source` for the existing seam; Active Sky stays on `--host/--port`.
+  **None must survive the round trip** (json null <-> None; never substitute
+  0 — a dropped `weight_t` must stay a visible skipped tick) and **no
+  retry**: any failed/timed-out/malformed poll raises `RuntimeError`, which
+  `run_inflight` already turns into a skipped tick. The JSON contract is
+  `remote.py`'s docstring; `remote.STATE_KEYS` is pinned against
+  `_read_state` by `tests/test_bridge.py`. `remote.py` must not import
+  `inflight`. `--simconnect-dll` is on both `bridge` and (standalone, no
+  `--state-url`) `inflight`. Not covered without the sim: the real
+  `bridge` against P3D, and Active Sky accepting a non-local `--host`.
 - `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
   recorder against a running Prepar3D + Active Sky, over SimConnect
   (`python-SimConnect`, localhost). Every `--interval` seconds: reads the
@@ -541,7 +568,7 @@ for its own sake, no defensive error handling.
   `fsuipc_ipc.py` reads it over FSUIPC's IPC with plain ctypes (the `fsuipc`
   pip package doesn't build on Python 3.13); the live state source adds
   `eng1_n2`..`eng4_n2`, shown on the panel and recorded (schema 3), empty if
-  FSUIPC isn't running. Pressing `o` (Windows console) pauses the panel and
+  FSUIPC isn't running. Pressing `o` (Windows console via msvcrt; POSIX terminal via `select` on stdin, with `raw_keys()` -- cbreak, restored in a `finally` -- entered once around the main loop, a no-op when stdin isn't a tty or termios refuses; `_input_cooked` gives the prompt echo back) pauses the panel and
   asks for observed N1/N2 ("53 74" or "2 53 74" for engine 2), appended with
   FSLabs' N2 and the flight state to `--obs-log` (default
   `<record>_n1n2.csv`) -- data for an N1-from-N2 model, so the advisor can

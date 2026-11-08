@@ -68,9 +68,11 @@ Presentation only: _level_table/_recommendation_line (the advisory logic),
 _read_state (the SimConnect reads) and the recorder state machine in
 run_inflight are the same either way.
 """
+import contextlib
 import csv
 import datetime as dt
 import os
+import select
 import sys
 import time
 from itertools import groupby
@@ -89,6 +91,7 @@ from concopt import arrival, limits, runways
 from concopt.asky import get_atmosphere_np
 from concopt.atmos import (KT_TO_MS, fl_to_pressure, isa, pressure_to_fl,
                             speed_of_sound)
+from concopt.timeparse import parse_utc_s as _parse_utc_s
 from concopt.route import (build_legs, current_progress_nm, destination_point,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
@@ -270,14 +273,6 @@ def _zulu_ok(zulu_s):
     return zulu_s is not None and not np.isnan(zulu_s)
 
 
-def _parse_utc_s(text):
-    """'HH:MM' or 'HH:MM:SS' (UTC, sim time) -> seconds since midnight."""
-    parts = [int(p) for p in text.split(":")]
-    if len(parts) not in (2, 3) or not (0 <= parts[0] < 24 and all(0 <= p < 60 for p in parts[1:])):
-        raise ValueError(f"expected HH:MM or HH:MM:SS, got {text!r}")
-    return parts[0] * 3600 + parts[1] * 60 + (parts[2] if len(parts) == 3 else 0)
-
-
 def _late_start_elapsed_s(zulu_s, brake_release_utc_s):
     """Elapsed time to start a late-started recording at: sim time since
     brake_release_utc_s (modulo a day, for a flight across midnight), or 0
@@ -309,6 +304,13 @@ def _read_n2(fsuipc):
         except RuntimeError:
             pass
     return {f"eng{i}_n2": v for i, v in zip((1, 2, 3, 4), values)}
+
+
+def _live_state_source(aq, fsuipc):
+    """THE SEAM's live state_source: one SimConnect poll plus FSLabs' N2.
+    The one place this expression lives -- run_inflight and the bridge
+    (concopt.bridge) both call it, so a network hop can't drift from it."""
+    return lambda: {**_read_state(aq), **_read_n2(fsuipc)}
 
 
 def _n2_text(state):
@@ -365,30 +367,98 @@ def _append_observation(path, row):
         writer.writerow([row.get(c) for c in OBS_COLUMNS])
 
 
+_WINDOWS = os.name == "nt"
+_saved_tty = None  # (fd, saved termios settings) while raw_keys has cbreak on
+
+
+@contextlib.contextmanager
+def raw_keys():
+    """Put stdin in cbreak mode (keys arrive without Enter, no echo; Ctrl+C
+    still works) for the whole `with` body, and restore the saved settings
+    on the way out -- in a finally, so an exception or Ctrl+C restores it
+    too. Entered ONCE around run_inflight's loop, not per tick. A no-op on
+    Windows (msvcrt needs no mode) and when stdin isn't a tty; if termios
+    refuses (an IDE console that says isatty but isn't a terminal) it
+    degrades to a no-op rather than failing the flight."""
+    global _saved_tty
+    if _WINDOWS or not sys.stdin.isatty():
+        yield
+        return
+    import termios
+    import tty
+    try:
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+    except (termios.error, OSError, ValueError):
+        yield
+        return
+    _saved_tty = (fd, saved)
+    try:
+        yield
+    finally:
+        _saved_tty = None
+        termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
+
+
+def _input_cooked(prompt):
+    """input() with normal echo and line editing: cbreak (raw_keys) would
+    leave the user typing blind. Cooked only for the prompt, back to cbreak
+    after."""
+    if _saved_tty is None:
+        return input(prompt)
+    import termios
+    import tty
+    fd, saved = _saved_tty
+    termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    try:
+        return input(prompt)
+    finally:
+        tty.setcbreak(fd)
+
+
 def _wait_for_key(seconds, enabled):
-    """Sleep `seconds`, or return True early when "o" is pressed (Windows
-    console only -- msvcrt)."""
+    """Sleep `seconds`, or return True early when "o" is pressed. Windows:
+    msvcrt. POSIX: select() on stdin, which needs raw_keys() around the loop
+    so single keys arrive without Enter."""
     if not enabled:
         time.sleep(seconds)
         return False
-    import msvcrt
     end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        while msvcrt.kbhit():
-            if msvcrt.getwch().lower() == "o":
+    if _WINDOWS:
+        import msvcrt
+        while time.monotonic() < end:
+            while msvcrt.kbhit():
+                if msvcrt.getwch().lower() == "o":
+                    return True
+            time.sleep(0.05)
+        return False
+    while (remaining := end - time.monotonic()) > 0:
+        if select.select([sys.stdin], [], [], remaining)[0]:
+            key = os.read(sys.stdin.fileno(), 1)
+            if key.lower() == b"o":
                 return True
-        time.sleep(0.05)
+            if not key:  # stdin closed: select would return at once forever
+                time.sleep(max(end - time.monotonic(), 0))
     return False
 
 
 def _take_observation(path, state, elapsed_s, live_display):
     """Prompt for observed N1/N2 (pausing the live panel), append it to
-    `path`, and return a note for the panel. Enter alone cancels."""
+    `path`, and return a note for the panel. Enter alone cancels.
+
+    Restarting the panel cleanly needs two things rich's Live doesn't do on
+    its own: stop() leaves vertical_overflow at "visible" for good, and
+    start() moves the cursor up by the OLD frame's height from below the
+    prompt, so the old frame's top lines were left above the new one, once
+    per "o" press. So the overflow is put back and the screen cleared
+    (cursor home) before the restart."""
     if live_display is not None:
+        overflow = live_display.vertical_overflow
         live_display.stop()
     try:
         while True:
-            text = input("\nObserved N1 N2 (e.g. '53 74', or '2 53 74' for engine 2; "
+            text = _input_cooked("\nObserved N1 N2 (e.g. '53 74', or '2 53 74' for engine 2; "
                          "Enter to cancel): ").strip()
             if not text:
                 return "Observation cancelled"
@@ -402,7 +472,9 @@ def _take_observation(path, state, elapsed_s, live_display):
         return f"Logged N1 {obs['n1_obs']:g} / N2 {obs['n2_obs']:g}{eng} to {path}"
     finally:
         if live_display is not None:
-            live_display.start()
+            live_display.vertical_overflow = overflow
+            live_display.console.clear()
+            live_display.start(refresh=True)
 
 
 class _BadSimData(ValueError):
@@ -1518,13 +1590,13 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     if state_source is None:
         sm, aq = _connect(simconnect_dll)
         fsuipc = _connect_fsuipc()
-        state_source = lambda: {**_read_state(aq), **_read_n2(fsuipc)}  # noqa: E731
+        state_source = _live_state_source(aq, fsuipc)
     if weather_source is None:
         weather_source = _live_weather_source(host, port)
 
     # Press "o" to log observed N1/N2 (only with a real keyboard, not under a
     # replay piped from tests): to obs_log_path, next to the recording by default.
-    observe_keys = sys.stdin.isatty() and os.name == "nt"
+    observe_keys = sys.stdin.isatty()
     if obs_log_path is None:
         obs_log_path = (Path(record_path).with_name(Path(record_path).stem + "_n1n2.csv")
                         if record_path is not None else Path("n1n2_observations.csv"))
@@ -1579,6 +1651,8 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
         live_display.start()
 
     interrupted = False
+    keys = contextlib.ExitStack()  # raw_keys() for the whole loop; closed in the finally below
+    keys.enter_context(raw_keys())
     try:
         while True:
             try:
@@ -1825,6 +1899,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     finally:
         if live_display is not None:
             live_display.stop()
+        keys.close()
         if csv_file:
             csv_file.close()
 

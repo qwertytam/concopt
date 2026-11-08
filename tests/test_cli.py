@@ -79,7 +79,7 @@ def test_inflight_replay_speed_reaches_both_replay_sources_and_run_inflight(tmp_
     pd.DataFrame({"elapsed_s": [0.0, 10.0]}).to_csv(recording_path, index=False)
 
     with patch("concopt.cli.replay_sources") as mock_replay_sources, \
-         patch("concopt.cli.run_inflight") as mock_run_inflight:
+         patch("concopt.inflight.run_inflight") as mock_run_inflight:
         mock_replay_sources.return_value = ("state_source", "weather_source")
         cli_main(["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D", "--replay", str(recording_path),
                   "--replay-speed", "250"])
@@ -94,7 +94,7 @@ def test_inflight_without_replay_leaves_sources_none():
     """No --replay -> a real flight: state_source/weather_source must stay
     None so run_inflight connects to SimConnect/Active Sky for real (see
     run_inflight's own THE SEAM docstring)."""
-    with patch("concopt.cli.run_inflight") as mock_run_inflight:
+    with patch("concopt.inflight.run_inflight") as mock_run_inflight:
         cli_main(["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D"])
 
     assert mock_run_inflight.call_args.kwargs["state_source"] is None
@@ -134,10 +134,53 @@ def test_accel_has_no_default(argv):
 
 
 def test_decel_and_accel_reach_run_inflight_and_decel_reaches_run_search():
-    with patch("concopt.cli.run_inflight") as mock_inflight:
+    with patch("concopt.inflight.run_inflight") as mock_inflight:
         cli_main(["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D"])
     assert mock_inflight.call_args.args[1:3] == ("A", "D")
 
     with patch("concopt.cli.run_search") as mock_search:
         cli_main([*SEARCH_BASE, *ARRIVAL_NPZS])
     assert mock_search.call_args.kwargs["decel_id"] == "D"
+
+
+def test_cli_builds_and_search_help_works_without_simconnect():
+    """Reproduces the Mac failure: SimConnect unimportable. Only `inflight`
+    may need it, so the parser and every other subcommand must still work."""
+    import subprocess
+    import sys
+    code = (
+        "import sys; sys.modules['SimConnect'] = None\n"
+        "import concopt.cli as cli\n"
+        "assert 'concopt.inflight' not in sys.modules\n"
+        "try:\n"
+        "    cli.main(['search', '--help'])\n"
+        "except SystemExit as e:\n"
+        "    sys.exit(e.code)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "usage" in r.stdout.lower()
+
+
+def test_inflight_state_url_supplies_state_source_only():
+    from unittest.mock import sentinel
+    with patch("concopt.cli.remote_state_source", return_value=sentinel.src) as mock_remote, \
+         patch("concopt.inflight.run_inflight") as mock_run_inflight:
+        cli_main(["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D",
+                  "--state-url", "http://pc:19286/state"])
+    mock_remote.assert_called_once_with("http://pc:19286/state")
+    assert mock_run_inflight.call_args.kwargs["state_source"] is sentinel.src
+    assert mock_run_inflight.call_args.kwargs["weather_source"] is None  # Active Sky via --host
+
+
+def test_state_url_conflicts_with_replay_and_simconnect_dll():
+    base = ["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D", "--state-url", "http://pc/state"]
+    for extra in (["--replay", "r.csv"], ["--simconnect-dll", "x.dll"]):
+        with pytest.raises(SystemExit):
+            cli_main(base + extra)
+
+
+def test_bridge_subcommand_passes_port_bind_and_dll():
+    with patch("concopt.bridge.run_bridge") as mock_bridge:
+        cli_main(["bridge", "--port", "20000", "--bind", "127.0.0.1", "--simconnect-dll", "s.dll"])
+    mock_bridge.assert_called_once_with(port=20000, bind="127.0.0.1", simconnect_dll="s.dll")

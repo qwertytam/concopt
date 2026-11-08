@@ -94,6 +94,68 @@ poetry run concopt report --pln %PLN% --decel %DECL% --thrust-reversers --npz %R
 
 ## 6. Running in flight
 
+Either run everything on the sim PC (6a), or run only the bridge on the sim PC and
+the advisor on another machine such as a Mac (6b). Pick one: the bridge and a
+standalone `inflight` can't share the one SimConnect connection.
+
+### 6a. All on the sim PC
+
 ```bat
-poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm 0
+poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm %WEATHER_LOOKAHEAD_NM%
 ```
+
+### 6b. Bridge on the sim PC, advisor on a Mac
+
+On the **sim PC** (this replaces 6a; stop any running `inflight` first). Allow
+Windows Firewall access on the private network if it asks (TCP 19286):
+
+#### On the simulator PC
+
+```bat
+poetry run concopt bridge --simconnect-dll %SIMCONNECT_DLL%
+```
+
+#### On the remote compute -- currently assumed to be a Mac
+
+It prints `Bridge serving http://0.0.0.0:19286/state`, then stays quiet. From the
+Mac, `curl http://<sim-pc-ip>:19286/state` should return the live state as JSON.
+
+```zsh
+export SIM_PC=192.168.11.123
+export PLN=data/CONC_KJFK_EGLL_SPEED02.pln ACCL=40N073W DECL=51N005W CRUISE_MACH=2.04 REFRESH_INTERVAL=10
+```
+
+Then pick the results folder, as in step 1. Paste this block on its own. It lists
+the existing results folders, newest first, then asks which one to use. Press Enter
+for a new timestamped folder, or type an existing one (e.g. `data/results/20261023_0630`).
+The prompt must be the last line you paste, or the next pasted line becomes its answer.
+
+```zsh
+export STAMP=$(date +%Y%m%d_%H%M)
+ls -1r data/results
+read "RESULTS_DIR?Results folder [Enter = new data/results/$STAMP, or type an existing one]: "
+```
+
+Then this block uses that folder if it exists, or creates it, and says which:
+
+```zsh
+export RESULTS_DIR=${RESULTS_DIR:-data/results/$STAMP}
+if [[ -d $RESULTS_DIR ]]; then echo "Using existing folder $RESULTS_DIR"; else mkdir -p $RESULTS_DIR && echo "Created folder $RESULTS_DIR"; fi
+export INFLIGHT_RECORDING_FILE=$RESULTS_DIR/recording.csv
+export REPORT_SELECTED_DAYTIME_FILE=$RESULTS_DIR/report_selected_daytime.csv
+ls -l $REPORT_SELECTED_DAYTIME_FILE
+```
+
+The last line checks the step 5 report is in that folder (copy it over from the sim
+PC, or run step 5 on the Mac); `--compare` needs it. Use `env | grep -E 'RESULTS|PLN|SIM_PC'`
+to list what's set.
+
+```zsh
+poetry run concopt inflight --pln $PLN --accel $ACCL --decel $DECL --cruise-mach $CRUISE_MACH --thrust-reversers --state-url http://$SIM_PC:19286/state --host $SIM_PC --record $INFLIGHT_RECORDING_FILE --compare $REPORT_SELECTED_DAYTIME_FILE --interval $REFRESH_INTERVAL --lookahead-nm 0
+```
+
+- `--state-url` replaces `--simconnect-dll` (which goes on `bridge`; the two can't be combined).
+- `--host $SIM_PC` points Active Sky at the sim PC (port 19285, already reachable remotely).
+- Press `o` to log observed N1/N2 works on the Mac too (it needs a real terminal; not an IDE output pane).
+- A poll that fails or times out (1.5 s) skips that tick with a "No usable data this tick" notice.
+- Start before brake release, or pass `--brake-release-utc HH:MM:SS`, so elapsed time counts from takeoff.

@@ -245,7 +245,9 @@ you're actually about to fly before you fly it.
 ## 6. Fly it: the live in-flight advisor
 
 Requires a running Prepar3D v5 + Active Sky (**not** historical — live
-sim weather) and `python-SimConnect`. **P3D v5 caveat**:
+sim weather) and `python-SimConnect`, so this step is Windows-only (the
+other steps run on macOS/Linux; `inflight` is only imported when you run it).
+**P3D v5 caveat**:
 `python-SimConnect`'s bundled `SimConnect.dll` hangs forever against P3D
 v5's protocol (no exception, no timeout) — pass `--simconnect-dll`
 pointing at a copy known to work (any SimConnect-speaking P3D add-on ships
@@ -267,6 +269,28 @@ starts logging at brake release (ground speed crossing 40 kt) through
 touchdown; `--compare` runs the predicted-vs-actual comparison once
 touchdown is detected. `--no-live` switches to plain scrolling prints
 instead of the redraw-in-place display, useful when piping to a log file.
+
+**Advisor on another machine (the bridge).** To run the advisor on a Mac
+while P3D, Active Sky and FSUIPC stay on the Windows PC, run on the PC:
+
+```
+poetry run concopt bridge --simconnect-dll "C:\path\to\SimConnect_P3D_v5.dll"
+```
+
+(serves `http://<pc>:19286/state`; no auth, so LAN only; allow it through
+Windows Firewall), then on the other machine:
+
+```
+poetry run concopt inflight --pln <route.pln> --accel <id> --decel <id> \
+  --state-url http://<pc>:19286/state --host <pc>
+```
+
+`--host` is Active Sky's address (it must accept connections from the other
+machine). A poll that fails or times out (1.5 s) skips that tick with the
+usual "No usable data" notice; a dropped read arrives as `null`, never 0.
+The JSON is `inflight._read_state` plus `_read_n2`; its field list is in
+`concopt/remote.py`'s docstring. `--simconnect-dll` goes on `bridge`, not
+`inflight --state-url`.
 
 If you have to restart `concopt inflight` mid-flight with the same `--record`
 file, it asks whether to **append** (resume the recording: elapsed time carries

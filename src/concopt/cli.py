@@ -6,15 +6,16 @@ import datetime as dt
 
 import pandas as pd
 
-from concopt.inflight import _parse_utc_s, run_inflight
-from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
+from concopt.params import (BRIDGE_BIND_HOST, BRIDGE_PORT, BRIDGE_STATE_PATH, ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N,
                             MAX_LEG_NM, MIN_LANDING_FUEL_T, VERIFY_DEFAULT_N_POINTS)
+from concopt.remote import remote_state_source
 from concopt.replay import replay_sources
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import run_search, run_shortlist
+from concopt.timeparse import parse_utc_s
 from concopt.verify import run_verify
 
 
@@ -98,7 +99,16 @@ def _cmd_shortlist(args):
                   subsonic_npz_path=args.subsonic_npz, arrival_upper_npz_path=args.arrival_upper_npz)
 
 
+def _cmd_bridge(args):
+    # Lazy for the same reason as run_inflight: the bridge imports SimConnect.
+    from concopt.bridge import run_bridge
+    run_bridge(port=args.port, bind=args.bind, simconnect_dll=args.simconnect_dll)
+
+
 def _cmd_inflight(args):
+    # Imported here, not at module level: inflight needs SimConnect (Windows
+    # only), and no other subcommand should pay for that.
+    from concopt.inflight import run_inflight
     # replay_speed MUST match the one passed to run_inflight below --
     # replay_sources' own wall-clock -> flight-time mapping and
     # run_inflight's elapsed-time/sleep scaling are two separate places
@@ -113,9 +123,14 @@ def _cmd_inflight(args):
     # replay_speed=args.replay_speed) -- in the air this would only bite a
     # --replay session, never a real flight (replay_speed defaults to 1.0
     # either way there), so it could not have caused a lost real recording.
+    if args.state_url is not None and (args.replay is not None or args.simconnect_dll is not None):
+        raise SystemExit("--state-url reads the sim over the bridge: it can't be combined with "
+                         "--replay or --simconnect-dll (that goes on `concopt bridge`)")
     state_source, weather_source = (
         replay_sources(pd.read_csv(args.replay), replay_speed=args.replay_speed)
         if args.replay is not None else (None, None))
+    if args.state_url is not None:
+        state_source = remote_state_source(args.state_url)  # Active Sky stays live via --host/--port
     run_inflight(args.pln, args.accel, args.decel, interval_s=args.interval, lookahead_nm=args.lookahead_nm,
                  record_path=args.record, compare_path=args.compare,
                  host=args.host, port=args.port, cruise_mach=args.cruise_mach,
@@ -319,7 +334,7 @@ def main(argv=None):
     inflight_parser.add_argument('--record-mode', choices=['ask', 'append', 'new'], default='ask',
                                   help='what to do if the --record file already exists: ask (default), '
                                        'append (resume it), or new (the old file is kept as a .bak copy)')
-    inflight_parser.add_argument('--brake-release-utc', default=None, type=_parse_utc_s, metavar='HH:MM[:SS]',
+    inflight_parser.add_argument('--brake-release-utc', default=None, type=parse_utc_s, metavar='HH:MM[:SS]',
                                   help='sim UTC time of brake release, for a recording started after '
                                        'takeoff: elapsed time then counts from it instead of from the '
                                        'first reading (ignored when brake release is seen)')
@@ -356,7 +371,23 @@ def main(argv=None):
     inflight_parser.add_argument('--replay-speed', type=float, default=1.0,
                                   help='with --replay, run faster than real time by this factor '
                                        '(default: 1.0, real time; only meaningful with --replay)')
+    inflight_parser.add_argument('--state-url', default=None,
+                                  help='read the sim state from a `concopt bridge` on the PC running '
+                                       f'Prepar3D instead of SimConnect, e.g. http://192.168.1.20:{BRIDGE_PORT}{BRIDGE_STATE_PATH} '
+                                       '(point --host/--port at that PC for Active Sky)')
     inflight_parser.set_defaults(func=_cmd_inflight)
+
+    bridge_parser = subparsers.add_parser(
+        'bridge', help='serve the live Prepar3D state over HTTP, for `inflight --state-url` on another machine '
+                       '(run on the Windows sim PC)')
+    bridge_parser.add_argument('--port', type=int, default=BRIDGE_PORT,
+                                help=f'port to serve on (default: {BRIDGE_PORT})')
+    bridge_parser.add_argument('--bind', default=BRIDGE_BIND_HOST,
+                                help=f'address to bind (default: {BRIDGE_BIND_HOST}, all interfaces; no auth, LAN only)')
+    bridge_parser.add_argument('--simconnect-dll', default=None,
+                                help='path to a SimConnect.dll known to work with the running sim '
+                                     "(see inflight.py's docstring)")
+    bridge_parser.set_defaults(func=_cmd_bridge)
 
     args = parser.parse_args(argv)
     args.func(args)
