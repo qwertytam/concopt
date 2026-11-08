@@ -89,6 +89,7 @@ from concopt import arrival, limits, runways
 from concopt.asky import get_atmosphere_np
 from concopt.atmos import (KT_TO_MS, fl_to_pressure, isa, pressure_to_fl,
                             speed_of_sound)
+from concopt.timeparse import parse_utc_s as _parse_utc_s
 from concopt.route import (build_legs, current_progress_nm, destination_point,
                             great_circle_nm, parse_pln, project_along_route,
                             supersonic_segment)
@@ -268,14 +269,6 @@ def _sim_paused(last_row_zulu_s, zulu_s):
 
 def _zulu_ok(zulu_s):
     return zulu_s is not None and not np.isnan(zulu_s)
-
-
-def _parse_utc_s(text):
-    """'HH:MM' or 'HH:MM:SS' (UTC, sim time) -> seconds since midnight."""
-    parts = [int(p) for p in text.split(":")]
-    if len(parts) not in (2, 3) or not (0 <= parts[0] < 24 and all(0 <= p < 60 for p in parts[1:])):
-        raise ValueError(f"expected HH:MM or HH:MM:SS, got {text!r}")
-    return parts[0] * 3600 + parts[1] * 60 + (parts[2] if len(parts) == 3 else 0)
 
 
 def _late_start_elapsed_s(zulu_s, brake_release_utc_s):

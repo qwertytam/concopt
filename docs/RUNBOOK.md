@@ -245,7 +245,9 @@ you're actually about to fly before you fly it.
 ## 6. Fly it: the live in-flight advisor
 
 Requires a running Prepar3D v5 + Active Sky (**not** historical — live
-sim weather) and `python-SimConnect`. **P3D v5 caveat**:
+sim weather) and `python-SimConnect`, so this step is Windows-only (the
+other steps run on macOS/Linux; `inflight` is only imported when you run it).
+**P3D v5 caveat**:
 `python-SimConnect`'s bundled `SimConnect.dll` hangs forever against P3D
 v5's protocol (no exception, no timeout) — pass `--simconnect-dll`
 pointing at a copy known to work (any SimConnect-speaking P3D add-on ships

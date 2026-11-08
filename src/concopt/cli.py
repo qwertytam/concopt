@@ -6,7 +6,6 @@ import datetime as dt
 
 import pandas as pd
 
-from concopt.inflight import _parse_utc_s, run_inflight
 from concopt.params import (ACTIVE_SKY_HOST, ACTIVE_SKY_PORT, CRUISE_MACH,
                             DEFAULT_GAIN_THRESHOLD_KT, DEFAULT_INTERVAL_S,
                             DEFAULT_LOOKAHEAD_NM, DEFAULT_SHORTLIST_TOP_N, DEFAULT_TOP_N,
@@ -15,6 +14,7 @@ from concopt.replay import replay_sources
 from concopt.report import best_candidate_from_csv, run_report
 from concopt.route import build_legs, parse_pln, supersonic_segment
 from concopt.search import run_search, run_shortlist
+from concopt.timeparse import parse_utc_s
 from concopt.verify import run_verify
 
 
@@ -99,6 +99,9 @@ def _cmd_shortlist(args):
 
 
 def _cmd_inflight(args):
+    # Imported here, not at module level: inflight needs SimConnect (Windows
+    # only), and no other subcommand should pay for that.
+    from concopt.inflight import run_inflight
     # replay_speed MUST match the one passed to run_inflight below --
     # replay_sources' own wall-clock -> flight-time mapping and
     # run_inflight's elapsed-time/sleep scaling are two separate places
@@ -319,7 +322,7 @@ def main(argv=None):
     inflight_parser.add_argument('--record-mode', choices=['ask', 'append', 'new'], default='ask',
                                   help='what to do if the --record file already exists: ask (default), '
                                        'append (resume it), or new (the old file is kept as a .bak copy)')
-    inflight_parser.add_argument('--brake-release-utc', default=None, type=_parse_utc_s, metavar='HH:MM[:SS]',
+    inflight_parser.add_argument('--brake-release-utc', default=None, type=parse_utc_s, metavar='HH:MM[:SS]',
                                   help='sim UTC time of brake release, for a recording started after '
                                        'takeoff: elapsed time then counts from it instead of from the '
                                        'first reading (ignored when brake release is seen)')

@@ -462,6 +462,17 @@ for its own sake, no defensive error handling.
   shortlist` days and eyeball whether the ranking survives, and whether
   AS/ERA5 divergence looks like a fixable constant bias or unfixable
   scatter.
+- `cli.py` — argparse entry point. **`inflight` is imported lazily**, inside
+  `_cmd_inflight`, never at module level: `inflight.py` imports SimConnect
+  (Windows-only), and every other subcommand must start without it (a Mac
+  can run `search`/`report`/`route`/`shortlist`). Don't add a top-level
+  `concopt.inflight` import to `cli.py`; `tests/test_cli.py` blocks
+  `SimConnect` in a subprocess and fails if the parser or `search --help`
+  needs it. Tests that mock the call patch `concopt.inflight.run_inflight`,
+  not `concopt.cli.run_inflight`. Anything the parser needs from inflight's
+  world lives in a small shared module instead -- `timeparse.parse_utc_s`
+  (the `--brake-release-utc` type; `inflight._parse_utc_s` is the same
+  function under its old name).
 - `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
   recorder against a running Prepar3D + Active Sky, over SimConnect
   (`python-SimConnect`, localhost). Every `--interval` seconds: reads the
