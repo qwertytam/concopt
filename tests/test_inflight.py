@@ -1376,3 +1376,32 @@ def test_run_inflight_arms_observe_keys_for_a_tty_on_any_platform(monkeypatch):
                           state_source=state_source, weather_source=weather_source,
                           replay_speed=900.0, live=False)
     assert ("wait", False) in log
+
+
+def test_take_observation_restarts_the_panel_without_leftover_lines(tmp_path, monkeypatch):
+    """The 'o' prompt left the old frame's top lines on screen: rich's
+    Live.stop() switches vertical_overflow to "visible" for good, and the
+    restart positioned itself from below the prompt. After an observation
+    the overflow is back to what it was and the screen was cleared before
+    the panel restarted."""
+    import io
+    from rich.live import Live
+    from rich.text import Text
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=True, force_interactive=True, width=80, height=12)
+    live = Live(Text("\n".join(f"panel line {i}" for i in range(10))), console=console,
+                auto_refresh=False)
+    live.start(refresh=True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "53 74")
+    note = inflight._take_observation(tmp_path / "obs.csv", {}, 0.0, live)
+    try:
+        assert note.startswith("Logged N1 53 / N2 74")
+        assert live.is_started
+        assert live.vertical_overflow == "ellipsis"
+        written = out.getvalue()
+        clear_at = written.rfind("\x1b[2J")
+        assert clear_at != -1, "screen not cleared before the panel restarted"
+        # the restarted panel is drawn after the clear
+        assert written.rfind("panel line 0") > clear_at
+    finally:
+        live.stop()

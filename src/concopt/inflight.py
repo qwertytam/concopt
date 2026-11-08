@@ -445,8 +445,16 @@ def _wait_for_key(seconds, enabled):
 
 def _take_observation(path, state, elapsed_s, live_display):
     """Prompt for observed N1/N2 (pausing the live panel), append it to
-    `path`, and return a note for the panel. Enter alone cancels."""
+    `path`, and return a note for the panel. Enter alone cancels.
+
+    Restarting the panel cleanly needs two things rich's Live doesn't do on
+    its own: stop() leaves vertical_overflow at "visible" for good, and
+    start() moves the cursor up by the OLD frame's height from below the
+    prompt, so the old frame's top lines were left above the new one, once
+    per "o" press. So the overflow is put back and the screen cleared
+    (cursor home) before the restart."""
     if live_display is not None:
+        overflow = live_display.vertical_overflow
         live_display.stop()
     try:
         while True:
@@ -464,7 +472,9 @@ def _take_observation(path, state, elapsed_s, live_display):
         return f"Logged N1 {obs['n1_obs']:g} / N2 {obs['n2_obs']:g}{eng} to {path}"
     finally:
         if live_display is not None:
-            live_display.start()
+            live_display.vertical_overflow = overflow
+            live_display.console.clear()
+            live_display.start(refresh=True)
 
 
 class _BadSimData(ValueError):
