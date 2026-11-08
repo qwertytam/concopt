@@ -94,6 +94,45 @@ poetry run concopt report --pln %PLN% --decel %DECL% --thrust-reversers --npz %R
 
 ## 6. Running in flight
 
+Either run everything on the sim PC (6a), or run only the bridge on the sim PC and
+the advisor on another machine such as a Mac (6b). Pick one: the bridge and a
+standalone `inflight` can't share the one SimConnect connection.
+
+### 6a. All on the sim PC
+
 ```bat
 poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm 0
 ```
+
+### 6b. Bridge on the sim PC, advisor on a Mac
+
+On the **sim PC** (this replaces 6a; stop any running `inflight` first). Allow
+Windows Firewall access on the private network if it asks (TCP 19286):
+
+```bat
+poetry run concopt bridge --simconnect-dll %SIMCONNECT_DLL%
+```
+
+It prints `Bridge serving http://0.0.0.0:19286/state`, then stays quiet. From the
+Mac, `curl http://<sim-pc-ip>:19286/state` should return the live state as JSON.
+
+On the **Mac** (zsh; the `.pln`, the report CSV for `--compare` and the results folder
+must be on the Mac too). `SIM_PC` is the sim PC's IP address:
+
+```zsh
+export SIM_PC=192.168.11.123
+export PLN=data/CONC_KJFK_EGLL_SPEED02.pln ACCL=40N073W DECL=51N005W CRUISE_MACH=2.04 REFRESH_INTERVAL=10
+export INFLIGHT_RECORDING_FILE=data/results/<folder>/recording.csv
+export REPORT_SELECTED_DAYTIME_FILE=data/results/<folder>/report_selected_daytime.csv
+```
+
+```zsh
+poetry run concopt inflight --pln $PLN --accel $ACCL --decel $DECL --cruise-mach $CRUISE_MACH --thrust-reversers --state-url http://$SIM_PC:19286/state --host $SIM_PC --record $INFLIGHT_RECORDING_FILE --compare $REPORT_SELECTED_DAYTIME_FILE --interval $REFRESH_INTERVAL --lookahead-nm 0
+```
+
+- `--state-url` replaces `--simconnect-dll` (which goes on `bridge`; the two can't be combined).
+- `--host $SIM_PC` points Active Sky at the sim PC (port 19285, already reachable remotely).
+- Press `o` to log N1/N2 does not work on the Mac (Windows console only).
+- A poll that fails or times out (1.5 s) skips that tick with a "No usable data this tick" notice.
+- Start before brake release, or pass `--brake-release-utc HH:MM:SS`, so elapsed time counts from takeoff.
+
