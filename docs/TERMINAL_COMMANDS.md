@@ -101,7 +101,7 @@ standalone `inflight` can't share the one SimConnect connection.
 ### 6a. All on the sim PC
 
 ```bat
-poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm 0
+poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-mach %CRUISE_MACH% --thrust-reversers --simconnect-dll %SIMCONNECT_DLL% --record %INFLIGHT_RECORDING_FILE% --compare %REPORT_SELECTED_DAYTIME_FILE% --interval %REFRESH_INTERVAL%  --lookahead-nm %WEATHER_LOOKAHEAD_NM%
 ```
 
 ### 6b. Bridge on the sim PC, advisor on a Mac
@@ -135,4 +135,3 @@ poetry run concopt inflight --pln $PLN --accel $ACCL --decel $DECL --cruise-mach
 - Press `o` to log observed N1/N2 works on the Mac too (it needs a real terminal; not an IDE output pane).
 - A poll that fails or times out (1.5 s) skips that tick with a "No usable data this tick" notice.
 - Start before brake release, or pass `--brake-release-utc HH:MM:SS`, so elapsed time counts from takeoff.
-
