@@ -109,15 +109,16 @@ poetry run concopt inflight --pln %PLN% --accel %ACCL% --decel %DECL% --cruise-m
 On the **sim PC** (this replaces 6a; stop any running `inflight` first). Allow
 Windows Firewall access on the private network if it asks (TCP 19286):
 
+#### On the simulator PC
+
 ```bat
 poetry run concopt bridge --simconnect-dll %SIMCONNECT_DLL%
 ```
 
+#### On the remote compute -- currently assumed to be a Mac
+
 It prints `Bridge serving http://0.0.0.0:19286/state`, then stays quiet. From the
 Mac, `curl http://<sim-pc-ip>:19286/state` should return the live state as JSON.
-
-On the **Mac** (zsh; the `.pln`, the report CSV for `--compare` and the results folder
-must be on the Mac too). `SIM_PC` is the sim PC's IP address:
 
 ```zsh
 export SIM_PC=192.168.11.123
