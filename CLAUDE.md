@@ -473,6 +473,22 @@ for its own sake, no defensive error handling.
   world lives in a small shared module instead -- `timeparse.parse_utc_s`
   (the `--brake-release-utc` type; `inflight._parse_utc_s` is the same
   function under its old name).
+- `bridge.py` / `remote.py` — run the advisor on another machine. `concopt
+  bridge` (Windows sim PC) serves `inflight._live_state_source(aq, fsuipc)` —
+  the same `_read_state` + `_read_n2` dict `run_inflight` uses, the one place
+  unit conversions live — as JSON over `ThreadingHTTPServer`, GET `/state`,
+  one fresh read per request under a lock; a raising read is HTTP 500.
+  `concopt inflight --state-url` builds `remote.remote_state_source`, a
+  `state_source` for the existing seam; Active Sky stays on `--host/--port`.
+  **None must survive the round trip** (json null <-> None; never substitute
+  0 — a dropped `weight_t` must stay a visible skipped tick) and **no
+  retry**: any failed/timed-out/malformed poll raises `RuntimeError`, which
+  `run_inflight` already turns into a skipped tick. The JSON contract is
+  `remote.py`'s docstring; `remote.STATE_KEYS` is pinned against
+  `_read_state` by `tests/test_bridge.py`. `remote.py` must not import
+  `inflight`. `--simconnect-dll` is on both `bridge` and (standalone, no
+  `--state-url`) `inflight`. Not covered without the sim: the real
+  `bridge` against P3D, and Active Sky accepting a non-local `--host`.
 - `inflight.py` — Phase 6, `concopt inflight`. Live advisor + flight
   recorder against a running Prepar3D + Active Sky, over SimConnect
   (`python-SimConnect`, localhost). Every `--interval` seconds: reads the

@@ -369,6 +369,15 @@ ACTIVE_SKY_HOST = "localhost"
 ACTIVE_SKY_PORT = 19285
 ACTIVE_SKY_URL_BASE = "http://"
 
+# --- Bridge (Windows sim PC -> remote advisor) -----------------------------------
+# concopt.bridge serves inflight's state dict over HTTP on the PC running
+# P3D; concopt.remote polls it. Binds all interfaces by default because the
+# advisor is on another machine (read-only flight state, no auth, LAN only).
+BRIDGE_PORT = 19286
+BRIDGE_BIND_HOST = "0.0.0.0"
+BRIDGE_STATE_PATH = "/state"
+REMOTE_STATE_TIMEOUT_S = 1.5  # one poll; well under any tick (LOW_ALT_INTERVAL_S is 5)
+
 VERIFY_DEFAULT_N_POINTS = 12
 # `concopt verify` prints CHECK when the recomputed AS total differs from the
 # ERA5 total by more than this.

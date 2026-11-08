@@ -304,6 +304,13 @@ def _read_n2(fsuipc):
     return {f"eng{i}_n2": v for i, v in zip((1, 2, 3, 4), values)}
 
 
+def _live_state_source(aq, fsuipc):
+    """THE SEAM's live state_source: one SimConnect poll plus FSLabs' N2.
+    The one place this expression lives -- run_inflight and the bridge
+    (concopt.bridge) both call it, so a network hop can't drift from it."""
+    return lambda: {**_read_state(aq), **_read_n2(fsuipc)}
+
+
 def _n2_text(state):
     """The panel's N2 line ("" when there's no N2), with the key to log
     observations."""
@@ -1511,7 +1518,7 @@ def run_inflight(pln_path, accel_id, decel_id, interval_s=DEFAULT_INTERVAL_S, lo
     if state_source is None:
         sm, aq = _connect(simconnect_dll)
         fsuipc = _connect_fsuipc()
-        state_source = lambda: {**_read_state(aq), **_read_n2(fsuipc)}  # noqa: E731
+        state_source = _live_state_source(aq, fsuipc)
     if weather_source is None:
         weather_source = _live_weather_source(host, port)
 

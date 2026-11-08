@@ -160,3 +160,27 @@ def test_cli_builds_and_search_help_works_without_simconnect():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "usage" in r.stdout.lower()
+
+
+def test_inflight_state_url_supplies_state_source_only():
+    from unittest.mock import sentinel
+    with patch("concopt.cli.remote_state_source", return_value=sentinel.src) as mock_remote, \
+         patch("concopt.inflight.run_inflight") as mock_run_inflight:
+        cli_main(["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D",
+                  "--state-url", "http://pc:19286/state"])
+    mock_remote.assert_called_once_with("http://pc:19286/state")
+    assert mock_run_inflight.call_args.kwargs["state_source"] is sentinel.src
+    assert mock_run_inflight.call_args.kwargs["weather_source"] is None  # Active Sky via --host
+
+
+def test_state_url_conflicts_with_replay_and_simconnect_dll():
+    base = ["inflight", "--pln", "x.pln", "--accel", "A", "--decel", "D", "--state-url", "http://pc/state"]
+    for extra in (["--replay", "r.csv"], ["--simconnect-dll", "x.dll"]):
+        with pytest.raises(SystemExit):
+            cli_main(base + extra)
+
+
+def test_bridge_subcommand_passes_port_bind_and_dll():
+    with patch("concopt.bridge.run_bridge") as mock_bridge:
+        cli_main(["bridge", "--port", "20000", "--bind", "127.0.0.1", "--simconnect-dll", "s.dll"])
+    mock_bridge.assert_called_once_with(port=20000, bind="127.0.0.1", simconnect_dll="s.dll")
