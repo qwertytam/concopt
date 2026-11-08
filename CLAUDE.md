@@ -568,7 +568,7 @@ for its own sake, no defensive error handling.
   `fsuipc_ipc.py` reads it over FSUIPC's IPC with plain ctypes (the `fsuipc`
   pip package doesn't build on Python 3.13); the live state source adds
   `eng1_n2`..`eng4_n2`, shown on the panel and recorded (schema 3), empty if
-  FSUIPC isn't running. Pressing `o` (Windows console) pauses the panel and
+  FSUIPC isn't running. Pressing `o` (Windows console via msvcrt; POSIX terminal via `select` on stdin, with `raw_keys()` -- cbreak, restored in a `finally` -- entered once around the main loop, a no-op when stdin isn't a tty or termios refuses; `_input_cooked` gives the prompt echo back) pauses the panel and
   asks for observed N1/N2 ("53 74" or "2 53 74" for engine 2), appended with
   FSLabs' N2 and the flight state to `--obs-log` (default
   `<record>_n1n2.csv`) -- data for an N1-from-N2 model, so the advisor can

@@ -132,7 +132,7 @@ poetry run concopt inflight --pln $PLN --accel $ACCL --decel $DECL --cruise-mach
 
 - `--state-url` replaces `--simconnect-dll` (which goes on `bridge`; the two can't be combined).
 - `--host $SIM_PC` points Active Sky at the sim PC (port 19285, already reachable remotely).
-- Press `o` to log N1/N2 does not work on the Mac (Windows console only).
+- Press `o` to log observed N1/N2 works on the Mac too (it needs a real terminal; not an IDE output pane).
 - A poll that fails or times out (1.5 s) skips that tick with a "No usable data this tick" notice.
 - Start before brake release, or pass `--brake-release-utc HH:MM:SS`, so elapsed time counts from takeoff.
 
